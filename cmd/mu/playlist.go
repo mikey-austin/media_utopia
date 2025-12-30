@@ -1,0 +1,198 @@
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+func playlistCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "playlist",
+		Short: "Playlist commands",
+	}
+
+	cmd.AddCommand(playlistListCommand())
+	cmd.AddCommand(playlistShowCommand())
+	cmd.AddCommand(playlistCreateCommand())
+	cmd.AddCommand(playlistAddCommand())
+	cmd.AddCommand(playlistRemoveCommand())
+	cmd.AddCommand(playlistLoadCommand())
+	cmd.AddCommand(playlistRenameCommand())
+
+	return cmd
+}
+
+func playlistListCommand() *cobra.Command {
+	var server string
+
+	cmd := &cobra.Command{
+		Use:   "ls",
+		Short: "List playlists",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			result, err := app.service.PlaylistList(ctx, server)
+			if err != nil {
+				return err
+			}
+			return app.printer.Print(result)
+		},
+	}
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}
+
+func playlistShowCommand() *cobra.Command {
+	var server string
+
+	cmd := &cobra.Command{
+		Use:   "show <playlistId>",
+		Short: "Show playlist",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			result, err := app.service.PlaylistGet(ctx, args[0], server)
+			if err != nil {
+				return err
+			}
+			return app.printer.Print(result)
+		},
+	}
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}
+
+func playlistCreateCommand() *cobra.Command {
+	var server string
+
+	cmd := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Create playlist",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			return app.service.PlaylistCreate(ctx, args[0], server)
+		},
+	}
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}
+
+func playlistAddCommand() *cobra.Command {
+	var resolve string
+	var server string
+
+	cmd := &cobra.Command{
+		Use:   "add <playlistId> <item...>",
+		Short: "Add items to playlist",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			resolveValue, err := normalizeResolve(resolve)
+			if err != nil {
+				return err
+			}
+			return app.service.PlaylistAdd(ctx, args[0], args[1:], resolveValue, server)
+		},
+	}
+
+	cmd.Flags().StringVar(&resolve, "resolve", "auto", "resolve mode (auto|yes|no)")
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}
+
+func playlistRemoveCommand() *cobra.Command {
+	var server string
+
+	cmd := &cobra.Command{
+		Use:   "rm <playlistId> <entryId...>",
+		Short: "Remove items from playlist",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			return app.service.PlaylistRemove(ctx, args[0], args[1:], server)
+		},
+	}
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}
+
+func playlistLoadCommand() *cobra.Command {
+	var mode string
+	var resolve string
+	var server string
+
+	cmd := &cobra.Command{
+		Use:   "load [renderer] <playlistId>",
+		Short: "Load playlist into renderer queue",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			resolveValue, err := normalizeResolve(resolve)
+			if err != nil {
+				return err
+			}
+			modeValue := mode
+			if modeValue == "" {
+				modeValue = "replace"
+			}
+			switch modeValue {
+			case "replace", "append", "next":
+			default:
+				return fmt.Errorf("mode must be replace|append|next")
+			}
+			selector := ""
+			playlistID := ""
+			if len(args) == 1 {
+				playlistID = args[0]
+			} else {
+				selector = args[0]
+				playlistID = args[1]
+			}
+			return app.service.QueueLoadPlaylist(ctx, selector, playlistID, modeValue, resolveValue, server)
+		},
+	}
+
+	cmd.Flags().StringVar(&mode, "mode", "replace", "load mode (replace|append|next)")
+	cmd.Flags().StringVar(&resolve, "resolve", "auto", "resolve mode (auto|yes|no)")
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}
+
+func playlistRenameCommand() *cobra.Command {
+	var server string
+
+	cmd := &cobra.Command{
+		Use:   "rename <playlistId> <name>",
+		Short: "Rename playlist",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			return app.service.PlaylistRename(ctx, args[0], args[1], server)
+		},
+	}
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}

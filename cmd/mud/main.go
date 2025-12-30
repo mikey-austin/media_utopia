@@ -1,0 +1,241 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
+	"github.com/mikey-austin/media_utopia/internal/modules/embedded_mqtt"
+	"github.com/mikey-austin/media_utopia/internal/modules/jellyfin_library"
+	"github.com/mikey-austin/media_utopia/internal/modules/playlist"
+	"github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
+	"github.com/mikey-austin/media_utopia/internal/mud"
+	"github.com/mikey-austin/media_utopia/pkg/mu"
+)
+
+func main() {
+	var (
+		configPath  string
+		broker      string
+		identity    string
+		topicBase   string
+		logLevel    string
+		daemonize   bool
+		printConfig bool
+		dryRun      bool
+		moduleOnly  string
+	)
+
+	defaultConfig, err := mud.DefaultConfigPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	flag.StringVar(&configPath, "config", defaultConfig, "config file path")
+	flag.StringVar(&broker, "broker", "", "MQTT broker URL override")
+	flag.StringVar(&identity, "identity", "", "server identity override")
+	flag.StringVar(&topicBase, "topic-base", "", "topic base override")
+	flag.StringVar(&logLevel, "log-level", "", "log level override")
+	flag.BoolVar(&daemonize, "daemonize", false, "run as daemon")
+	flag.StringVar(&moduleOnly, "module", "", "limit to a single module")
+	flag.BoolVar(&printConfig, "print-config", false, "print resolved config and exit")
+	flag.BoolVar(&dryRun, "dry-run", false, "validate config and exit")
+	flag.Parse()
+
+	cfg, err := mud.LoadConfig(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	applyOverrides(&cfg, broker, identity, topicBase, logLevel, daemonize)
+
+	if printConfig {
+		if err := printResolvedConfig(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if dryRun {
+		return
+	}
+
+	logger := mud.NewLogger(cfg.Server.LogLevel)
+	if cfg.Server.Broker == "" {
+		logger.Error("broker is required")
+		os.Exit(1)
+	}
+
+	if daemonize {
+		logger.Warn("daemonize flag is set; running in foreground (not implemented)")
+	}
+
+	client, err := mqttserver.NewClient(mqttserver.Options{
+		BrokerURL: cfg.Server.Broker,
+		ClientID:  fmt.Sprintf("mud-%d", time.Now().UnixNano()),
+		Username:  cfg.Server.Auth.User,
+		Password:  cfg.Server.Auth.Pass,
+		TLSCA:     cfg.Server.TLS.CA,
+		TLSCert:   cfg.Server.TLS.Cert,
+		TLSKey:    cfg.Server.TLS.Key,
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		logger.Error("mqtt connection failed", "error", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	modules, err := buildModules(cfg, client, logger, moduleOnly)
+	if err != nil {
+		logger.Error("failed to build modules", "error", err)
+		os.Exit(1)
+	}
+
+	supervisor := mud.Supervisor{Logger: logger}
+	if err := supervisor.Run(ctx, modules); err != nil {
+		logger.Error("supervisor error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase string, logLevel string, daemonize bool) {
+	if broker != "" {
+		cfg.Server.Broker = broker
+	}
+	if identity != "" {
+		cfg.Server.Identity = identity
+	}
+	if topicBase != "" {
+		cfg.Server.TopicBase = topicBase
+	}
+	if logLevel != "" {
+		cfg.Server.LogLevel = logLevel
+	}
+	if daemonize {
+		cfg.Server.Daemonize = true
+	}
+	if cfg.Server.TopicBase == "" {
+		cfg.Server.TopicBase = mu.BaseTopic
+	}
+	if cfg.Server.Broker == "" && cfg.Modules.EmbeddedMQTT.Enabled {
+		listen := cfg.Modules.EmbeddedMQTT.Listen
+		if listen == "" {
+			listen = "127.0.0.1:1883"
+		}
+		tlsEnabled := cfg.Modules.EmbeddedMQTT.TLSCert != "" || cfg.Modules.EmbeddedMQTT.TLSKey != "" || cfg.Modules.EmbeddedMQTT.TLSCA != ""
+		cfg.Server.Broker = embeddedmqtt.BrokerURL(listen, tlsEnabled)
+	}
+}
+
+func buildModules(cfg mud.Config, client *mqttserver.Client, logger *slog.Logger, moduleOnly string) ([]mud.ModuleRunner, error) {
+	modules := []mud.ModuleRunner{}
+	if cfg.Modules.EmbeddedMQTT.Enabled {
+		if moduleOnly == "" || moduleOnly == "embedded_mqtt" {
+			mod, err := embeddedmqtt.NewModule(logger.With("module", "embedded_mqtt"), embeddedmqtt.Config{
+				Listen:         cfg.Modules.EmbeddedMQTT.Listen,
+				AllowAnonymous: cfg.Modules.EmbeddedMQTT.AllowAnonymous,
+				Username:       cfg.Modules.EmbeddedMQTT.Username,
+				Password:       cfg.Modules.EmbeddedMQTT.Password,
+				TLSCA:          cfg.Modules.EmbeddedMQTT.TLSCA,
+				TLSCert:        cfg.Modules.EmbeddedMQTT.TLSCert,
+				TLSKey:         cfg.Modules.EmbeddedMQTT.TLSKey,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "embedded_mqtt",
+				Run:  mod.Run,
+			})
+		}
+	}
+	if cfg.Modules.Playlist.Enabled {
+		if moduleOnly == "" || moduleOnly == "playlist" {
+			pl, err := playlist.NewModule(logger.With("module", "playlist"), client, playlist.Config{
+				NodeID:      cfg.Modules.Playlist.NodeID,
+				TopicBase:   cfg.Server.TopicBase,
+				StoragePath: cfg.Modules.Playlist.StoragePath,
+				Identity:    cfg.Server.Identity,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "playlist",
+				Run:  pl.Run,
+			})
+		}
+	}
+
+	if cfg.Modules.BridgeJellyfinLibrary.Enabled {
+		if moduleOnly == "" || moduleOnly == "bridge_jellyfin_library" {
+			timeout := time.Duration(cfg.Modules.BridgeJellyfinLibrary.TimeoutMS) * time.Millisecond
+			jf, err := jellyfinlibrary.NewModule(logger.With("module", "bridge_jellyfin_library"), client, jellyfinlibrary.Config{
+				NodeID:    cfg.Modules.BridgeJellyfinLibrary.NodeID,
+				TopicBase: cfg.Server.TopicBase,
+				BaseURL:   cfg.Modules.BridgeJellyfinLibrary.BaseURL,
+				APIKey:    cfg.Modules.BridgeJellyfinLibrary.APIKey,
+				UserID:    cfg.Modules.BridgeJellyfinLibrary.UserID,
+				Timeout:   timeout,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "bridge_jellyfin_library",
+				Run:  jf.Run,
+			})
+		}
+	}
+
+	if cfg.Modules.RendererGStreamer.Enabled {
+		if moduleOnly == "" || moduleOnly == "renderer_gstreamer" {
+			crossfade := time.Duration(cfg.Modules.RendererGStreamer.CrossfadeMS) * time.Millisecond
+			mod, err := renderergstreamer.NewModule(logger.With("module", "renderer_gstreamer"), client, renderergstreamer.Config{
+				NodeID:       cfg.Modules.RendererGStreamer.NodeID,
+				TopicBase:    cfg.Server.TopicBase,
+				Name:         "GStreamer Renderer",
+				Pipeline:     cfg.Modules.RendererGStreamer.Pipeline,
+				Device:       cfg.Modules.RendererGStreamer.Device,
+				Crossfade:    crossfade,
+				Volume:       1.0,
+				PublishState: true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "renderer_gstreamer",
+				Run:  mod.Run,
+			})
+		}
+	}
+
+	if moduleOnly != "" && len(modules) == 0 {
+		return nil, errors.New("no modules enabled")
+	}
+	return modules, nil
+}
+
+func printResolvedConfig(cfg mud.Config) error {
+	enc := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	enc.Info("resolved config",
+		"broker", cfg.Server.Broker,
+		"identity", cfg.Server.Identity,
+		"topic_base", cfg.Server.TopicBase,
+		"log_level", cfg.Server.LogLevel,
+		"daemonize", cfg.Server.Daemonize,
+	)
+	return nil
+}
