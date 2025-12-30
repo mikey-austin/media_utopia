@@ -72,7 +72,11 @@ Or use the Make targets:
 make build
 make test
 make fmt
+make integration
 ```
+
+Integration tests (embedded MQTT + `mud` + `mu`) run via `make integration`.
+Set `MU_INTEGRATION_DEBUG=1` for verbose integration logs.
 
 ## Contributing / Next Steps
 

@@ -67,10 +67,6 @@ func NewModule(log *slog.Logger, client *mqttserver.Client, cfg Config) (*Module
 
 // Run starts the playlist module.
 func (m *Module) Run(ctx context.Context) error {
-	if err := m.publishPresence(); err != nil {
-		return err
-	}
-
 	handler := func(_ paho.Client, msg paho.Message) {
 		m.handleMessage(msg)
 	}
@@ -79,6 +75,10 @@ func (m *Module) Run(ctx context.Context) error {
 		return err
 	}
 	defer m.client.Unsubscribe(m.cmdTopic)
+
+	if err := m.publishPresence(); err != nil {
+		return err
+	}
 
 	<-ctx.Done()
 	return nil

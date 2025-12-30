@@ -82,6 +82,9 @@ func NewClient(opts Options) (*Client, error) {
 	if token := c.client.Connect(); token.Wait() && token.Error() != nil {
 		return nil, token.Error()
 	}
+	if token := c.client.Subscribe(c.replyTopic, 1, c.handleReply); token.Wait() && token.Error() != nil {
+		return nil, token.Error()
+	}
 
 	return c, nil
 }
