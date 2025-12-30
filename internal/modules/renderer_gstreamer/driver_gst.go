@@ -20,7 +20,7 @@ type Driver struct {
 	crossfade time.Duration
 	volume    float64
 	muted     bool
-	current   *gst.Element
+	current   *gst.Pipeline
 }
 
 var gstInitOnce sync.Once
@@ -125,21 +125,21 @@ func (d *Driver) SetMute(mute bool) error {
 	return nil
 }
 
-func (d *Driver) buildPipeline(url string, volume float64, positionMS int64) (*gst.Element, error) {
+func (d *Driver) buildPipeline(url string, volume float64, positionMS int64) (*gst.Pipeline, error) {
 	pipeline := d.pipeline
 	pipeline = strings.ReplaceAll(pipeline, "{url}", url)
 	pipeline = strings.ReplaceAll(pipeline, "{device}", d.device)
 	pipeline = strings.ReplaceAll(pipeline, "{start_ms}", fmt.Sprintf("%d", positionMS))
 	pipeline = strings.ReplaceAll(pipeline, "{volume}", fmt.Sprintf("%0.2f", volume))
 
-	el, err := gst.ParseLaunch(pipeline)
+	el, err := gst.NewPipelineFromString(pipeline)
 	if err != nil {
 		return nil, err
 	}
 	return el, nil
 }
 
-func (d *Driver) startPipeline(pipeline *gst.Element) error {
+func (d *Driver) startPipeline(pipeline *gst.Pipeline) error {
 	if err := pipeline.SetState(gst.StatePlaying); err != nil {
 		return err
 	}
@@ -159,12 +159,15 @@ func (d *Driver) stopCurrentLocked() error {
 	return nil
 }
 
-func (d *Driver) seekLocked(pipeline *gst.Element, positionMS int64) error {
+func (d *Driver) seekLocked(pipeline *gst.Pipeline, positionMS int64) error {
 	positionNS := positionMS * int64(time.Millisecond)
-	return pipeline.SeekSimple(gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagKeyUnit, positionNS)
+	if ok := pipeline.SeekSimple(positionNS, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagKeyUnit); !ok {
+		return errors.New("seek failed")
+	}
+	return nil
 }
 
-func (d *Driver) fadeIn(pipeline *gst.Element, duration time.Duration) {
+func (d *Driver) fadeIn(pipeline *gst.Pipeline, duration time.Duration) {
 	steps := 10
 	step := duration / time.Duration(steps)
 	for i := 0; i <= steps; i++ {
@@ -174,7 +177,7 @@ func (d *Driver) fadeIn(pipeline *gst.Element, duration time.Duration) {
 	}
 }
 
-func (d *Driver) fadeOut(pipeline *gst.Element, duration time.Duration) {
+func (d *Driver) fadeOut(pipeline *gst.Pipeline, duration time.Duration) {
 	steps := 10
 	step := duration / time.Duration(steps)
 	for i := steps; i >= 0; i-- {

@@ -8,7 +8,7 @@ import (
 )
 
 func TestSupervisorRunsModules(t *testing.T) {
-	logger := NewLogger("error")
+	logger := NewLogger(LogConfig{Level: "error"})
 	supervisor := Supervisor{Logger: logger}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -37,7 +37,7 @@ func TestSupervisorRunsModules(t *testing.T) {
 }
 
 func TestSupervisorPropagatesErrors(t *testing.T) {
-	logger := NewLogger("error")
+	logger := NewLogger(LogConfig{Level: "error"})
 	supervisor := Supervisor{Logger: logger}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,7 +59,7 @@ func TestSupervisorPropagatesErrors(t *testing.T) {
 }
 
 func TestSupervisorNoModules(t *testing.T) {
-	logger := NewLogger("error")
+	logger := NewLogger(LogConfig{Level: "error"})
 	supervisor := Supervisor{Logger: logger}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)

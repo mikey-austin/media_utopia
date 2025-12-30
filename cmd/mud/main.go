@@ -27,6 +27,10 @@ func main() {
 		identity    string
 		topicBase   string
 		logLevel    string
+		logFormat   string
+		logOutput   string
+		logSource   bool
+		logUTC      bool
 		daemonize   bool
 		printConfig bool
 		dryRun      bool
@@ -44,6 +48,10 @@ func main() {
 	flag.StringVar(&identity, "identity", "", "server identity override")
 	flag.StringVar(&topicBase, "topic-base", "", "topic base override")
 	flag.StringVar(&logLevel, "log-level", "", "log level override")
+	flag.StringVar(&logFormat, "log-format", "", "log format override (text|json)")
+	flag.StringVar(&logOutput, "log-output", "", "log output override (stdout|stderr)")
+	flag.BoolVar(&logSource, "log-source", false, "include source file in logs")
+	flag.BoolVar(&logUTC, "log-utc", false, "use UTC timestamps in logs")
 	flag.BoolVar(&daemonize, "daemonize", false, "run as daemon")
 	flag.StringVar(&moduleOnly, "module", "", "limit to a single module")
 	flag.BoolVar(&printConfig, "print-config", false, "print resolved config and exit")
@@ -55,7 +63,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	applyOverrides(&cfg, broker, identity, topicBase, logLevel, daemonize)
+	applyOverrides(&cfg, broker, identity, topicBase, logLevel, logFormat, logOutput, logSource, logUTC, daemonize)
 
 	if printConfig {
 		if err := printResolvedConfig(cfg); err != nil {
@@ -68,11 +76,28 @@ func main() {
 		return
 	}
 
-	logger := mud.NewLogger(cfg.Server.LogLevel)
+	logger := mud.NewLogger(mud.LogConfig{
+		Level:     cfg.Server.LogLevel,
+		Format:    cfg.Server.LogFormat,
+		Output:    cfg.Server.LogOutput,
+		AddSource: cfg.Server.LogSource,
+		UTC:       cfg.Server.LogUTC,
+	})
 	if cfg.Server.Broker == "" {
 		logger.Error("broker is required")
 		os.Exit(1)
 	}
+	logger.Info("mud starting",
+		"broker", cfg.Server.Broker,
+		"identity", cfg.Server.Identity,
+		"topic_base", cfg.Server.TopicBase,
+		"log_level", cfg.Server.LogLevel,
+		"log_format", cfg.Server.LogFormat,
+		"log_output", cfg.Server.LogOutput,
+		"log_source", cfg.Server.LogSource,
+		"log_utc", cfg.Server.LogUTC,
+		"modules", enabledModules(cfg),
+	)
 
 	if daemonize {
 		logger.Warn("daemonize flag is set; running in foreground (not implemented)")
@@ -109,7 +134,7 @@ func main() {
 	}
 }
 
-func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase string, logLevel string, daemonize bool) {
+func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase string, logLevel string, logFormat string, logOutput string, logSource bool, logUTC bool, daemonize bool) {
 	if broker != "" {
 		cfg.Server.Broker = broker
 	}
@@ -121,6 +146,18 @@ func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase s
 	}
 	if logLevel != "" {
 		cfg.Server.LogLevel = logLevel
+	}
+	if logFormat != "" {
+		cfg.Server.LogFormat = logFormat
+	}
+	if logOutput != "" {
+		cfg.Server.LogOutput = logOutput
+	}
+	if logSource {
+		cfg.Server.LogSource = true
+	}
+	if logUTC {
+		cfg.Server.LogUTC = true
 	}
 	if daemonize {
 		cfg.Server.Daemonize = true
@@ -228,6 +265,26 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *slog.Logger
 	return modules, nil
 }
 
+func enabledModules(cfg mud.Config) []string {
+	out := []string{}
+	if cfg.Modules.EmbeddedMQTT.Enabled {
+		out = append(out, "embedded_mqtt")
+	}
+	if cfg.Modules.Playlist.Enabled {
+		out = append(out, "playlist")
+	}
+	if cfg.Modules.BridgeJellyfinLibrary.Enabled {
+		out = append(out, "bridge_jellyfin_library")
+	}
+	if cfg.Modules.RendererGStreamer.Enabled {
+		out = append(out, "renderer_gstreamer")
+	}
+	if cfg.Modules.BridgeUPNPLibrary.Enabled {
+		out = append(out, "bridge_upnp_library")
+	}
+	return out
+}
+
 func printResolvedConfig(cfg mud.Config) error {
 	enc := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	enc.Info("resolved config",
@@ -235,6 +292,10 @@ func printResolvedConfig(cfg mud.Config) error {
 		"identity", cfg.Server.Identity,
 		"topic_base", cfg.Server.TopicBase,
 		"log_level", cfg.Server.LogLevel,
+		"log_format", cfg.Server.LogFormat,
+		"log_output", cfg.Server.LogOutput,
+		"log_source", cfg.Server.LogSource,
+		"log_utc", cfg.Server.LogUTC,
 		"daemonize", cfg.Server.Daemonize,
 	)
 	return nil

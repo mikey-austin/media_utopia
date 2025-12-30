@@ -20,6 +20,10 @@ type ServerConfig struct {
 	Identity  string     `toml:"identity"`
 	TopicBase string     `toml:"topic_base"`
 	LogLevel  string     `toml:"log_level"`
+	LogFormat string     `toml:"log_format"`
+	LogOutput string     `toml:"log_output"`
+	LogSource bool       `toml:"log_source"`
+	LogUTC    bool       `toml:"log_utc"`
 	Daemonize bool       `toml:"daemonize"`
 	TLS       TLSConfig  `toml:"tls"`
 	Auth      AuthConfig `toml:"auth"`

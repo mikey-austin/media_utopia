@@ -12,7 +12,7 @@ func TestBuildModulesModuleOnlyFilter(t *testing.T) {
 	cfg.Modules.Playlist.NodeID = "mu:playlist:plsrv:default:main"
 	cfg.Modules.Playlist.StoragePath = "/tmp"
 
-	logger := mud.NewLogger("error")
+	logger := mud.NewLogger(mud.LogConfig{Level: "error"})
 	modules, err := buildModules(cfg, nil, logger, "playlist")
 	if err != nil {
 		t.Fatalf("buildModules: %v", err)

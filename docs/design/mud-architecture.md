@@ -52,6 +52,10 @@ broker = "mqtts://broker.local:8883"
 identity = "mud@livingroom"
 topic_base = "mu/v1"
 log_level = "info"
+log_format = "text"
+log_output = "stdout"
+log_source = false
+log_utc = true
 daemonize = false
 
 [server.tls]

@@ -1,0 +1,14 @@
+services:
+  mud:
+    build:
+      context: .
+      target: mud
+    image: media-utopia-mud:latest
+    command: ["-config", "/etc/mud/mud.toml"]
+    volumes:
+      - ./mud.toml:/etc/mud/mud.toml:ro
+      - mud-data:/var/lib/mud
+    ports:
+      - "1883:1883"
+volumes:
+  mud-data: {}

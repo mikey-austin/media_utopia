@@ -78,6 +78,37 @@ make integration
 Integration tests (embedded MQTT + `mud` + `mu`) run via `make integration`.
 Set `MU_INTEGRATION_DEBUG=1` for verbose integration logs.
 
+## Docker
+
+Build the `mud` image:
+
+```bash
+docker build -t media-utopia-mud --target mud .
+```
+
+Run with a config file:
+
+```bash
+docker run --rm -p 1883:1883 \\
+  -v $PWD/mud.toml:/etc/mud/mud.toml:ro \\
+  -v $PWD/mud-data:/var/lib/mud \\
+  media-utopia-mud -config /etc/mud/mud.toml
+```
+
+Build the `mu` CLI image:
+
+```bash
+docker build -t media-utopia-mu --target mu .
+```
+
+Compose example:
+
+```bash
+docker compose up --build
+```
+
+Note: the `mud` container includes the GStreamer renderer and required runtime libraries by default.
+
 ## Contributing / Next Steps
 
 If you’re implementing:

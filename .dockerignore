@@ -1,0 +1,7 @@
+.gocache
+.gomodcache
+.git
+.github
+*.md
+**/*_test.go
+**/testdata
