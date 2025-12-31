@@ -134,6 +134,17 @@ func (d *Driver) SetMute(mute bool) error {
 	return nil
 }
 
+// Position returns current position/duration in ms when available.
+func (d *Driver) Position() (int64, int64, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.current == nil {
+		return 0, 0, false
+	}
+	return d.queryPositionLocked()
+}
+
 func (d *Driver) buildPipeline(url string, volume float64, positionMS int64) (*gst.Element, *gst.Element, error) {
 	pipeline := d.pipeline
 	pipeline = replaceURL(pipeline, url)
@@ -228,6 +239,21 @@ func (d *Driver) volumeTarget() *gst.Element {
 		return d.volumeEl
 	}
 	return d.current
+}
+
+func (d *Driver) queryPositionLocked() (int64, int64, bool) {
+	posOK, pos := d.current.QueryPosition(gst.FormatTime)
+	durOK, dur := d.current.QueryDuration(gst.FormatTime)
+	if !posOK && d.volumeEl != nil {
+		posOK, pos = d.volumeEl.QueryPosition(gst.FormatTime)
+	}
+	if !durOK && d.volumeEl != nil {
+		durOK, dur = d.volumeEl.QueryDuration(gst.FormatTime)
+	}
+	if !posOK && !durOK {
+		return 0, 0, false
+	}
+	return pos / int64(time.Millisecond), dur / int64(time.Millisecond), true
 }
 
 func replaceURL(pipeline string, url string) string {

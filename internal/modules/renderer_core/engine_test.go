@@ -41,6 +41,9 @@ func (d *fakeDriver) SetMute(mute bool) error {
 	d.mute = mute
 	return nil
 }
+func (d *fakeDriver) Position() (int64, int64, bool) {
+	return 0, 0, false
+}
 
 func TestEngineLeaseRequired(t *testing.T) {
 	driver := &fakeDriver{}

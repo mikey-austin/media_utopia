@@ -26,3 +26,6 @@ func (d *Driver) SetVolume(volume float64) error {
 	return errors.New("gstreamer build tag not enabled")
 }
 func (d *Driver) SetMute(mute bool) error { return errors.New("gstreamer build tag not enabled") }
+func (d *Driver) Position() (int64, int64, bool) {
+	return 0, 0, false
+}

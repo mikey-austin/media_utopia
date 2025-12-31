@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
@@ -42,6 +43,7 @@ type Module struct {
 	engine   *renderercore.Engine
 	config   Config
 	cmdTopic string
+	mu       sync.Mutex
 }
 
 // NewModule creates a renderer module.
@@ -83,6 +85,8 @@ func (m *Module) Run(ctx context.Context) error {
 			return err
 		}
 	}
+
+	go m.runPositionUpdates(ctx)
 
 	handler := func(_ paho.Client, msg paho.Message) {
 		m.handleMessage(msg)
@@ -135,12 +139,16 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
+	m.mu.Lock()
 	reply := m.dispatch(cmd)
+	m.mu.Unlock()
 	m.publishReply(cmd.ReplyTo, reply)
 }
 
 func (m *Module) handleLoadCommand(cmd mu.CommandEnvelope) {
+	m.mu.Lock()
 	reply := m.dispatch(cmd)
+	m.mu.Unlock()
 	m.publishReply(cmd.ReplyTo, reply)
 }
 
@@ -151,6 +159,40 @@ func (m *Module) publishReply(replyTo string, reply mu.ReplyEnvelope) {
 			_ = m.client.Publish(replyTo, 1, false, payload)
 		}
 	}
+	if m.config.PublishState {
+		_ = m.publishState()
+	}
+}
+
+func (m *Module) runPositionUpdates(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.updatePlaybackState()
+		}
+	}
+}
+
+func (m *Module) updatePlaybackState() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.engine.State.Playback == nil || m.engine.State.Playback.Status != "playing" {
+		return
+	}
+	posMS, durMS, ok := m.engine.Driver.Position()
+	if !ok {
+		return
+	}
+	m.engine.State.Playback.PositionMS = posMS
+	if durMS > 0 {
+		m.engine.State.Playback.DurationMS = durMS
+	}
+	m.engine.State.TS = time.Now().Unix()
 	if m.config.PublishState {
 		_ = m.publishState()
 	}

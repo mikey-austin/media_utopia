@@ -246,6 +246,13 @@ func formatPosition(pos, dur int64) string {
 	if pos == 0 && dur == 0 {
 		return ""
 	}
+	if dur > 0 {
+		percent := int64(0)
+		if dur > 0 {
+			percent = (pos * 100) / dur
+		}
+		return fmt.Sprintf("%s / %s (%d%%)", formatMS(pos), formatMS(dur), percent)
+	}
 	return fmt.Sprintf("%s / %s", formatMS(pos), formatMS(dur))
 }
 

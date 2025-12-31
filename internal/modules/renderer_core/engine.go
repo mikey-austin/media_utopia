@@ -19,6 +19,7 @@ type Driver interface {
 	Seek(positionMS int64) error
 	SetVolume(volume float64) error
 	SetMute(mute bool) error
+	Position() (positionMS int64, durationMS int64, ok bool)
 }
 
 // ErrUnsupported indicates driver capability is missing.
