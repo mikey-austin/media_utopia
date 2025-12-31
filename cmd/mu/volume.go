@@ -55,6 +55,7 @@ func volumeCommand() *cobra.Command {
 
 	cmd.Flags().BoolVar(&mute, "mute", false, "mute output")
 	cmd.Flags().BoolVar(&unmute, "unmute", false, "unmute output")
+	cmd.Flags().ParseErrorsWhitelist.UnknownFlags = true
 
 	return cmd
 }

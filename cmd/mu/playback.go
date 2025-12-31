@@ -101,7 +101,7 @@ func stopCommand() *cobra.Command {
 }
 
 func seekCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "seek [renderer] <+/-dur|ms>",
 		Short: "Seek playback",
 		Args:  cobra.RangeArgs(1, 2),
@@ -123,6 +123,8 @@ func seekCommand() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().ParseErrorsWhitelist.UnknownFlags = true
+	return cmd
 }
 
 func nextCommand() *cobra.Command {

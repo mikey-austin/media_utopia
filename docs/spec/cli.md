@@ -148,6 +148,7 @@ Notes:
 
 * These **require lease** (exit 3 if not held).
 * `seek` accepts `+10s`, `-5s`, `120000ms`, `2m03s`.
+* If your shell treats `-5s` as a flag, use `-- -5s`.
 
 ---
 
@@ -166,6 +167,7 @@ mu vol livingroom --mute
 ```
 
 Lease required.
+If your shell treats `-5` as a flag, use `-- -5`.
 
 ---
 
