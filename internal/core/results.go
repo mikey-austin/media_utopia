@@ -24,6 +24,7 @@ type SessionResult struct {
 type QueueResult struct {
 	RendererID string
 	Queue      mu.QueueGetReply
+	FullIDs    bool
 }
 
 // QueueNowResult shows the current queue item.
@@ -35,6 +36,22 @@ type QueueNowResult struct {
 // PlaylistListResult holds playlist summaries.
 type PlaylistListResult struct {
 	Playlists []mu.PlaylistSummary
+}
+
+// PlaylistShowResult holds a playlist and resolved entry metadata.
+type PlaylistShowResult struct {
+	PlaylistID string
+	Name       string
+	Entries    []PlaylistEntryResult
+	FullIDs    bool
+}
+
+// PlaylistEntryResult describes a playlist entry with metadata.
+type PlaylistEntryResult struct {
+	EntryID  string
+	ItemID   string
+	Metadata map[string]any
+	URL      string
 }
 
 // SnapshotListResult holds snapshot summaries.

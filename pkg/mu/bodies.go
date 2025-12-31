@@ -241,7 +241,8 @@ type LibrarySearchBody struct {
 
 // LibraryResolveBody is the payload for library.resolve.
 type LibraryResolveBody struct {
-	ItemID string `json:"itemId"`
+	ItemID       string `json:"itemId"`
+	MetadataOnly bool   `json:"metadataOnly,omitempty"`
 }
 
 // LibraryResolveReply describes the response for library.resolve.

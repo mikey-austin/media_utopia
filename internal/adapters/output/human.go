@@ -36,6 +36,8 @@ func (HumanPrinter) Print(v any) error {
 		return printQueueNow(data)
 	case core.PlaylistListResult:
 		return printPlaylists(data)
+	case core.PlaylistShowResult:
+		return printPlaylistShow(data)
 	case core.SnapshotListResult:
 		return printSnapshots(data)
 	case core.SuggestListResult:
@@ -110,17 +112,50 @@ func printSession(result core.SessionResult) error {
 }
 
 func printQueue(result core.QueueResult) error {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+	header := "INDEX\tTITLE\tTYPE\tARTIST\tALBUM\tLEN"
+	if result.FullIDs {
+		header += "\tQUEUE_ID\tITEM_ID"
+	}
+	if _, err := fmt.Fprintln(tw, header); err != nil {
+		return err
+	}
 	for idx, entry := range result.Queue.Entries {
-		label := entry.ItemID
-		if title, ok := entry.Metadata["title"].(string); ok {
-			label = title
+		title := entry.ItemID
+		typ := ""
+		artist := ""
+		album := ""
+		length := ""
+		if entry.Metadata != nil {
+			if val, ok := entry.Metadata["title"].(string); ok && val != "" {
+				title = val
+			}
+			if val, ok := entry.Metadata["mediaType"].(string); ok && val != "" {
+				typ = val
+			} else if val, ok := entry.Metadata["type"].(string); ok {
+				typ = val
+			}
+			if val, ok := entry.Metadata["artist"].(string); ok {
+				artist = val
+			}
+			if val, ok := entry.Metadata["album"].(string); ok {
+				album = val
+			}
+			length = formatDuration(entry.Metadata["durationMs"])
 		}
-		_, err := fmt.Fprintf(os.Stdout, "%d\t%s\t%s\n", idx, entry.QueueEntryID, label)
+		if result.FullIDs {
+			_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length, entry.QueueEntryID, entry.ItemID)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length)
 		if err != nil {
 			return err
 		}
 	}
-	return nil
+	return tw.Flush()
 }
 
 func printQueueNow(result core.QueueNowResult) error {
@@ -140,6 +175,53 @@ func printPlaylists(result core.PlaylistListResult) error {
 	}
 	for _, pl := range result.Playlists {
 		_, err := fmt.Fprintf(tw, "%s\t%s\t%d\n", pl.Name, pl.PlaylistID, pl.Revision)
+		if err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func printPlaylistShow(result core.PlaylistShowResult) error {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+	header := "INDEX\tTITLE\tTYPE\tARTIST\tALBUM\tLEN"
+	if result.FullIDs {
+		header += "\tENTRY_ID\tITEM_ID"
+	}
+	if _, err := fmt.Fprintln(tw, header); err != nil {
+		return err
+	}
+	for idx, entry := range result.Entries {
+		title := entry.ItemID
+		typ := ""
+		artist := ""
+		album := ""
+		length := ""
+		if entry.Metadata != nil {
+			if val, ok := entry.Metadata["title"].(string); ok && val != "" {
+				title = val
+			}
+			if val, ok := entry.Metadata["mediaType"].(string); ok && val != "" {
+				typ = val
+			} else if val, ok := entry.Metadata["type"].(string); ok {
+				typ = val
+			}
+			if val, ok := entry.Metadata["artist"].(string); ok {
+				artist = val
+			}
+			if val, ok := entry.Metadata["album"].(string); ok {
+				album = val
+			}
+			length = formatDuration(entry.Metadata["durationMs"])
+		}
+		if result.FullIDs {
+			_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length, entry.EntryID, entry.ItemID)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length)
 		if err != nil {
 			return err
 		}
@@ -219,7 +301,7 @@ func printLibraryItemsOutput(result LibraryItemsOutput) error {
 	for _, item := range payload.Items {
 		artist := strings.Join(item.Artists, ", ")
 		libRef := fmt.Sprintf("lib:%s:%s", result.LibraryID, item.ItemID)
-		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, item.MediaType, artist, item.Album, item.ContainerID, item.ItemID, libRef)
+		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, item.Type, artist, item.Album, item.ContainerID, item.ItemID, libRef)
 		if err != nil {
 			return err
 		}
@@ -276,4 +358,20 @@ func formatItem(current *mu.CurrentItemState) string {
 		}
 	}
 	return current.ItemID
+}
+
+func formatDuration(value any) string {
+	switch v := value.(type) {
+	case int64:
+		return formatMS(v)
+	case int:
+		return formatMS(int64(v))
+	case float64:
+		return formatMS(int64(v))
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			return formatMS(parsed)
+		}
+	}
+	return ""
 }

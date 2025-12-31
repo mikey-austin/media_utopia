@@ -176,9 +176,11 @@ If your shell treats `-5` as a flag, use `-- -5`.
 ### 5.1 Inspect queue
 
 ```bash
-mu queue list <renderer> [--from <n>] [--count <n>] [--json]
+mu queue list <renderer> [--from <n>] [--count <n>] [--full] [--json]
 mu queue now  <renderer> [--json]
 ```
+
+`--full` shows full ids instead of truncated versions.
 
 ### 5.2 Modify queue (lease required)
 
@@ -235,28 +237,30 @@ mu queue set <renderer> --file <path>|- [--format muq|json] [--if-rev <n>]
 
 ```bash
 mu playlist ls [--server <playlistServer>] [--json]
-mu playlist show <playlistId> [--server <playlistServer>] [--json]
+mu playlist show <playlistId|name> [--server <playlistServer>] [--full] [--json]
 ```
 
 ### 6.2 Create / edit
 
 ```bash
 mu playlist create "<name>" [--server <playlistServer>] [--json]
-mu playlist add <playlistId> <item...> [--server <playlistServer>] [--json]
-mu playlist rm  <playlistId> <entryId|index...> [--server <playlistServer>] [--json]
-mu playlist rename <playlistId> "<name>" [--server <playlistServer>]
+mu playlist add <playlistId|name> <item...> [--server <playlistServer>] [--json]
+mu playlist rm  <playlistId|name> <entryId|index...> [--server <playlistServer>] [--json]
+mu playlist rename <playlistId|name> "<name>" [--server <playlistServer>]
 ```
 
 Notes:
-- `playlistId` is the full playlist URN from `mu playlist ls`.
-- Items can be URLs, mu URNs, or library refs (`lib:<selector>:<itemId>`) when used with `--resolve yes`.
+- `playlistId` is the full playlist URN from `mu playlist ls`, or the playlist name (unique within the playlist server).
+- Human output resolves library metadata; use `--json` for raw entries.
+- Use `--full` to show entry/item ids in the table.
+- Items can be URLs, mu URNs, or library refs (`lib:<selector>:<itemId>`).
 - `selector` may be a library alias, name, or full node id (URN).
-- When resolving library refs, container items (albums/artists) expand into their playable tracks.
+- Container items (albums/artists) expand into their playable tracks when added to a playlist.
 
 ### 6.3 Load playlist into renderer queue (lease required)
 
 ```bash
-mu playlist load <renderer> <playlistId> [--mode replace|append|next] [--resolve=auto|yes|no] [--server <playlistServer>]
+mu playlist load <renderer> <playlistId|name> [--mode replace|append|next] [--resolve=auto|yes|no] [--server <playlistServer>]
 ```
 
 ---

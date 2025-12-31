@@ -48,9 +48,10 @@ func playlistListCommand() *cobra.Command {
 
 func playlistShowCommand() *cobra.Command {
 	var server string
+	var full bool
 
 	cmd := &cobra.Command{
-		Use:   "show <playlistId>",
+		Use:   "show <playlistId|name>",
 		Short: "Show playlist",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,6 +59,13 @@ func playlistShowCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
+			if !app.json {
+				result, err := app.service.PlaylistShow(ctx, args[0], server, true, full)
+				if err != nil {
+					return err
+				}
+				return app.printer.Print(result)
+			}
 			result, err := app.service.PlaylistGet(ctx, args[0], server)
 			if err != nil {
 				return err
@@ -66,6 +74,7 @@ func playlistShowCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	cmd.Flags().BoolVar(&full, "full", false, "show full ids")
 	return cmd
 }
 
@@ -93,17 +102,19 @@ func playlistAddCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "add <playlistId> <item...>",
+		Use:   "add <playlistId|name> <item...>",
 		Short: "Add items to playlist",
 		Long: "Add items to a playlist.\n" +
 			"Items can be:\n" +
 			"  - http(s) URLs\n" +
 			"  - mu URNs (mu:...)\n" +
-			"  - library refs (lib:<selector>:<itemId>) with --resolve=yes\n" +
+			"  - library refs (lib:<selector>:<itemId>)\n" +
 			"    where selector can be a library alias or full nodeId\n" +
+			"    container items (albums/artists) expand into playable tracks\n" +
 			"\n" +
 			"Examples:\n" +
 			"  mu playlist add <playlistId> https://example.com/a.mp3\n" +
+			"  mu playlist add \"Evening Miles\" https://example.com/a.mp3\n" +
 			"  mu playlist add <playlistId> lib:jellyfin:ITEM_ID --resolve yes\n" +
 			"  mu playlist add <playlistId> lib:mu:library:jellyfin:ns:default:ITEM_ID --resolve yes\n",
 		Args: cobra.MinimumNArgs(2),
@@ -129,7 +140,7 @@ func playlistRemoveCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "rm <playlistId> <entryId...>",
+		Use:   "rm <playlistId|name> <entryId...>",
 		Short: "Remove items from playlist",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -150,7 +161,7 @@ func playlistLoadCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "load [renderer] <playlistId>",
+		Use:   "load [renderer] <playlistId|name>",
 		Short: "Load playlist into renderer queue",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -195,7 +206,7 @@ func playlistRenameCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "rename <playlistId> <name>",
+		Use:   "rename <playlistId|name> <name>",
 		Short: "Rename playlist",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -978,6 +978,10 @@ Reply body: same shape as `library.browse`.
 }
 ```
 
+Optional request fields:
+
+- `metadataOnly` (bool): return only metadata, skip resolving sources (faster for list views).
+
 Reply body:
 
 ```json

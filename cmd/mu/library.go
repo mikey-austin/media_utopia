@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -163,6 +164,17 @@ func libResolveCommand() *cobra.Command {
 			} else {
 				selector = args[0]
 				itemID = args[1]
+			}
+			if strings.HasPrefix(strings.TrimSpace(itemID), "lib:") {
+				ref := strings.TrimPrefix(strings.TrimSpace(itemID), "lib:")
+				idx := strings.LastIndex(ref, ":")
+				if idx <= 0 || idx >= len(ref)-1 {
+					return errors.New("invalid library ref (expected lib:<selector>:<itemId>)")
+				}
+				itemID = ref[idx+1:]
+				if selector == "" {
+					selector = ref[:idx]
+				}
 			}
 			result, err := app.service.LibraryResolve(ctx, selector, itemID)
 			if err != nil {

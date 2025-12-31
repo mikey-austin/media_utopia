@@ -261,7 +261,7 @@ func (s Service) SetVolume(ctx context.Context, selector string, arg string, mut
 }
 
 // QueueList returns a page of queue entries.
-func (s Service) QueueList(ctx context.Context, selector string, from, count int64) (QueueResult, error) {
+func (s Service) QueueList(ctx context.Context, selector string, from, count int64, resolve bool, full bool) (QueueResult, error) {
 	renderer, err := s.Resolver.ResolveRenderer(ctx, selector)
 	if err != nil {
 		return QueueResult{}, err
@@ -282,7 +282,10 @@ func (s Service) QueueList(ctx context.Context, selector string, from, count int
 	if err := json.Unmarshal(reply.Body, &body); err != nil {
 		return QueueResult{}, WrapError(ExitRuntime, "decode queue reply", err)
 	}
-	return QueueResult{RendererID: renderer.NodeID, Queue: body}, nil
+	if resolve {
+		body.Entries = s.resolveQueueEntries(ctx, body.Entries)
+	}
+	return QueueResult{RendererID: renderer.NodeID, Queue: body, FullIDs: full}, nil
 }
 
 // QueueNow returns the current queue item.
@@ -387,6 +390,10 @@ func (s Service) QueueLoadPlaylist(ctx context.Context, selector string, playlis
 	if err != nil {
 		return err
 	}
+	playlistID, err = s.resolvePlaylistID(ctx, playlistID, playlistServer)
+	if err != nil {
+		return err
+	}
 	body := mu.QueueLoadPlaylistBody{PlaylistServerID: playlistServer.NodeID, PlaylistID: playlistID, Mode: mode, Resolve: resolve}
 	cmd, err := mu.NewCommand("queue.loadPlaylist", body)
 	if err != nil {
@@ -444,6 +451,45 @@ func (s Service) PlaylistList(ctx context.Context, serverSelector string) (Playl
 	return PlaylistListResult{Playlists: body.Playlists}, nil
 }
 
+func (s Service) resolvePlaylistID(ctx context.Context, playlistRef string, server mu.Presence) (string, error) {
+	ref := strings.TrimSpace(playlistRef)
+	if ref == "" {
+		return "", &CLIError{Code: ExitUsage, Msg: "playlist id or name required"}
+	}
+	if strings.HasPrefix(ref, "mu:") {
+		return ref, nil
+	}
+	cmd, err := mu.NewCommand("playlist.list", mu.PlaylistListBody{Owner: s.Config.Identity})
+	if err != nil {
+		return "", WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, server.NodeID, cmd)
+	if err != nil {
+		return "", WrapError(ExitRuntime, "publish command", err)
+	}
+	if reply.Err != nil {
+		return "", ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	var body mu.PlaylistListReply
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		return "", WrapError(ExitRuntime, "decode playlist reply", err)
+	}
+	matches := make([]mu.PlaylistSummary, 0)
+	for _, pl := range body.Playlists {
+		if strings.EqualFold(pl.Name, ref) {
+			matches = append(matches, pl)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].PlaylistID, nil
+	}
+	if len(matches) == 0 {
+		return "", &CLIError{Code: ExitNotFound, Msg: fmt.Sprintf("playlist not found: %s", ref)}
+	}
+	return "", &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("ambiguous playlist name %q", ref)}
+}
+
 // PlaylistCreate creates a playlist.
 func (s Service) PlaylistCreate(ctx context.Context, name string, serverSelector string) error {
 	server, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
@@ -464,6 +510,10 @@ func (s Service) PlaylistGet(ctx context.Context, playlistID string, serverSelec
 	if err != nil {
 		return RawResult{}, err
 	}
+	playlistID, err = s.resolvePlaylistID(ctx, playlistID, server)
+	if err != nil {
+		return RawResult{}, err
+	}
 	cmd, err := mu.NewCommand("playlist.get", mu.PlaylistGetBody{PlaylistID: playlistID})
 	if err != nil {
 		return RawResult{}, WrapError(ExitRuntime, "build command", err)
@@ -479,9 +529,63 @@ func (s Service) PlaylistGet(ctx context.Context, playlistID string, serverSelec
 	return RawResult{Data: json.RawMessage(reply.Body)}, nil
 }
 
+// PlaylistShow fetches a playlist and resolves entry metadata.
+func (s Service) PlaylistShow(ctx context.Context, playlistID string, serverSelector string, resolve bool, full bool) (PlaylistShowResult, error) {
+	server, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
+	if err != nil {
+		return PlaylistShowResult{}, err
+	}
+	playlistID, err = s.resolvePlaylistID(ctx, playlistID, server)
+	if err != nil {
+		return PlaylistShowResult{}, err
+	}
+	cmd, err := mu.NewCommand("playlist.get", mu.PlaylistGetBody{PlaylistID: playlistID})
+	if err != nil {
+		return PlaylistShowResult{}, WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, server.NodeID, cmd)
+	if err != nil {
+		return PlaylistShowResult{}, WrapError(ExitRuntime, "publish command", err)
+	}
+	if reply.Err != nil {
+		return PlaylistShowResult{}, ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	var body playlistDetail
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		return PlaylistShowResult{}, WrapError(ExitRuntime, "decode playlist reply", err)
+	}
+	result := PlaylistShowResult{
+		PlaylistID: body.PlaylistID,
+		Name:       body.Name,
+		Entries:    make([]PlaylistEntryResult, 0, len(body.Entries)),
+		FullIDs:    full,
+	}
+	metaCache := map[string]map[string]any{}
+	for _, entry := range body.Entries {
+		if resolve && entry.Ref != nil && strings.HasPrefix(entry.Ref.ID, "lib:") {
+			meta := s.resolveLibraryMetadataCached(ctx, entry.Ref.ID, metaCache)
+			if meta != nil {
+				if expanded, ok := s.expandPlaylistEntryWithMeta(ctx, entry, meta); ok {
+					result.Entries = append(result.Entries, expanded...)
+					continue
+				}
+				result.Entries = append(result.Entries, s.playlistEntryResultWithMeta(entry, meta))
+				continue
+			}
+		}
+		result.Entries = append(result.Entries, s.playlistEntryResult(ctx, entry, resolve))
+	}
+	return result, nil
+}
+
 // PlaylistAdd adds items to a playlist.
 func (s Service) PlaylistAdd(ctx context.Context, playlistID string, items []string, resolve string, serverSelector string) error {
 	server, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
+	if err != nil {
+		return err
+	}
+	playlistID, err = s.resolvePlaylistID(ctx, playlistID, server)
 	if err != nil {
 		return err
 	}
@@ -504,6 +608,14 @@ func (s Service) PlaylistRemove(ctx context.Context, playlistID string, entryIDs
 	if err != nil {
 		return err
 	}
+	playlistID, err = s.resolvePlaylistID(ctx, playlistID, server)
+	if err != nil {
+		return err
+	}
+	entryIDs, err = s.resolvePlaylistEntryIDs(ctx, server.NodeID, playlistID, entryIDs)
+	if err != nil {
+		return err
+	}
 	body := mu.PlaylistRemoveItemsBody{PlaylistID: playlistID, EntryIDs: entryIDs}
 	cmd, err := mu.NewCommand("playlist.removeItems", body)
 	if err != nil {
@@ -516,6 +628,10 @@ func (s Service) PlaylistRemove(ctx context.Context, playlistID string, entryIDs
 // PlaylistRename renames a playlist.
 func (s Service) PlaylistRename(ctx context.Context, playlistID string, name string, serverSelector string) error {
 	server, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
+	if err != nil {
+		return err
+	}
+	playlistID, err = s.resolvePlaylistID(ctx, playlistID, server)
 	if err != nil {
 		return err
 	}
@@ -643,6 +759,16 @@ func (s Service) LibrarySearch(ctx context.Context, selector string, query strin
 
 // LibraryResolve sends library.resolve.
 func (s Service) LibraryResolve(ctx context.Context, selector string, itemID string) (LibraryResolveResult, error) {
+	if strings.HasPrefix(strings.TrimSpace(itemID), "lib:") {
+		refSelector, refItemID, err := parseLibraryRef(itemID)
+		if err != nil {
+			return LibraryResolveResult{}, err
+		}
+		itemID = refItemID
+		if selector == "" {
+			selector = refSelector
+		}
+	}
 	library, err := s.Resolver.ResolveLibrary(ctx, selector)
 	if err != nil {
 		return LibraryResolveResult{}, err
@@ -925,6 +1051,14 @@ func (s Service) buildQueueEntries(ctx context.Context, renderer mu.Presence, it
 	}
 
 	for _, item := range items {
+		if needsResolve && strings.HasPrefix(strings.TrimSpace(item), "lib:") {
+			resolved, err := s.resolveLibraryEntries(ctx, item)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, resolved...)
+			continue
+		}
 		entry, err := s.parseQueueItem(ctx, item, needsResolve)
 		if err != nil {
 			return nil, err
@@ -938,13 +1072,24 @@ func (s Service) buildPlaylistEntries(ctx context.Context, items []string, resol
 	entries := make([]mu.QueueEntry, 0, len(items))
 	needsResolve := resolve == "yes"
 	for _, item := range items {
-		if needsResolve && strings.HasPrefix(strings.TrimSpace(item), "lib:") {
-			resolved, err := s.resolveLibraryEntries(ctx, item)
+		trimmed := strings.TrimSpace(item)
+		if strings.HasPrefix(trimmed, "lib:") {
+			expanded, ok, err := s.expandPlaylistAddEntries(ctx, trimmed, needsResolve)
 			if err != nil {
 				return nil, err
 			}
-			entries = append(entries, resolved...)
-			continue
+			if ok {
+				entries = append(entries, expanded...)
+				continue
+			}
+			if needsResolve {
+				resolved, err := s.resolveLibraryEntries(ctx, trimmed)
+				if err != nil {
+					return nil, err
+				}
+				entries = append(entries, resolved...)
+				continue
+			}
 		}
 		entry, err := s.parseQueueItem(ctx, item, needsResolve)
 		if err != nil {
@@ -971,24 +1116,20 @@ func (s Service) parseQueueItem(ctx context.Context, item string, resolve bool) 
 		if err != nil {
 			return mu.QueueEntry{}, err
 		}
-		if !resolve {
-			lib, err := s.Resolver.ResolveLibrary(ctx, selector)
-			if err != nil {
-				return mu.QueueEntry{}, err
-			}
-			refID := fmt.Sprintf("lib:%s:%s", lib.NodeID, itemID)
-			return mu.QueueEntry{Ref: &mu.ItemRef{ID: refID}}, nil
-		}
-		lib, err := s.Resolver.ResolveLibrary(ctx, selector)
+		nodeID, err := s.resolveLibraryNodeID(ctx, selector)
 		if err != nil {
 			return mu.QueueEntry{}, err
+		}
+		refID := fmt.Sprintf("lib:%s:%s", nodeID, itemID)
+		if !resolve {
+			return mu.QueueEntry{Ref: &mu.ItemRef{ID: refID}}, nil
 		}
 		cmd, err := mu.NewCommand("library.resolve", mu.LibraryResolveBody{ItemID: itemID})
 		if err != nil {
 			return mu.QueueEntry{}, WrapError(ExitRuntime, "build command", err)
 		}
 		cmd = s.decorateCommand(cmd, nil, nil)
-		reply, err := s.Broker.PublishCommand(ctx, lib.NodeID, cmd)
+		reply, err := s.Broker.PublishCommand(ctx, nodeID, cmd)
 		if err != nil {
 			return mu.QueueEntry{}, WrapError(ExitRuntime, "publish command", err)
 		}
@@ -1003,7 +1144,10 @@ func (s Service) parseQueueItem(ctx context.Context, item string, resolve bool) 
 			return mu.QueueEntry{}, &CLIError{Code: ExitNotFound, Msg: "no sources returned"}
 		}
 		src := body.Sources[0]
-		return mu.QueueEntry{Resolved: &mu.ResolvedSource{URL: src.URL, Mime: src.Mime, ByteRange: src.ByteRange}}, nil
+		return mu.QueueEntry{
+			Ref:      &mu.ItemRef{ID: refID},
+			Resolved: &mu.ResolvedSource{URL: src.URL, Mime: src.Mime, ByteRange: src.ByteRange},
+		}, nil
 	}
 	if strings.HasPrefix(item, "playlist:") {
 		return mu.QueueEntry{}, &CLIError{Code: ExitUsage, Msg: "playlist references require playlist load (not supported in queue add)"}
@@ -1011,7 +1155,201 @@ func (s Service) parseQueueItem(ctx context.Context, item string, resolve bool) 
 	return mu.QueueEntry{}, &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("unsupported item: %s", item)}
 }
 
+func (s Service) resolveQueueEntries(ctx context.Context, entries []mu.QueueItem) []mu.QueueItem {
+	cache := map[string]map[string]any{}
+	for idx, entry := range entries {
+		if !strings.HasPrefix(entry.ItemID, "lib:") {
+			continue
+		}
+		if entry.Metadata != nil {
+			if _, ok := entry.Metadata["title"]; ok {
+				continue
+			}
+		}
+		meta, ok := cache[entry.ItemID]
+		if !ok {
+			meta = s.resolveLibraryMetadata(ctx, entry.ItemID)
+			cache[entry.ItemID] = meta
+		}
+		if meta == nil {
+			continue
+		}
+		if entry.Metadata == nil {
+			entry.Metadata = map[string]any{}
+		}
+		for k, v := range meta {
+			entry.Metadata[k] = v
+		}
+		entries[idx] = entry
+	}
+	return entries
+}
+
+func (s Service) resolveLibraryMetadata(ctx context.Context, ref string) map[string]any {
+	selector, itemID, err := parseLibraryRef(ref)
+	if err != nil {
+		return nil
+	}
+	nodeID, err := s.resolveLibraryNodeID(ctx, selector)
+	if err != nil {
+		return nil
+	}
+	return s.resolveLibraryMetadataByNodeID(ctx, nodeID, itemID)
+}
+
+func (s Service) resolveLibraryMetadataCached(ctx context.Context, ref string, cache map[string]map[string]any) map[string]any {
+	if cache != nil {
+		if meta, ok := cache[ref]; ok {
+			return meta
+		}
+	}
+	meta := s.resolveLibraryMetadata(ctx, ref)
+	if cache != nil {
+		cache[ref] = meta
+	}
+	return meta
+}
+
+func (s Service) playlistEntryResult(ctx context.Context, entry playlistEntry, resolve bool) PlaylistEntryResult {
+	itemID := ""
+	url := ""
+	if entry.Ref != nil {
+		itemID = entry.Ref.ID
+	}
+	if entry.Resolved != nil {
+		url = entry.Resolved.URL
+		if itemID == "" {
+			itemID = entry.Resolved.URL
+		}
+	}
+	var meta map[string]any
+	if resolve && entry.Ref != nil && strings.HasPrefix(entry.Ref.ID, "lib:") {
+		meta = s.resolveLibraryMetadata(ctx, entry.Ref.ID)
+	}
+	return PlaylistEntryResult{
+		EntryID:  entry.EntryID,
+		ItemID:   itemID,
+		Metadata: meta,
+		URL:      url,
+	}
+}
+
+func (s Service) playlistEntryResultWithMeta(entry playlistEntry, meta map[string]any) PlaylistEntryResult {
+	itemID := ""
+	url := ""
+	if entry.Ref != nil {
+		itemID = entry.Ref.ID
+	}
+	if entry.Resolved != nil {
+		url = entry.Resolved.URL
+		if itemID == "" {
+			itemID = entry.Resolved.URL
+		}
+	}
+	return PlaylistEntryResult{
+		EntryID:  entry.EntryID,
+		ItemID:   itemID,
+		Metadata: meta,
+		URL:      url,
+	}
+}
+
+func (s Service) expandPlaylistEntry(ctx context.Context, entry playlistEntry) ([]PlaylistEntryResult, bool) {
+	selector, itemID, err := parseLibraryRef(entry.Ref.ID)
+	if err != nil {
+		return nil, false
+	}
+	nodeID, err := s.resolveLibraryNodeID(ctx, selector)
+	if err != nil {
+		return nil, false
+	}
+	meta := s.resolveLibraryMetadataByNodeID(ctx, nodeID, itemID)
+	return s.expandPlaylistEntryWithMeta(ctx, entry, meta)
+}
+
+func (s Service) expandPlaylistEntryWithMeta(ctx context.Context, entry playlistEntry, meta map[string]any) ([]PlaylistEntryResult, bool) {
+	if meta == nil || !isContainerMetadata(meta) {
+		return nil, false
+	}
+	selector, itemID, err := parseLibraryRef(entry.Ref.ID)
+	if err != nil {
+		return nil, false
+	}
+	nodeID, err := s.resolveLibraryNodeID(ctx, selector)
+	if err != nil {
+		return nil, false
+	}
+	items, ok := s.browseLibraryContainer(ctx, nodeID, itemID)
+	if !ok || len(items) == 0 {
+		return nil, false
+	}
+	results := make([]PlaylistEntryResult, 0, len(items))
+	for _, child := range items {
+		if child.ItemID == "" {
+			continue
+		}
+		refID := fmt.Sprintf("lib:%s:%s", nodeID, child.ItemID)
+		meta := map[string]any{}
+		if child.Name != "" {
+			meta["title"] = child.Name
+		}
+		if child.MediaType != "" {
+			meta["mediaType"] = child.MediaType
+		}
+		if child.Type != "" {
+			meta["type"] = child.Type
+		}
+		if len(child.Artists) > 0 {
+			meta["artist"] = strings.Join(child.Artists, ", ")
+		}
+		if child.Album != "" {
+			meta["album"] = child.Album
+		}
+		if child.DurationMS > 0 {
+			meta["durationMs"] = child.DurationMS
+		}
+		results = append(results, PlaylistEntryResult{
+			EntryID:  entry.EntryID,
+			ItemID:   refID,
+			Metadata: meta,
+		})
+	}
+	if len(results) == 0 {
+		return nil, false
+	}
+	return results, true
+}
+
+type libraryItemsReply struct {
+	Items []libraryItem `json:"items"`
+}
+
+type libraryItem struct {
+	ItemID     string   `json:"itemId"`
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	MediaType  string   `json:"mediaType"`
+	Artists    []string `json:"artists,omitempty"`
+	Album      string   `json:"album,omitempty"`
+	DurationMS int64    `json:"durationMs,omitempty"`
+}
+
+type playlistDetail struct {
+	PlaylistID string          `json:"playlistId"`
+	Name       string          `json:"name"`
+	Entries    []playlistEntry `json:"entries"`
+}
+
+type playlistEntry struct {
+	EntryID  string             `json:"entryId"`
+	Ref      *mu.ItemRef        `json:"ref,omitempty"`
+	Resolved *mu.ResolvedSource `json:"resolved,omitempty"`
+}
+
 func parseLibraryRef(item string) (string, string, error) {
+	if !strings.HasPrefix(item, "lib:") {
+		return "", "", &CLIError{Code: ExitUsage, Msg: "invalid library item (expected lib:<selector>:<id>)"}
+	}
 	ref := strings.TrimPrefix(item, "lib:")
 	idx := strings.LastIndex(ref, ":")
 	if idx <= 0 || idx >= len(ref)-1 {
@@ -1020,21 +1358,181 @@ func parseLibraryRef(item string) (string, string, error) {
 	return ref[:idx], ref[idx+1:], nil
 }
 
+func (s Service) resolveLibraryNodeID(ctx context.Context, selector string) (string, error) {
+	selector = strings.TrimSpace(selector)
+	if strings.HasPrefix(selector, "mu:library:") {
+		return selector, nil
+	}
+	lib, err := s.Resolver.ResolveLibrary(ctx, selector)
+	if err != nil {
+		return "", err
+	}
+	return lib.NodeID, nil
+}
+
+func (s Service) resolveLibraryMetadataByNodeID(ctx context.Context, nodeID string, itemID string) map[string]any {
+	cmd, err := mu.NewCommand("library.resolve", mu.LibraryResolveBody{ItemID: itemID, MetadataOnly: true})
+	if err != nil {
+		return nil
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, nodeID, cmd)
+	if err != nil || reply.Err != nil {
+		return nil
+	}
+	var body mu.LibraryResolveReply
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		return nil
+	}
+	return body.Metadata
+}
+
+func (s Service) isContainerRef(ctx context.Context, nodeID string, itemID string) bool {
+	meta := s.resolveLibraryMetadataByNodeID(ctx, nodeID, itemID)
+	if meta == nil {
+		return false
+	}
+	return isContainerMetadata(meta)
+}
+
+func isContainerMetadata(meta map[string]any) bool {
+	mediaType := strings.ToLower(fmt.Sprint(meta["mediaType"]))
+	if mediaType == "audio" || mediaType == "video" {
+		return false
+	}
+	itemType := strings.ToLower(fmt.Sprint(meta["type"]))
+	switch itemType {
+	case "musicalbum", "musicartist", "artist", "album", "series", "season", "boxset", "folder", "musicgenre", "genre":
+		return true
+	case "audio", "video", "movie", "episode", "musicvideo", "trailer":
+		return false
+	}
+	if mediaType == "" && itemType == "" {
+		return false
+	}
+	return false
+}
+
+func (s Service) resolvePlaylistEntryIDs(ctx context.Context, serverID string, playlistID string, entries []string) ([]string, error) {
+	needsLookup := false
+	for _, entry := range entries {
+		if _, ok := parseIndex(entry); ok {
+			needsLookup = true
+			break
+		}
+	}
+	if !needsLookup {
+		return entries, nil
+	}
+
+	cmd, err := mu.NewCommand("playlist.get", mu.PlaylistGetBody{PlaylistID: playlistID})
+	if err != nil {
+		return nil, WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, serverID, cmd)
+	if err != nil {
+		return nil, WrapError(ExitRuntime, "publish command", err)
+	}
+	if reply.Err != nil {
+		return nil, ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	var body playlistDetail
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		return nil, WrapError(ExitRuntime, "decode playlist reply", err)
+	}
+
+	resolved := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if idx, ok := parseIndex(entry); ok {
+			if idx < 0 || idx >= len(body.Entries) {
+				return nil, &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("playlist index %d out of range", idx)}
+			}
+			resolved = append(resolved, body.Entries[idx].EntryID)
+			continue
+		}
+		resolved = append(resolved, entry)
+	}
+	return resolved, nil
+}
+
+func parseIndex(value string) (int, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	idx, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false
+	}
+	return idx, true
+}
+
+func (s Service) expandPlaylistAddEntries(ctx context.Context, item string, resolve bool) ([]mu.QueueEntry, bool, error) {
+	selector, itemID, err := parseLibraryRef(item)
+	if err != nil {
+		return nil, false, err
+	}
+	nodeID, err := s.resolveLibraryNodeID(ctx, selector)
+	if err != nil {
+		return nil, false, err
+	}
+	if !s.isContainerRef(ctx, nodeID, itemID) {
+		return nil, false, nil
+	}
+	items, ok := s.browseLibraryContainer(ctx, nodeID, itemID)
+	if !ok || len(items) == 0 {
+		return nil, false, nil
+	}
+	entries := make([]mu.QueueEntry, 0, len(items))
+	for _, child := range items {
+		if child.ItemID == "" {
+			continue
+		}
+		refID := fmt.Sprintf("lib:%s:%s", nodeID, child.ItemID)
+		entry := mu.QueueEntry{Ref: &mu.ItemRef{ID: refID}}
+		if resolve {
+			src, ok := s.resolveLibrarySource(ctx, nodeID, child.ItemID)
+			if !ok {
+				entries = append(entries, entry)
+				continue
+			}
+			entry.Resolved = &mu.ResolvedSource{URL: src.URL, Mime: src.Mime, ByteRange: src.ByteRange}
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) == 0 {
+		return nil, false, nil
+	}
+	return entries, true, nil
+}
+
 func (s Service) resolveLibraryEntries(ctx context.Context, item string) ([]mu.QueueEntry, error) {
 	selector, itemID, err := parseLibraryRef(item)
 	if err != nil {
 		return nil, err
 	}
-	lib, err := s.Resolver.ResolveLibrary(ctx, selector)
+	nodeID, err := s.resolveLibraryNodeID(ctx, selector)
 	if err != nil {
 		return nil, err
+	}
+	refID := fmt.Sprintf("lib:%s:%s", nodeID, itemID)
+	if s.isContainerRef(ctx, nodeID, itemID) {
+		if entries, ok := s.expandContainerItems(ctx, nodeID, itemID); ok {
+			return entries, nil
+		}
 	}
 	cmd, err := mu.NewCommand("library.resolve", mu.LibraryResolveBody{ItemID: itemID})
 	if err != nil {
 		return nil, WrapError(ExitRuntime, "build command", err)
 	}
 	cmd = s.decorateCommand(cmd, nil, nil)
-	reply, err := s.Broker.PublishCommand(ctx, lib.NodeID, cmd)
+	reply, err := s.Broker.PublishCommand(ctx, nodeID, cmd)
 	if err != nil {
 		return nil, WrapError(ExitRuntime, "publish command", err)
 	}
@@ -1050,9 +1548,78 @@ func (s Service) resolveLibraryEntries(ctx context.Context, item string) ([]mu.Q
 	}
 	entries := make([]mu.QueueEntry, 0, len(body.Sources))
 	for _, src := range body.Sources {
-		entries = append(entries, mu.QueueEntry{Resolved: &mu.ResolvedSource{URL: src.URL, Mime: src.Mime, ByteRange: src.ByteRange}})
+		entries = append(entries, mu.QueueEntry{
+			Ref:      &mu.ItemRef{ID: refID},
+			Resolved: &mu.ResolvedSource{URL: src.URL, Mime: src.Mime, ByteRange: src.ByteRange},
+		})
 	}
 	return entries, nil
+}
+
+func (s Service) expandContainerItems(ctx context.Context, nodeID string, itemID string) ([]mu.QueueEntry, bool) {
+	if !s.isContainerRef(ctx, nodeID, itemID) {
+		return nil, false
+	}
+	items, ok := s.browseLibraryContainer(ctx, nodeID, itemID)
+	if !ok || len(items) == 0 {
+		return nil, false
+	}
+	entries := make([]mu.QueueEntry, 0, len(items))
+	for _, child := range items {
+		if child.ItemID == "" {
+			continue
+		}
+		refID := fmt.Sprintf("lib:%s:%s", nodeID, child.ItemID)
+		src, ok := s.resolveLibrarySource(ctx, nodeID, child.ItemID)
+		if !ok {
+			continue
+		}
+		entries = append(entries, mu.QueueEntry{
+			Ref:      &mu.ItemRef{ID: refID},
+			Resolved: &mu.ResolvedSource{URL: src.URL, Mime: src.Mime, ByteRange: src.ByteRange},
+		})
+	}
+	if len(entries) == 0 {
+		return nil, false
+	}
+	return entries, true
+}
+
+func (s Service) resolveLibrarySource(ctx context.Context, nodeID string, itemID string) (mu.ResolvedSource, bool) {
+	cmd, err := mu.NewCommand("library.resolve", mu.LibraryResolveBody{ItemID: itemID})
+	if err != nil {
+		return mu.ResolvedSource{}, false
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, nodeID, cmd)
+	if err != nil || reply.Err != nil {
+		return mu.ResolvedSource{}, false
+	}
+	var body mu.LibraryResolveReply
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		return mu.ResolvedSource{}, false
+	}
+	if len(body.Sources) == 0 {
+		return mu.ResolvedSource{}, false
+	}
+	return body.Sources[0], true
+}
+
+func (s Service) browseLibraryContainer(ctx context.Context, nodeID string, containerID string) ([]libraryItem, bool) {
+	cmd, err := mu.NewCommand("library.browse", mu.LibraryBrowseBody{ContainerID: containerID, Start: 0, Count: 500})
+	if err != nil {
+		return nil, false
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, nodeID, cmd)
+	if err != nil || reply.Err != nil {
+		return nil, false
+	}
+	var payload libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		return nil, false
+	}
+	return payload.Items, true
 }
 
 func rendererCanResolve(renderer mu.Presence) bool {

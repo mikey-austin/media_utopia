@@ -186,18 +186,22 @@ func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
 		replyTopic: "mu/v1/reply/test",
 	}
 
-	replyBody, err := json.Marshal(mu.LibraryResolveReply{
-		ItemID: "album-1",
+	browseBody, err := json.Marshal(libraryItemsReply{Items: []libraryItem{{ItemID: "track-1"}, {ItemID: "track-2"}}})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+	resolveBody, err := json.Marshal(mu.LibraryResolveReply{
+		ItemID: "track-1",
 		Sources: []mu.ResolvedSource{
 			{URL: "http://a", Mime: "audio/mp3", ByteRange: true},
-			{URL: "http://b", Mime: "audio/mp3", ByteRange: true},
 		},
 	})
 	if err != nil {
 		t.Fatalf("marshal reply: %v", err)
 	}
 	broker.replies = map[string]mu.ReplyEnvelope{
-		"library.resolve":   {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: replyBody},
+		"library.browse":    {ID: "id-0", Type: "ack", OK: true, TS: 101, Body: browseBody},
+		"library.resolve":   {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: resolveBody},
 		"playlist.addItems": {ID: "id-2", Type: "ack", OK: true, TS: 101},
 	}
 
@@ -223,6 +227,59 @@ func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
 	}
 	if len(body.Entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(body.Entries))
+	}
+	if body.Entries[0].Ref == nil || body.Entries[1].Ref == nil {
+		t.Fatalf("expected playlist entries to have refs")
+	}
+	if body.Entries[0].Ref.ID != "lib:mu:library:jellyfin:test:track-1" {
+		t.Fatalf("unexpected first ref id: %s", body.Entries[0].Ref.ID)
+	}
+	if body.Entries[1].Ref.ID != "lib:mu:library:jellyfin:test:track-2" {
+		t.Fatalf("unexpected second ref id: %s", body.Entries[1].Ref.ID)
+	}
+}
+
+func TestPlaylistGetResolvesName(t *testing.T) {
+	server := mu.Presence{NodeID: "mu:playlist:plsrv:default:main", Kind: "playlist", Name: "Main"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{server},
+		replyTopic: "mu/v1/reply/test",
+	}
+
+	listBody, err := json.Marshal(mu.PlaylistListReply{Playlists: []mu.PlaylistSummary{{PlaylistID: "pl-1", Name: "Evening"}}})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+	getBody, err := json.Marshal(map[string]any{"playlistId": "pl-1"})
+	if err != nil {
+		t.Fatalf("marshal get: %v", err)
+	}
+	broker.replies = map[string]mu.ReplyEnvelope{
+		"playlist.list": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: listBody},
+		"playlist.get":  {ID: "id-2", Type: "ack", OK: true, TS: 101, Body: getBody},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	if _, err := service.PlaylistGet(context.Background(), "Evening", ""); err != nil {
+		t.Fatalf("PlaylistGet: %v", err)
+	}
+	if broker.lastCmd.Type != "playlist.get" {
+		t.Fatalf("expected playlist.get, got %s", broker.lastCmd.Type)
+	}
+	var body mu.PlaylistGetBody
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.PlaylistID != "pl-1" {
+		t.Fatalf("expected playlist id pl-1")
 	}
 }
 

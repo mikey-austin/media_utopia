@@ -32,6 +32,7 @@ func queueCommand() *cobra.Command {
 func queueListCommand() *cobra.Command {
 	var from int64
 	var count int64
+	var full bool
 
 	cmd := &cobra.Command{
 		Use:   "list [renderer]",
@@ -46,7 +47,7 @@ func queueListCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			result, err := app.service.QueueList(ctx, selector, from, count)
+			result, err := app.service.QueueList(ctx, selector, from, count, !app.json, full)
 			if err != nil {
 				return err
 			}
@@ -56,6 +57,7 @@ func queueListCommand() *cobra.Command {
 
 	cmd.Flags().Int64Var(&from, "from", 0, "start index")
 	cmd.Flags().Int64Var(&count, "count", 50, "number of entries")
+	cmd.Flags().BoolVar(&full, "full", false, "show full ids")
 	return cmd
 }
 

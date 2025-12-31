@@ -157,7 +157,7 @@ func (m *Module) libraryBrowse(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	items, total, err := m.fetchItems(body.ContainerID, body.Start, body.Count, "")
+	items, total, err := m.fetchItems(body.ContainerID, body.Start, body.Count, "", false)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
@@ -171,7 +171,7 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	items, total, err := m.fetchItems("", body.Start, body.Count, body.Query)
+	items, total, err := m.fetchItems("", body.Start, body.Count, body.Query, true)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
@@ -207,9 +207,19 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 		metadata["artworkUrl"] = m.imageURL(item.ID)
 	}
 
-	sources, err := m.resolveSources(item)
-	if err != nil {
-		return errorReply(cmd, "INVALID", err.Error())
+	sources := []mu.ResolvedSource{}
+	if !body.MetadataOnly {
+		var meta map[string]any
+		var err error
+		sources, meta, err = m.resolveSources(item)
+		if err != nil {
+			return errorReply(cmd, "INVALID", err.Error())
+		}
+		for k, v := range meta {
+			if v != nil {
+				metadata[k] = v
+			}
+		}
 	}
 
 	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
@@ -268,12 +278,14 @@ type jfMediaSource struct {
 	SupportsDirectStream bool   `json:"SupportsDirectStream"`
 }
 
-func (m *Module) fetchItems(containerID string, start int64, count int64, search string) ([]libraryItem, int64, error) {
+func (m *Module) fetchItems(containerID string, start int64, count int64, search string, recursive bool) ([]libraryItem, int64, error) {
 	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
 	params := url.Values{}
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	params.Set("Limit", fmt.Sprintf("%d", count))
-	params.Set("Recursive", "true")
+	if recursive {
+		params.Set("Recursive", "true")
+	}
 	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags")
 	params.Set("IncludeItemTypes", "Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video")
 	if containerID != "" {
@@ -374,38 +386,57 @@ func (m *Module) resolveSource(itemID string, item jfItem) (mu.ResolvedSource, e
 	}, nil
 }
 
-func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, error) {
+func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, map[string]any, error) {
 	if !isContainerItem(item) {
 		source, err := m.resolveSource(item.ID, item)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return []mu.ResolvedSource{source}, nil
+		return []mu.ResolvedSource{source}, nil, nil
 	}
 
 	children, err := m.fetchChildItems(item.ID, 0, 500)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(children) == 0 {
-		return nil, errors.New("container has no playable items")
+		return []mu.ResolvedSource{}, nil, nil
 	}
 
 	sources := make([]mu.ResolvedSource, 0, len(children))
+	meta := map[string]any{}
 	for _, child := range children {
 		if isContainerItem(child) {
 			continue
 		}
+		if child.MediaType != "" {
+			meta["mediaType"] = child.MediaType
+		}
+		if child.Type != "" {
+			meta["type"] = child.Type
+		}
+		if child.RunTimeTicks > 0 {
+			meta["durationMs"] = ticksToMS(child.RunTimeTicks)
+		}
+		if len(child.Artists) > 0 {
+			meta["artist"] = strings.Join(child.Artists, ", ")
+		}
+		if child.Album != "" {
+			meta["album"] = child.Album
+		}
+		if child.Name != "" {
+			meta["title"] = child.Name
+		}
 		source, err := m.resolveSource(child.ID, child)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		sources = append(sources, source)
 	}
 	if len(sources) == 0 {
-		return nil, errors.New("container has no playable items")
+		return []mu.ResolvedSource{}, meta, nil
 	}
-	return sources, nil
+	return sources, meta, nil
 }
 
 func (m *Module) doJSON(method string, endpoint string, params url.Values, body any, out any) error {
@@ -496,10 +527,10 @@ func isContainerItem(item jfItem) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(item.Type)) {
-	case "musicalbum", "musicalartist", "album", "artist":
+	case "musicalbum", "musicartist", "album", "artist", "series", "season", "boxset", "folder", "collectionfolder", "playlist":
 		return true
 	default:
-		return true
+		return false
 	}
 }
 
