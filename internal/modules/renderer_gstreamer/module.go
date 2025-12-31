@@ -135,7 +135,7 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
-	if cmd.Type == "queue.loadPlaylist" {
+	if cmd.Type == "queue.loadPlaylist" || cmd.Type == "queue.loadSnapshot" {
 		go m.handleLoadCommand(cmd)
 		return
 	}
@@ -230,7 +230,7 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 	case "queue.loadPlaylist":
 		return m.handleQueueLoadPlaylist(cmd, reply)
 	case "queue.loadSnapshot":
-		return errorReply(cmd, "INVALID", "queue.loadSnapshot not supported")
+		return m.handleQueueLoadSnapshot(cmd, reply)
 	default:
 		return m.engine.HandleCommand(cmd)
 	}
@@ -299,6 +299,78 @@ func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope, reply mu.ReplyE
 	}
 }
 
+func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.QueueLoadSnapshotBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if cmd.Lease == nil {
+		return errorReply(cmd, "LEASE_REQUIRED", "lease required")
+	}
+	if err := m.engine.Leases.Require(cmd.Lease.SessionID, cmd.Lease.Token); err != nil {
+		return errorReply(cmd, "LEASE_REQUIRED", err.Error())
+	}
+	if strings.TrimSpace(body.PlaylistServerID) == "" || strings.TrimSpace(body.SnapshotID) == "" {
+		return errorReply(cmd, "INVALID", "playlistServerId and snapshotId required")
+	}
+	mode := body.Mode
+	if mode == "" {
+		mode = "replace"
+	}
+
+	items, capture, err := m.fetchSnapshotItems(cmd.From, body.PlaylistServerID, body.SnapshotID)
+	if err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	entries, err := m.buildSnapshotEntries(cmd.From, items, body.Resolve)
+	if err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+
+	switch mode {
+	case "replace":
+		payload, _ := json.Marshal(mu.QueueSetBody{StartIndex: capture.Index, Entries: entries})
+		queueCmd := mu.CommandEnvelope{
+			ID:    cmd.ID,
+			Type:  "queue.set",
+			TS:    time.Now().Unix(),
+			From:  cmd.From,
+			Lease: cmd.Lease,
+			Body:  payload,
+		}
+		reply = m.engine.HandleCommand(queueCmd)
+	case "append":
+		payload, _ := json.Marshal(mu.QueueAddBody{Position: "end", Entries: entries})
+		queueCmd := mu.CommandEnvelope{
+			ID:    cmd.ID,
+			Type:  "queue.add",
+			TS:    time.Now().Unix(),
+			From:  cmd.From,
+			Lease: cmd.Lease,
+			Body:  payload,
+		}
+		reply = m.engine.HandleCommand(queueCmd)
+	case "next":
+		payload, _ := json.Marshal(mu.QueueAddBody{Position: "next", Entries: entries})
+		queueCmd := mu.CommandEnvelope{
+			ID:    cmd.ID,
+			Type:  "queue.add",
+			TS:    time.Now().Unix(),
+			From:  cmd.From,
+			Lease: cmd.Lease,
+			Body:  payload,
+		}
+		reply = m.engine.HandleCommand(queueCmd)
+	default:
+		return errorReply(cmd, "INVALID", "mode must be replace|append|next")
+	}
+
+	m.engine.Queue.SetRepeat(capture.Repeat)
+	m.engine.State.Playback.PositionMS = capture.PositionMS
+	m.engine.State.TS = time.Now().Unix()
+	return reply
+}
+
 type playlistReply struct {
 	Entries []playlistEntry `json:"entries"`
 }
@@ -346,6 +418,54 @@ func (m *Module) fetchPlaylistEntries(owner string, serverID string, playlistID 
 	return entries, nil
 }
 
+func (m *Module) fetchSnapshotItems(owner string, serverID string, snapshotID string) ([]string, mu.SnapshotCapture, error) {
+	reply, err := m.publishCommand(serverID, owner, "snapshot.get", mu.SnapshotGetBody{SnapshotID: snapshotID})
+	if err != nil {
+		return nil, mu.SnapshotCapture{}, err
+	}
+	if reply.Err != nil {
+		return nil, mu.SnapshotCapture{}, fmt.Errorf("%s", reply.Err.Message)
+	}
+	var payload mu.SnapshotGetReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		return nil, mu.SnapshotCapture{}, errors.New("invalid snapshot reply")
+	}
+	return payload.Items, payload.Capture, nil
+}
+
+func (m *Module) buildSnapshotEntries(owner string, items []string, resolve string) ([]mu.QueueEntry, error) {
+	needsResolve := resolve != "no"
+	entries := make([]mu.QueueEntry, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
+			entries = append(entries, mu.QueueEntry{Resolved: &mu.ResolvedSource{URL: item, ByteRange: false}})
+			continue
+		}
+		if strings.HasPrefix(item, "lib:") {
+			if !needsResolve {
+				return nil, errors.New("snapshot contains unresolved refs; load with --resolve yes")
+			}
+			resolved, err := m.resolveRef(owner, item)
+			if err != nil {
+				return nil, err
+			}
+			for _, source := range resolved {
+				entries = append(entries, mu.QueueEntry{Ref: &mu.ItemRef{ID: item}, Resolved: &source})
+			}
+			continue
+		}
+		if strings.HasPrefix(item, "mu:") {
+			return nil, errors.New("snapshot contains mu URN; load with --resolve yes")
+		}
+		return nil, errors.New("unsupported snapshot item")
+	}
+	return entries, nil
+}
+
 func (m *Module) publishCommand(targetID string, owner string, cmdType string, body any) (mu.ReplyEnvelope, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -389,7 +509,7 @@ func (m *Module) publishCommand(targetID string, owner string, cmdType string, b
 	select {
 	case reply := <-replyCh:
 		return reply, nil
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		return mu.ReplyEnvelope{}, errors.New("timeout waiting for playlist server")
 	}
 }

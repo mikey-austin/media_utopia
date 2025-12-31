@@ -191,7 +191,8 @@ func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
 		t.Fatalf("marshal reply: %v", err)
 	}
 	resolveBody, err := json.Marshal(mu.LibraryResolveReply{
-		ItemID: "track-1",
+		ItemID:   "album-1",
+		Metadata: map[string]any{"type": "MusicAlbum"},
 		Sources: []mu.ResolvedSource{
 			{URL: "http://a", Mime: "audio/mp3", ByteRange: true},
 		},
@@ -199,7 +200,12 @@ func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal reply: %v", err)
 	}
+	listBody, err := json.Marshal(mu.PlaylistListReply{Playlists: []mu.PlaylistSummary{{PlaylistID: "pl-1", Name: "pl-1"}}})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
 	broker.replies = map[string]mu.ReplyEnvelope{
+		"playlist.list":     {ID: "id-0", Type: "ack", OK: true, TS: 101, Body: listBody},
 		"library.browse":    {ID: "id-0", Type: "ack", OK: true, TS: 101, Body: browseBody},
 		"library.resolve":   {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: resolveBody},
 		"playlist.addItems": {ID: "id-2", Type: "ack", OK: true, TS: 101},

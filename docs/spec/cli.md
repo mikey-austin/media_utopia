@@ -277,6 +277,7 @@ mu snapshot save <renderer> "<name>" [--server <playlistServer>] [--json]
 
 ```bash
 mu snapshot ls [--server <playlistServer>] [--json]
+mu snapshot rm <snapshotId|name> [--server <playlistServer>]
 mu snapshot load <renderer> <snapshotId> [--mode replace|append|next] [--resolve=auto|yes|no] [--server <playlistServer>]
 ```
 

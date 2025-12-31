@@ -62,7 +62,13 @@ func TestSnapshotSaveAndList(t *testing.T) {
 		Type: "snapshot.save",
 		TS:   time.Now().Unix(),
 		From: "tester",
-		Body: mustJSON(mu.SnapshotSaveBody{Name: "Friday", RendererID: "r", SessionID: "s", Capture: mu.SnapshotCapture{}}),
+		Body: mustJSON(mu.SnapshotSaveBody{
+			Name:       "Friday",
+			RendererID: "r",
+			SessionID:  "s",
+			Capture:    mu.SnapshotCapture{},
+			Items:      []string{"lib:mu:library:test:one", "http://example.com/a.mp3"},
+		}),
 	}
 
 	reply := module.snapshotSave(cmd, mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true})
@@ -77,6 +83,34 @@ func TestSnapshotSaveAndList(t *testing.T) {
 	}
 	if len(out.Snapshots) != 1 {
 		t.Fatalf("expected 1 snapshot")
+	}
+
+	getCmd := mu.CommandEnvelope{
+		ID:   "id-2",
+		Type: "snapshot.get",
+		TS:   time.Now().Unix(),
+		From: "tester",
+		Body: mustJSON(mu.SnapshotGetBody{SnapshotID: out.Snapshots[0].SnapshotID}),
+	}
+	getReply := module.snapshotGet(getCmd, mu.ReplyEnvelope{ID: getCmd.ID, Type: "ack", OK: true})
+	var getOut mu.SnapshotGetReply
+	if err := json.Unmarshal(getReply.Body, &getOut); err != nil {
+		t.Fatalf("decode get reply: %v", err)
+	}
+	if len(getOut.Items) != 2 {
+		t.Fatalf("expected 2 snapshot items")
+	}
+
+	rmCmd := mu.CommandEnvelope{
+		ID:   "id-3",
+		Type: "snapshot.remove",
+		TS:   time.Now().Unix(),
+		From: "tester",
+		Body: mustJSON(mu.SnapshotRemoveBody{SnapshotID: out.Snapshots[0].SnapshotID}),
+	}
+	rmReply := module.snapshotRemove(rmCmd, mu.ReplyEnvelope{ID: rmCmd.ID, Type: "ack", OK: true})
+	if rmReply.Type != "ack" {
+		t.Fatalf("expected ack remove")
 	}
 }
 

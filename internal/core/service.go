@@ -422,11 +422,15 @@ func (s Service) QueueLoadSnapshot(ctx context.Context, selector string, snapsho
 	if err != nil {
 		return err
 	}
-	lease, err := s.lookupLease(renderer.NodeID)
+	playlistServer, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
 	if err != nil {
 		return err
 	}
-	playlistServer, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
+	snapshotID, err = s.resolveSnapshotID(ctx, snapshotID, playlistServer)
+	if err != nil {
+		return err
+	}
+	lease, err := s.lookupLease(renderer.NodeID)
 	if err != nil {
 		return err
 	}
@@ -501,6 +505,41 @@ func (s Service) resolvePlaylistID(ctx context.Context, playlistRef string, serv
 		return "", &CLIError{Code: ExitNotFound, Msg: fmt.Sprintf("playlist not found: %s", ref)}
 	}
 	return "", &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("ambiguous playlist name %q", ref)}
+}
+
+func (s Service) resolveSnapshotID(ctx context.Context, snapshotRef string, server mu.Presence) (string, error) {
+	if strings.HasPrefix(snapshotRef, "mu:") {
+		return snapshotRef, nil
+	}
+	cmd, err := mu.NewCommand("snapshot.list", mu.SnapshotListBody{Owner: s.Config.Identity})
+	if err != nil {
+		return "", WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, server.NodeID, cmd)
+	if err != nil {
+		return "", WrapError(ExitRuntime, "publish command", err)
+	}
+	if reply.Err != nil {
+		return "", ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	var body mu.SnapshotListReply
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		return "", WrapError(ExitRuntime, "decode snapshot reply", err)
+	}
+	matches := make([]mu.SnapshotSummary, 0)
+	for _, snap := range body.Snapshots {
+		if strings.EqualFold(snap.Name, snapshotRef) || strings.EqualFold(snap.SnapshotID, snapshotRef) {
+			matches = append(matches, snap)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0].SnapshotID, nil
+	}
+	if len(matches) == 0 {
+		return "", &CLIError{Code: ExitNotFound, Msg: fmt.Sprintf("no snapshot match for %q", snapshotRef)}
+	}
+	return "", &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("ambiguous snapshot %q", snapshotRef)}
 }
 
 // PlaylistCreate creates a playlist.
@@ -674,6 +713,31 @@ func (s Service) SnapshotSave(ctx context.Context, selector string, name string,
 	if state.Session == nil || state.Queue == nil || state.Playback == nil {
 		return &CLIError{Code: ExitRuntime, Msg: "renderer state incomplete"}
 	}
+	items := make([]string, 0)
+	if state.Queue.Length > 0 {
+		queueCmd, err := mu.NewCommand("queue.get", mu.QueueGetBody{From: 0, Count: state.Queue.Length})
+		if err != nil {
+			return WrapError(ExitRuntime, "build queue command", err)
+		}
+		queueCmd = s.decorateCommand(queueCmd, &lease, nil)
+		queueReply, err := s.Broker.PublishCommand(ctx, renderer.NodeID, queueCmd)
+		if err != nil {
+			return WrapError(ExitRuntime, "publish queue command", err)
+		}
+		if queueReply.Err != nil {
+			return ErrorForReplyCode(queueReply.Err.Code, queueReply.Err.Message)
+		}
+		var queueBody mu.QueueGetReply
+		if err := json.Unmarshal(queueReply.Body, &queueBody); err != nil {
+			return WrapError(ExitRuntime, "decode queue reply", err)
+		}
+		for _, entry := range queueBody.Entries {
+			if strings.TrimSpace(entry.ItemID) == "" {
+				continue
+			}
+			items = append(items, entry.ItemID)
+		}
+	}
 	server, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
 	if err != nil {
 		return err
@@ -689,12 +753,13 @@ func (s Service) SnapshotSave(ctx context.Context, selector string, name string,
 			Repeat:        false,
 			Shuffle:       false,
 		},
+		Items: items,
 	}
 	cmd, err := mu.NewCommand("snapshot.save", body)
 	if err != nil {
 		return WrapError(ExitRuntime, "build command", err)
 	}
-	cmd = s.decorateCommand(cmd, &lease, nil)
+	cmd = s.decorateCommand(cmd, nil, nil)
 	return s.publishSimple(ctx, server.NodeID, cmd)
 }
 
@@ -721,6 +786,24 @@ func (s Service) SnapshotList(ctx context.Context, serverSelector string) (Snaps
 		return SnapshotListResult{}, WrapError(ExitRuntime, "decode snapshot reply", err)
 	}
 	return SnapshotListResult{Snapshots: body.Snapshots}, nil
+}
+
+// SnapshotRemove removes a snapshot by id or name.
+func (s Service) SnapshotRemove(ctx context.Context, snapshotID string, serverSelector string) error {
+	server, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
+	if err != nil {
+		return err
+	}
+	snapshotID, err = s.resolveSnapshotID(ctx, snapshotID, server)
+	if err != nil {
+		return err
+	}
+	cmd, err := mu.NewCommand("snapshot.remove", mu.SnapshotRemoveBody{SnapshotID: snapshotID})
+	if err != nil {
+		return WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	return s.publishSimple(ctx, server.NodeID, cmd)
 }
 
 // LibraryList returns library nodes.

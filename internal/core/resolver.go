@@ -35,9 +35,6 @@ func (r Resolver) resolveByKind(ctx context.Context, selector string, kind strin
 	if selector == "" {
 		selector = def
 	}
-	if selector == "" {
-		return mu.Presence{}, &CLIError{Code: ExitUsage, Msg: "selector required"}
-	}
 
 	presence, err := r.Presence.ListPresence(ctx)
 	if err != nil {
@@ -45,6 +42,12 @@ func (r Resolver) resolveByKind(ctx context.Context, selector string, kind strin
 	}
 
 	filtered := filterPresenceByKind(presence, kind)
+	if selector == "" {
+		if len(filtered) == 1 {
+			return filtered[0], nil
+		}
+		return mu.Presence{}, &CLIError{Code: ExitUsage, Msg: "selector required"}
+	}
 	return resolveSelector(selector, filtered, r.Config.Aliases)
 }
 

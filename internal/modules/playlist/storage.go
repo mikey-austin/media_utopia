@@ -55,6 +55,7 @@ type Snapshot struct {
 	RendererID string             `json:"rendererId"`
 	SessionID  string             `json:"sessionId"`
 	Capture    mu.SnapshotCapture `json:"capture"`
+	Items      []string           `json:"items,omitempty"`
 	CreatedAt  int64              `json:"createdAt"`
 	UpdatedAt  int64              `json:"updatedAt"`
 }
@@ -186,6 +187,14 @@ func (s *Storage) GetSnapshot(id string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	return snap, nil
+}
+
+// RemoveSnapshot deletes a snapshot by id.
+func (s *Storage) RemoveSnapshot(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return os.Remove(s.snapshotPath(id))
 }
 
 // ListSuggestions returns suggestion summaries.

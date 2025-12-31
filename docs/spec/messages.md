@@ -780,12 +780,77 @@ mu/v1/node/P/cmd
       "positionMs": 64213,
       "repeat": false,
       "shuffle": false
-    }
+    },
+    "items": [
+      "lib:mu:library:jellyfin:home:default:track-1",
+      "http://example.com/audio.mp3"
+    ]
   }
 }
 ```
 
-### 11.3 `queue.loadSnapshot` (renderer command)
+### 11.3 `snapshot.get` (playlist server command)
+
+Topic:
+
+```
+mu/v1/node/P/cmd
+```
+
+```json
+{
+  "id": "sngt...",
+  "type": "snapshot.get",
+  "ts": 1735580710,
+  "from": "mikey@pixel",
+  "replyTo": "mu/v1/reply/mu-4242-a1b2c3",
+  "body": { "snapshotId": "mu:snapshot:plsrv:default:snap-20251228-001" }
+}
+```
+
+Reply body:
+
+```json
+{
+  "snapshotId": "mu:snapshot:plsrv:default:snap-20251228-001",
+  "name": "Friday night",
+  "revision": 3,
+  "items": [
+    "lib:mu:library:jellyfin:home:default:track-1",
+    "http://example.com/audio.mp3"
+  ],
+  "capture": {
+    "queueRevision": 103,
+    "index": 3,
+    "positionMs": 64213,
+    "repeat": false,
+    "shuffle": false
+  }
+}
+```
+
+### 11.4 `snapshot.remove` (playlist server command)
+
+Topic:
+
+```
+mu/v1/node/P/cmd
+```
+
+```json
+{
+  "id": "snrm...",
+  "type": "snapshot.remove",
+  "ts": 1735580720,
+  "from": "mikey@pixel",
+  "replyTo": "mu/v1/reply/mu-4242-a1b2c3",
+  "body": { "snapshotId": "mu:snapshot:plsrv:default:snap-20251228-001" }
+}
+```
+
+Reply body: empty on success.
+
+### 11.5 `queue.loadSnapshot` (renderer command)
 
 Topic:
 

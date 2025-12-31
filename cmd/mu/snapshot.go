@@ -16,6 +16,7 @@ func snapshotCommand() *cobra.Command {
 	cmd.AddCommand(snapshotSaveCommand())
 	cmd.AddCommand(snapshotLoadCommand())
 	cmd.AddCommand(snapshotListCommand())
+	cmd.AddCommand(snapshotRemoveCommand())
 
 	return cmd
 }
@@ -112,6 +113,25 @@ func snapshotListCommand() *cobra.Command {
 				return err
 			}
 			return app.printer.Print(result)
+		},
+	}
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}
+
+func snapshotRemoveCommand() *cobra.Command {
+	var server string
+
+	cmd := &cobra.Command{
+		Use:   "rm <snapshotId|name>",
+		Short: "Remove snapshot",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			return app.service.SnapshotRemove(ctx, args[0], server)
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")

@@ -146,6 +146,10 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.snapshotSave(cmd, reply)
 	case "snapshot.list":
 		return m.snapshotList(cmd, reply)
+	case "snapshot.get":
+		return m.snapshotGet(cmd, reply)
+	case "snapshot.remove":
+		return m.snapshotRemove(cmd, reply)
 	case "suggest.list":
 		return m.suggestList(cmd, reply)
 	case "suggest.get":
@@ -328,6 +332,7 @@ func (m *Module) snapshotSave(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu
 		RendererID: body.RendererID,
 		SessionID:  body.SessionID,
 		Capture:    body.Capture,
+		Items:      body.Items,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -349,6 +354,49 @@ func (m *Module) snapshotList(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu
 	}
 	payload, _ := json.Marshal(out)
 	reply.Body = payload
+	return reply
+}
+
+func (m *Module) snapshotGet(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.SnapshotGetBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if strings.TrimSpace(body.SnapshotID) == "" {
+		return errorReply(cmd, "INVALID", "snapshotId required")
+	}
+	snap, err := m.storage.GetSnapshot(body.SnapshotID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errorReply(cmd, "NOT_FOUND", "snapshot not found")
+		}
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	payload, _ := json.Marshal(mu.SnapshotGetReply{
+		SnapshotID: snap.SnapshotID,
+		Name:       snap.Name,
+		Revision:   snap.Revision,
+		Items:      snap.Items,
+		Capture:    snap.Capture,
+	})
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) snapshotRemove(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.SnapshotRemoveBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if strings.TrimSpace(body.SnapshotID) == "" {
+		return errorReply(cmd, "INVALID", "snapshotId required")
+	}
+	if err := m.storage.RemoveSnapshot(body.SnapshotID); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errorReply(cmd, "NOT_FOUND", "snapshot not found")
+		}
+		return errorReply(cmd, "INVALID", err.Error())
+	}
 	return reply
 }
 

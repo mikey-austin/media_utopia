@@ -171,7 +171,7 @@ func (e *Engine) handleQueueSet(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
 	entries := toQueueEntries(body.Entries)
-	if err := e.Queue.Set(entries, cmd.IfRevision); err != nil {
+	if err := e.Queue.Set(entries, body.StartIndex, cmd.IfRevision); err != nil {
 		return errorReply(cmd, "CONFLICT", err.Error())
 	}
 	e.bumpQueue()

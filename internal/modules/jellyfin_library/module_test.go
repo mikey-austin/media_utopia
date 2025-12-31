@@ -250,7 +250,7 @@ func TestLibrarySearchRespectsTimeout(t *testing.T) {
 		},
 	}
 
-	_, _, err := module.fetchItems("", 0, 10, "")
+	_, _, err := module.fetchItems("", 0, 10, "", nil, true)
 	if err == nil {
 		t.Fatalf("expected timeout error")
 	}

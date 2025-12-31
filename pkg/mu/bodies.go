@@ -197,6 +197,7 @@ type SnapshotSaveBody struct {
 	RendererID string          `json:"rendererId"`
 	SessionID  string          `json:"sessionId"`
 	Capture    SnapshotCapture `json:"capture"`
+	Items      []string        `json:"items,omitempty"`
 }
 
 // SnapshotCapture is the session queue capture.
@@ -216,6 +217,25 @@ type SnapshotListBody struct {
 // SnapshotListReply is the reply for snapshot.list.
 type SnapshotListReply struct {
 	Snapshots []SnapshotSummary `json:"snapshots"`
+}
+
+// SnapshotRemoveBody is the payload for snapshot.remove.
+type SnapshotRemoveBody struct {
+	SnapshotID string `json:"snapshotId"`
+}
+
+// SnapshotGetBody is the payload for snapshot.get.
+type SnapshotGetBody struct {
+	SnapshotID string `json:"snapshotId"`
+}
+
+// SnapshotGetReply is the reply for snapshot.get.
+type SnapshotGetReply struct {
+	SnapshotID string          `json:"snapshotId"`
+	Name       string          `json:"name"`
+	Revision   int64           `json:"revision"`
+	Items      []string        `json:"items,omitempty"`
+	Capture    SnapshotCapture `json:"capture"`
 }
 
 // SnapshotSummary describes a saved snapshot.

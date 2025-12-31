@@ -48,7 +48,7 @@ func (q *Queue) Snapshot(from int64, count int64) mu.QueueGetReply {
 }
 
 // Set replaces the queue atomically.
-func (q *Queue) Set(entries []QueueEntry, ifRevision *int64) error {
+func (q *Queue) Set(entries []QueueEntry, startIndex int64, ifRevision *int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -56,7 +56,7 @@ func (q *Queue) Set(entries []QueueEntry, ifRevision *int64) error {
 		return errors.New("revision mismatch")
 	}
 	q.entries = entries
-	q.index = clampIndex(q.index, int64(len(q.entries))-1)
+	q.index = clampIndex(startIndex, int64(len(q.entries))-1)
 	q.revision++
 	return nil
 }
