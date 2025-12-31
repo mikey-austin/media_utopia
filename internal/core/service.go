@@ -62,6 +62,19 @@ func (s Service) Status(ctx context.Context, selector string) (StatusResult, err
 	if err != nil {
 		return StatusResult{}, WrapError(ExitRuntime, "get renderer state", err)
 	}
+	if state.Current != nil && strings.HasPrefix(state.Current.ItemID, "lib:") {
+		needsMeta := state.Current.Metadata == nil
+		if !needsMeta {
+			if title, ok := state.Current.Metadata["title"].(string); !ok || title == "" {
+				needsMeta = true
+			}
+		}
+		if needsMeta {
+			if meta := s.resolveLibraryMetadata(ctx, state.Current.ItemID); meta != nil {
+				state.Current.Metadata = meta
+			}
+		}
+	}
 	return StatusResult{Renderer: renderer, State: state}, nil
 }
 

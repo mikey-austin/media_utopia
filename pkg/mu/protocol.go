@@ -86,6 +86,8 @@ type QueueState struct {
 	Revision int64 `json:"revision"`
 	Length   int64 `json:"length"`
 	Index    int64 `json:"index"`
+	Repeat   bool  `json:"repeat,omitempty"`
+	Shuffle  bool  `json:"shuffle,omitempty"`
 }
 
 // CurrentItemState describes the current queue entry.

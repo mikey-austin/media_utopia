@@ -252,7 +252,11 @@ func (e *Engine) handleQueueShuffle(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 	if err := e.requireLease(cmd); err != nil {
 		return errorReply(cmd, "LEASE_REQUIRED", err.Error())
 	}
-	e.Queue.SetShuffle(true)
+	var body mu.QueueShuffleBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	e.Queue.Shuffle(body.Seed)
 	e.bumpQueue()
 	return reply
 }
@@ -343,8 +347,8 @@ func (e *Engine) handlePlaybackNext(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 	if err := e.requireLease(cmd); err != nil {
 		return errorReply(cmd, "LEASE_REQUIRED", err.Error())
 	}
-	if err := e.Queue.Jump(e.Queue.Summary().Index + 1); err != nil {
-		return errorReply(cmd, "INVALID", err.Error())
+	if _, ok := e.Queue.Next(); !ok {
+		return errorReply(cmd, "NOT_FOUND", "end of queue")
 	}
 	return e.startCurrentPlayback(reply)
 }
@@ -353,37 +357,57 @@ func (e *Engine) handlePlaybackPrev(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 	if err := e.requireLease(cmd); err != nil {
 		return errorReply(cmd, "LEASE_REQUIRED", err.Error())
 	}
-	if err := e.Queue.Jump(e.Queue.Summary().Index - 1); err != nil {
-		return errorReply(cmd, "INVALID", err.Error())
+	if _, ok := e.Queue.Prev(); !ok {
+		return errorReply(cmd, "NOT_FOUND", "start of queue")
 	}
 	return e.startCurrentPlayback(reply)
 }
 
 func (e *Engine) startCurrentPlayback(reply mu.ReplyEnvelope) mu.ReplyEnvelope {
-	entry, ok := e.Queue.Current()
-	if !ok {
-		reply.OK = false
-		reply.Type = "error"
-		reply.Err = &mu.ReplyError{Code: "NOT_FOUND", Message: "queue empty"}
-		return reply
-	}
-	url := resolvedURL(entry)
-	if url == "" {
-		reply.OK = false
-		reply.Type = "error"
-		reply.Err = &mu.ReplyError{Code: "INVALID", Message: "entry not resolved"}
-		return reply
-	}
-	if err := e.Driver.Play(url, 0); err != nil {
+	if err := e.playCurrent(); err != nil {
 		reply.OK = false
 		reply.Type = "error"
 		reply.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
 		return reply
 	}
+	return reply
+}
+
+func (e *Engine) playCurrent() error {
+	entry, ok := e.Queue.Current()
+	if !ok {
+		return errors.New("queue empty")
+	}
+	url := resolvedURL(entry)
+	if url == "" {
+		return errors.New("entry not resolved")
+	}
+	if err := e.Driver.Play(url, 0); err != nil {
+		return err
+	}
 	e.State.Playback.Status = "playing"
 	e.State.Current = &mu.CurrentItemState{QueueEntryID: entry.QueueEntryID, ItemID: entry.ItemID, Metadata: entry.Metadata}
 	e.bumpState()
-	return reply
+	return nil
+}
+
+// AdvanceAfterEnd advances the queue after playback ends.
+func (e *Engine) AdvanceAfterEnd() {
+	if e.State.Playback == nil || e.State.Playback.Status != "playing" {
+		return
+	}
+	if _, ok := e.Queue.Next(); !ok {
+		_ = e.Driver.Stop()
+		e.State.Playback.Status = "stopped"
+		e.State.Playback.PositionMS = 0
+		e.bumpState()
+		return
+	}
+	if err := e.playCurrent(); err != nil {
+		_ = e.Driver.Stop()
+		e.State.Playback.Status = "stopped"
+		e.bumpState()
+	}
 }
 
 func (e *Engine) handleSetVolume(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {

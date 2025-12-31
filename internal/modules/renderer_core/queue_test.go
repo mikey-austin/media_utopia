@@ -83,3 +83,40 @@ func TestQueueRepeatShuffle(t *testing.T) {
 		t.Fatalf("expected repeat and shuffle true")
 	}
 }
+
+func TestQueueNextPrevRepeat(t *testing.T) {
+	queue := &Queue{}
+	_ = queue.Add([]QueueEntry{{QueueEntryID: "e1"}, {QueueEntryID: "e2"}, {QueueEntryID: "e3"}}, "end", nil)
+
+	if _, ok := queue.Next(); !ok || queue.index != 1 {
+		t.Fatalf("expected next index 1")
+	}
+	if err := queue.Jump(2); err != nil {
+		t.Fatalf("jump: %v", err)
+	}
+	if _, ok := queue.Next(); ok {
+		t.Fatalf("expected no next at end")
+	}
+	queue.SetRepeat(true)
+	if _, ok := queue.Next(); !ok || queue.index != 0 {
+		t.Fatalf("expected wrap to 0 with repeat")
+	}
+	queue.SetRepeat(false)
+	if _, ok := queue.Prev(); ok {
+		t.Fatalf("expected no prev at start without repeat")
+	}
+	queue.SetRepeat(true)
+	if _, ok := queue.Prev(); !ok || queue.index != 2 {
+		t.Fatalf("expected wrap to end with repeat")
+	}
+}
+
+func TestQueueShuffleKeepsCurrent(t *testing.T) {
+	queue := &Queue{}
+	_ = queue.Add([]QueueEntry{{QueueEntryID: "e1"}, {QueueEntryID: "e2"}, {QueueEntryID: "e3"}}, "end", nil)
+	_ = queue.Jump(1)
+	queue.Shuffle(42)
+	if queue.entries[queue.index].QueueEntryID != "e2" {
+		t.Fatalf("expected current entry to stay active")
+	}
+}

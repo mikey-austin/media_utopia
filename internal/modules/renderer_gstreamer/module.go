@@ -44,6 +44,7 @@ type Module struct {
 	config   Config
 	cmdTopic string
 	mu       sync.Mutex
+	eosSeen  string
 }
 
 // NewModule creates a renderer module.
@@ -182,6 +183,7 @@ func (m *Module) updatePlaybackState() {
 	defer m.mu.Unlock()
 
 	if m.engine.State.Playback == nil || m.engine.State.Playback.Status != "playing" {
+		m.eosSeen = ""
 		return
 	}
 	posMS, durMS, ok := m.engine.Driver.Position()
@@ -193,9 +195,32 @@ func (m *Module) updatePlaybackState() {
 		m.engine.State.Playback.DurationMS = durMS
 	}
 	m.engine.State.TS = time.Now().Unix()
+	m.advanceOnEndLocked(posMS, durMS)
 	if m.config.PublishState {
 		_ = m.publishState()
 	}
+}
+
+func (m *Module) advanceOnEndLocked(positionMS int64, durationMS int64) {
+	if durationMS <= 0 {
+		return
+	}
+	if positionMS < durationMS-250 {
+		m.eosSeen = ""
+		return
+	}
+	currentID := ""
+	if m.engine.State.Current != nil {
+		currentID = m.engine.State.Current.QueueEntryID
+	}
+	if currentID == "" {
+		return
+	}
+	if m.eosSeen == currentID {
+		return
+	}
+	m.eosSeen = currentID
+	m.engine.AdvanceAfterEnd()
 }
 
 func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {

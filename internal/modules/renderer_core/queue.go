@@ -2,7 +2,9 @@ package renderercore
 
 import (
 	"errors"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 )
@@ -54,7 +56,7 @@ func (q *Queue) Set(entries []QueueEntry, ifRevision *int64) error {
 		return errors.New("revision mismatch")
 	}
 	q.entries = entries
-	q.index = 0
+	q.index = clampIndex(q.index, int64(len(q.entries))-1)
 	q.revision++
 	return nil
 }
@@ -96,6 +98,7 @@ func (q *Queue) Remove(queueEntryID string, index *int64) error {
 			}
 		}
 		q.entries = filtered
+		q.index = clampIndex(q.index, int64(len(q.entries))-1)
 		q.revision++
 		return nil
 	}
@@ -106,6 +109,7 @@ func (q *Queue) Remove(queueEntryID string, index *int64) error {
 		return errors.New("index out of range")
 	}
 	q.entries = append(q.entries[:*index], q.entries[*index+1:]...)
+	q.index = clampIndex(q.index, int64(len(q.entries))-1)
 	q.revision++
 	return nil
 }
@@ -124,6 +128,7 @@ func (q *Queue) Move(fromIndex int64, toIndex int64) error {
 	entry := q.entries[fromIndex]
 	q.entries = append(q.entries[:fromIndex], q.entries[fromIndex+1:]...)
 	q.entries = insertEntries(q.entries, []QueueEntry{entry}, toIndex)
+	q.index = clampIndex(q.index, int64(len(q.entries))-1)
 	q.revision++
 	return nil
 }
@@ -160,13 +165,84 @@ func (q *Queue) SetRepeat(repeat bool) {
 	q.revision++
 }
 
-// SetShuffle sets shuffle mode.
+// SetShuffle toggles shuffle mode.
 func (q *Queue) SetShuffle(shuffle bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	q.shuffle = shuffle
 	q.revision++
+}
+
+// Shuffle randomizes entry order while keeping current entry active.
+func (q *Queue) Shuffle(seed int64) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if len(q.entries) < 2 {
+		return
+	}
+	currentID := ""
+	if q.index >= 0 && q.index < int64(len(q.entries)) {
+		currentID = q.entries[q.index].QueueEntryID
+	}
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	if seed != 0 {
+		rng = rand.New(rand.NewSource(seed))
+	}
+	rng.Shuffle(len(q.entries), func(i, j int) {
+		q.entries[i], q.entries[j] = q.entries[j], q.entries[i]
+	})
+	if currentID != "" {
+		for idx, entry := range q.entries {
+			if entry.QueueEntryID == currentID {
+				q.index = int64(idx)
+				break
+			}
+		}
+	}
+	q.shuffle = true
+	q.revision++
+}
+
+// Next advances to the next entry, respecting repeat.
+func (q *Queue) Next() (int64, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if len(q.entries) == 0 {
+		return 0, false
+	}
+	next := q.index + 1
+	if next >= int64(len(q.entries)) {
+		if !q.repeat {
+			return 0, false
+		}
+		next = 0
+	}
+	q.index = next
+	q.revision++
+	return q.index, true
+}
+
+// Prev moves to the previous entry, respecting repeat.
+func (q *Queue) Prev() (int64, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if len(q.entries) == 0 {
+		return 0, false
+	}
+	prev := q.index - 1
+	if prev < 0 {
+		if !q.repeat {
+			return 0, false
+		}
+		prev = int64(len(q.entries) - 1)
+	}
+	q.index = prev
+	q.revision++
+	return q.index, true
 }
 
 // Current returns the current entry.
@@ -185,7 +261,13 @@ func (q *Queue) Summary() mu.QueueState {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	return mu.QueueState{Revision: q.revision, Length: int64(len(q.entries)), Index: q.index}
+	return mu.QueueState{
+		Revision: q.revision,
+		Length:   int64(len(q.entries)),
+		Index:    q.index,
+		Repeat:   q.repeat,
+		Shuffle:  q.shuffle,
+	}
 }
 
 func insertEntries(entries []QueueEntry, insert []QueueEntry, index int64) []QueueEntry {
@@ -204,6 +286,9 @@ func insertEntries(entries []QueueEntry, insert []QueueEntry, index int64) []Que
 
 func clampIndex(index int64, max int64) int64 {
 	if index < 0 {
+		return 0
+	}
+	if max < 0 {
 		return 0
 	}
 	if index > max {

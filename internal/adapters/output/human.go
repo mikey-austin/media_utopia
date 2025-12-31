@@ -89,6 +89,9 @@ func printStatus(result core.StatusResult) error {
 	}
 	if result.State.Queue != nil {
 		queue = fmt.Sprintf("Queue: %d tracks (index %d) rev %d", result.State.Queue.Length, result.State.Queue.Index, result.State.Queue.Revision)
+		if result.State.Queue.Repeat {
+			queue = queue + " repeat"
+		}
 	}
 	if result.State.Session != nil {
 		owner = fmt.Sprintf("owner %s", result.State.Session.Owner)
