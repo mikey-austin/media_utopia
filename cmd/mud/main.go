@@ -5,19 +5,20 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
-	"github.com/mikey-austin/media_utopia/internal/modules/embedded_mqtt"
-	"github.com/mikey-austin/media_utopia/internal/modules/jellyfin_library"
+	embeddedmqtt "github.com/mikey-austin/media_utopia/internal/modules/embedded_mqtt"
+	jellyfinlibrary "github.com/mikey-austin/media_utopia/internal/modules/jellyfin_library"
 	"github.com/mikey-austin/media_utopia/internal/modules/playlist"
-	"github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
+	renderergstreamer "github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
 	"github.com/mikey-austin/media_utopia/internal/mud"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -31,6 +32,7 @@ func main() {
 		logOutput   string
 		logSource   bool
 		logUTC      bool
+		logColor    bool
 		daemonize   bool
 		printConfig bool
 		dryRun      bool
@@ -52,6 +54,7 @@ func main() {
 	flag.StringVar(&logOutput, "log-output", "", "log output override (stdout|stderr)")
 	flag.BoolVar(&logSource, "log-source", false, "include source file in logs")
 	flag.BoolVar(&logUTC, "log-utc", false, "use UTC timestamps in logs")
+	flag.BoolVar(&logColor, "log-color", false, "enable colored log output (text only)")
 	flag.BoolVar(&daemonize, "daemonize", false, "run as daemon")
 	flag.StringVar(&moduleOnly, "module", "", "limit to a single module")
 	flag.BoolVar(&printConfig, "print-config", false, "print resolved config and exit")
@@ -63,7 +66,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	applyOverrides(&cfg, broker, identity, topicBase, logLevel, logFormat, logOutput, logSource, logUTC, daemonize)
+	applyOverrides(&cfg, broker, identity, topicBase, logLevel, logFormat, logOutput, logSource, logUTC, logColor, daemonize)
 
 	if printConfig {
 		if err := printResolvedConfig(cfg); err != nil {
@@ -82,59 +85,77 @@ func main() {
 		Output:    cfg.Server.LogOutput,
 		AddSource: cfg.Server.LogSource,
 		UTC:       cfg.Server.LogUTC,
+		Color:     cfg.Server.LogColor,
 	})
-	if cfg.Server.Broker == "" {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	embeddedURL := embeddedBrokerURL(cfg)
+	skipEmbedded := false
+
+	if moduleOnly != "embedded_mqtt" && cfg.Modules.EmbeddedMQTT.Enabled && cfg.Server.Broker == embeddedURL {
+		if err := startEmbeddedBroker(ctx, cfg, logger, cancel); err != nil {
+			logger.Error("embedded mqtt failed", zap.Error(err))
+			os.Exit(1)
+		}
+		skipEmbedded = true
+	}
+
+	if cfg.Server.Broker == "" && !(moduleOnly == "embedded_mqtt" && cfg.Modules.EmbeddedMQTT.Enabled) {
 		logger.Error("broker is required")
 		os.Exit(1)
 	}
 	logger.Info("mud starting",
-		"broker", cfg.Server.Broker,
-		"identity", cfg.Server.Identity,
-		"topic_base", cfg.Server.TopicBase,
-		"log_level", cfg.Server.LogLevel,
-		"log_format", cfg.Server.LogFormat,
-		"log_output", cfg.Server.LogOutput,
-		"log_source", cfg.Server.LogSource,
-		"log_utc", cfg.Server.LogUTC,
-		"modules", enabledModules(cfg),
+		zap.String("broker", cfg.Server.Broker),
+		zap.String("identity", cfg.Server.Identity),
+		zap.String("topic_base", cfg.Server.TopicBase),
+		zap.String("log_level", cfg.Server.LogLevel),
+		zap.String("log_format", cfg.Server.LogFormat),
+		zap.String("log_output", cfg.Server.LogOutput),
+		zap.Bool("log_source", cfg.Server.LogSource),
+		zap.Bool("log_utc", cfg.Server.LogUTC),
+		zap.Bool("log_color", cfg.Server.LogColor),
+		zap.Strings("modules", enabledModules(cfg)),
 	)
 
 	if daemonize {
+		// TODO
 		logger.Warn("daemonize flag is set; running in foreground (not implemented)")
 	}
 
-	client, err := mqttserver.NewClient(mqttserver.Options{
-		BrokerURL: cfg.Server.Broker,
-		ClientID:  fmt.Sprintf("mud-%d", time.Now().UnixNano()),
-		Username:  cfg.Server.Auth.User,
-		Password:  cfg.Server.Auth.Pass,
-		TLSCA:     cfg.Server.TLS.CA,
-		TLSCert:   cfg.Server.TLS.Cert,
-		TLSKey:    cfg.Server.TLS.Key,
-		Timeout:   2 * time.Second,
-	})
-	if err != nil {
-		logger.Error("mqtt connection failed", "error", err)
-		os.Exit(1)
+	var client *mqttserver.Client
+	if moduleOnly != "embedded_mqtt" {
+		var err error
+		client, err = mqttserver.NewClient(mqttserver.Options{
+			BrokerURL: cfg.Server.Broker,
+			ClientID:  fmt.Sprintf("mud-%d", time.Now().UnixNano()),
+			Username:  cfg.Server.Auth.User,
+			Password:  cfg.Server.Auth.Pass,
+			TLSCA:     cfg.Server.TLS.CA,
+			TLSCert:   cfg.Server.TLS.Cert,
+			TLSKey:    cfg.Server.TLS.Key,
+			Timeout:   2 * time.Second,
+		})
+		if err != nil {
+			logger.Error("mqtt connection failed", zap.Error(err))
+			os.Exit(1)
+		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	modules, err := buildModules(cfg, client, logger, moduleOnly)
+	modules, err := buildModules(cfg, client, logger, moduleOnly, skipEmbedded)
 	if err != nil {
-		logger.Error("failed to build modules", "error", err)
+		logger.Error("failed to build modules", zap.Error(err))
 		os.Exit(1)
 	}
 
 	supervisor := mud.Supervisor{Logger: logger}
 	if err := supervisor.Run(ctx, modules); err != nil {
-		logger.Error("supervisor error", "error", err)
+		logger.Error("supervisor error", zap.Error(err))
 		os.Exit(1)
 	}
 }
 
-func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase string, logLevel string, logFormat string, logOutput string, logSource bool, logUTC bool, daemonize bool) {
+func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase string, logLevel string, logFormat string, logOutput string, logSource bool, logUTC bool, logColor bool, daemonize bool) {
 	if broker != "" {
 		cfg.Server.Broker = broker
 	}
@@ -159,6 +180,9 @@ func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase s
 	if logUTC {
 		cfg.Server.LogUTC = true
 	}
+	if logColor {
+		cfg.Server.LogColor = true
+	}
 	if daemonize {
 		cfg.Server.Daemonize = true
 	}
@@ -175,11 +199,11 @@ func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase s
 	}
 }
 
-func buildModules(cfg mud.Config, client *mqttserver.Client, logger *slog.Logger, moduleOnly string) ([]mud.ModuleRunner, error) {
+func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger, moduleOnly string, skipEmbedded bool) ([]mud.ModuleRunner, error) {
 	modules := []mud.ModuleRunner{}
-	if cfg.Modules.EmbeddedMQTT.Enabled {
+	if cfg.Modules.EmbeddedMQTT.Enabled && !skipEmbedded {
 		if moduleOnly == "" || moduleOnly == "embedded_mqtt" {
-			mod, err := embeddedmqtt.NewModule(logger.With("module", "embedded_mqtt"), embeddedmqtt.Config{
+			mod, err := embeddedmqtt.NewModule(logger.With(zap.String("module", "embedded_mqtt")), embeddedmqtt.Config{
 				Listen:         cfg.Modules.EmbeddedMQTT.Listen,
 				AllowAnonymous: cfg.Modules.EmbeddedMQTT.AllowAnonymous,
 				Username:       cfg.Modules.EmbeddedMQTT.Username,
@@ -199,7 +223,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *slog.Logger
 	}
 	if cfg.Modules.Playlist.Enabled {
 		if moduleOnly == "" || moduleOnly == "playlist" {
-			pl, err := playlist.NewModule(logger.With("module", "playlist"), client, playlist.Config{
+			pl, err := playlist.NewModule(logger.With(zap.String("module", "playlist")), client, playlist.Config{
 				NodeID:      cfg.Modules.Playlist.NodeID,
 				TopicBase:   cfg.Server.TopicBase,
 				StoragePath: cfg.Modules.Playlist.StoragePath,
@@ -218,7 +242,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *slog.Logger
 	if cfg.Modules.BridgeJellyfinLibrary.Enabled {
 		if moduleOnly == "" || moduleOnly == "bridge_jellyfin_library" {
 			timeout := time.Duration(cfg.Modules.BridgeJellyfinLibrary.TimeoutMS) * time.Millisecond
-			jf, err := jellyfinlibrary.NewModule(logger.With("module", "bridge_jellyfin_library"), client, jellyfinlibrary.Config{
+			jf, err := jellyfinlibrary.NewModule(logger.With(zap.String("module", "bridge_jellyfin_library")), client, jellyfinlibrary.Config{
 				NodeID:    cfg.Modules.BridgeJellyfinLibrary.NodeID,
 				TopicBase: cfg.Server.TopicBase,
 				BaseURL:   cfg.Modules.BridgeJellyfinLibrary.BaseURL,
@@ -239,7 +263,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *slog.Logger
 	if cfg.Modules.RendererGStreamer.Enabled {
 		if moduleOnly == "" || moduleOnly == "renderer_gstreamer" {
 			crossfade := time.Duration(cfg.Modules.RendererGStreamer.CrossfadeMS) * time.Millisecond
-			mod, err := renderergstreamer.NewModule(logger.With("module", "renderer_gstreamer"), client, renderergstreamer.Config{
+			mod, err := renderergstreamer.NewModule(logger.With(zap.String("module", "renderer_gstreamer")), client, renderergstreamer.Config{
 				NodeID:       cfg.Modules.RendererGStreamer.NodeID,
 				TopicBase:    cfg.Server.TopicBase,
 				Name:         "GStreamer Renderer",
@@ -286,17 +310,79 @@ func enabledModules(cfg mud.Config) []string {
 }
 
 func printResolvedConfig(cfg mud.Config) error {
-	enc := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	enc.Info("resolved config",
-		"broker", cfg.Server.Broker,
-		"identity", cfg.Server.Identity,
-		"topic_base", cfg.Server.TopicBase,
-		"log_level", cfg.Server.LogLevel,
-		"log_format", cfg.Server.LogFormat,
-		"log_output", cfg.Server.LogOutput,
-		"log_source", cfg.Server.LogSource,
-		"log_utc", cfg.Server.LogUTC,
-		"daemonize", cfg.Server.Daemonize,
+	fmt.Fprintf(os.Stdout,
+		"broker=%s identity=%s topic_base=%s log_level=%s log_format=%s log_output=%s log_source=%t log_utc=%t log_color=%t daemonize=%t\n",
+		cfg.Server.Broker,
+		cfg.Server.Identity,
+		cfg.Server.TopicBase,
+		cfg.Server.LogLevel,
+		cfg.Server.LogFormat,
+		cfg.Server.LogOutput,
+		cfg.Server.LogSource,
+		cfg.Server.LogUTC,
+		cfg.Server.LogColor,
+		cfg.Server.Daemonize,
 	)
 	return nil
+}
+
+func embeddedBrokerURL(cfg mud.Config) string {
+	listen := cfg.Modules.EmbeddedMQTT.Listen
+	if listen == "" {
+		listen = "127.0.0.1:1883"
+	}
+	tlsEnabled := cfg.Modules.EmbeddedMQTT.TLSCert != "" || cfg.Modules.EmbeddedMQTT.TLSKey != "" || cfg.Modules.EmbeddedMQTT.TLSCA != ""
+	return embeddedmqtt.BrokerURL(listen, tlsEnabled)
+}
+
+func startEmbeddedBroker(ctx context.Context, cfg mud.Config, logger *zap.Logger, cancel context.CancelFunc) error {
+	mod, err := embeddedmqtt.NewModule(logger.With(zap.String("module", "embedded_mqtt")), embeddedmqtt.Config{
+		Listen:         cfg.Modules.EmbeddedMQTT.Listen,
+		AllowAnonymous: cfg.Modules.EmbeddedMQTT.AllowAnonymous,
+		Username:       cfg.Modules.EmbeddedMQTT.Username,
+		Password:       cfg.Modules.EmbeddedMQTT.Password,
+		TLSCA:          cfg.Modules.EmbeddedMQTT.TLSCA,
+		TLSCert:        cfg.Modules.EmbeddedMQTT.TLSCert,
+		TLSKey:         cfg.Modules.EmbeddedMQTT.TLSKey,
+	})
+	if err != nil {
+		return err
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- mod.Run(ctx)
+	}()
+	go func() {
+		if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("embedded mqtt exited", zap.Error(err))
+			cancel()
+		}
+	}()
+
+	listen := cfg.Modules.EmbeddedMQTT.Listen
+	if listen == "" {
+		listen = "127.0.0.1:1883"
+	}
+	return waitForListen(listen, 3*time.Second)
+}
+
+func waitForListen(listen string, timeout time.Duration) error {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return err
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	addr := net.JoinHostPort(host, port)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("embedded mqtt not ready at %s", addr)
 }

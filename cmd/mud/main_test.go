@@ -13,7 +13,7 @@ func TestBuildModulesModuleOnlyFilter(t *testing.T) {
 	cfg.Modules.Playlist.StoragePath = "/tmp"
 
 	logger := mud.NewLogger(mud.LogConfig{Level: "error"})
-	modules, err := buildModules(cfg, nil, logger, "playlist")
+	modules, err := buildModules(cfg, nil, logger, "playlist", false)
 	if err != nil {
 		t.Fatalf("buildModules: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestBuildModulesModuleOnlyFilter(t *testing.T) {
 		t.Fatalf("expected 1 module")
 	}
 
-	_, err = buildModules(cfg, nil, logger, "renderer_gstreamer")
+	_, err = buildModules(cfg, nil, logger, "renderer_gstreamer", false)
 	if err == nil {
 		t.Fatalf("expected error for filtered module")
 	}

@@ -1,16 +1,16 @@
 package embeddedmqtt
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/packets"
+	"go.uber.org/zap"
 )
 
 func TestNewServerAllowAnonymous(t *testing.T) {
-	server, err := newServer(slog.Default(), Config{AllowAnonymous: true})
+	server, err := newServer(zap.NewNop(), Config{AllowAnonymous: true})
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -20,14 +20,14 @@ func TestNewServerAllowAnonymous(t *testing.T) {
 }
 
 func TestNewServerRequiresAuthConfig(t *testing.T) {
-	_, err := newServer(slog.Default(), Config{})
+	_, err := newServer(zap.NewNop(), Config{})
 	if err == nil {
 		t.Fatalf("expected error")
 	}
 }
 
 func TestInlinePublishSubscribe(t *testing.T) {
-	server, err := newServer(slog.Default(), Config{AllowAnonymous: true})
+	server, err := newServer(zap.NewNop(), Config{AllowAnonymous: true})
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}

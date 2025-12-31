@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
 	"github.com/mikey-austin/media_utopia/internal/modules/renderer_core"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
+	"go.uber.org/zap"
 )
 
 // Config configures the GStreamer renderer module.
@@ -29,7 +29,7 @@ type Config struct {
 
 // Module implements a GStreamer renderer.
 type Module struct {
-	log      *slog.Logger
+	log      *zap.Logger
 	client   *mqttserver.Client
 	engine   *renderercore.Engine
 	config   Config
@@ -37,7 +37,7 @@ type Module struct {
 }
 
 // NewModule creates a renderer module.
-func NewModule(log *slog.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
+func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
 	if strings.TrimSpace(cfg.NodeID) == "" {
 		return nil, errors.New("node_id required")
 	}
@@ -118,7 +118,7 @@ func (m *Module) publishState() error {
 func (m *Module) handleMessage(msg paho.Message) {
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
-		m.log.Warn("invalid command", "error", err)
+		m.log.Warn("invalid command", zap.Error(err))
 		return
 	}
 

@@ -57,7 +57,8 @@ This repository contains:
 Build:
 
 ```bash
-go build ./cmd/mu ./cmd/mud
+go build -o ./bin/mu ./cmd/mu
+go build -o ./bin/mud ./cmd/mud
 ```
 
 Test:

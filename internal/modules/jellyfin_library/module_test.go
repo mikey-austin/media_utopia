@@ -3,8 +3,6 @@ package jellyfinlibrary
 import (
 	"bytes"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,13 +10,14 @@ import (
 	"time"
 
 	"github.com/mikey-austin/media_utopia/pkg/mu"
+	"go.uber.org/zap"
 )
 
 func TestLibraryBrowse(t *testing.T) {
 	handler := newJellyfinTestHandler(t)
 
 	module := Module{
-		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
 			BaseURL: "http://jellyfin.test",
@@ -46,7 +45,7 @@ func TestLibraryResolve(t *testing.T) {
 	handler := newJellyfinTestHandler(t)
 
 	module := Module{
-		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
 			BaseURL: "http://jellyfin.test",
@@ -77,7 +76,7 @@ func TestLibrarySearch(t *testing.T) {
 	handler := newJellyfinTestHandler(t)
 
 	module := Module{
-		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
 			BaseURL: "http://jellyfin.test",
@@ -102,7 +101,7 @@ func TestLibraryResolveIncludesMetadata(t *testing.T) {
 	handler := newJellyfinTestHandler(t)
 
 	module := Module{
-		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
 			BaseURL: "http://jellyfin.test",
@@ -172,7 +171,7 @@ func TestResolveSourceFallback(t *testing.T) {
 }
 
 func TestNewModuleDefaults(t *testing.T) {
-	module, err := NewModule(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, Config{
+	module, err := NewModule(zap.NewNop(), nil, Config{
 		NodeID:  "mu:library:jellyfin:test",
 		BaseURL: "http://example",
 		APIKey:  "key",
@@ -190,7 +189,7 @@ func TestNewModuleDefaults(t *testing.T) {
 }
 
 func TestNewModuleValidation(t *testing.T) {
-	_, err := NewModule(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, Config{})
+	_, err := NewModule(zap.NewNop(), nil, Config{})
 	if err == nil {
 		t.Fatalf("expected validation error")
 	}

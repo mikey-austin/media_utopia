@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
+	"go.uber.org/zap"
 )
 
 // Config configures the Jellyfin library bridge.
@@ -31,7 +31,7 @@ type Config struct {
 
 // Module handles library commands via Jellyfin.
 type Module struct {
-	log      *slog.Logger
+	log      *zap.Logger
 	client   *mqttserver.Client
 	http     *http.Client
 	config   Config
@@ -39,7 +39,7 @@ type Module struct {
 }
 
 // NewModule creates a Jellyfin library module.
-func NewModule(log *slog.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
+func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
 	if strings.TrimSpace(cfg.NodeID) == "" {
 		return nil, errors.New("node_id required")
 	}
@@ -114,7 +114,7 @@ func (m *Module) publishPresence() error {
 func (m *Module) handleMessage(msg paho.Message) {
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
-		m.log.Warn("invalid command", "error", err)
+		m.log.Warn("invalid command", zap.Error(err))
 		return
 	}
 
@@ -124,11 +124,11 @@ func (m *Module) handleMessage(msg paho.Message) {
 	}
 	payload, err := json.Marshal(reply)
 	if err != nil {
-		m.log.Error("marshal reply", "error", err)
+		m.log.Error("marshal reply", zap.Error(err))
 		return
 	}
 	if err := m.client.Publish(cmd.ReplyTo, 1, false, payload); err != nil {
-		m.log.Error("publish reply", "error", err)
+		m.log.Error("publish reply", zap.Error(err))
 	}
 }
 

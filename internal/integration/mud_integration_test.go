@@ -9,8 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -29,6 +27,8 @@ import (
 	"github.com/mikey-austin/media_utopia/internal/modules/embedded_mqtt"
 	"github.com/mikey-austin/media_utopia/internal/modules/playlist"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 type memoryLeaseStore struct {
@@ -76,7 +76,7 @@ type integrationOptions struct {
 type integrationHarness struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
-	logger       *slog.Logger
+	logger       *zap.Logger
 	brokerURL    string
 	playlistNode string
 	client       *mqtt.Client
@@ -614,16 +614,17 @@ func decorateCommand(h *integrationHarness, cmd mu.CommandEnvelope) mu.CommandEn
 	return cmd
 }
 
-func testLogger() *slog.Logger {
-	level := slog.LevelInfo
+func testLogger() *zap.Logger {
 	if strings.EqualFold(os.Getenv("MU_INTEGRATION_DEBUG"), "1") || strings.EqualFold(os.Getenv("MU_INTEGRATION_DEBUG"), "true") {
-		level = slog.LevelDebug
+		cfg := zap.NewDevelopmentConfig()
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
+		cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+		logger, err := cfg.Build()
+		if err == nil {
+			return logger
+		}
 	}
-	writer := io.Discard
-	if level == slog.LevelDebug {
-		writer = os.Stderr
-	}
-	return slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{Level: level}))
+	return zap.NewNop()
 }
 
 func decodeJSON(t *testing.T, payload string, dest any) {

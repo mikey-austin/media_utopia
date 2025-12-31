@@ -1,9 +1,12 @@
 GOCACHE ?= $(CURDIR)/.gocache
+BIN_DIR ?= $(CURDIR)/bin
 
 .PHONY: build test fmt integration
 
 build:
-	go build ./cmd/mu ./cmd/mud
+	mkdir -p $(BIN_DIR)
+	go build -o $(BIN_DIR)/mu ./cmd/mu
+	go build -o $(BIN_DIR)/mud ./cmd/mud
 
 test:
 	GOCACHE=$(GOCACHE) go test -count=1 -v ./...

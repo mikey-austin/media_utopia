@@ -24,6 +24,7 @@ type ServerConfig struct {
 	LogOutput string     `toml:"log_output"`
 	LogSource bool       `toml:"log_source"`
 	LogUTC    bool       `toml:"log_utc"`
+	LogColor  bool       `toml:"log_color"`
 	Daemonize bool       `toml:"daemonize"`
 	TLS       TLSConfig  `toml:"tls"`
 	Auth      AuthConfig `toml:"auth"`

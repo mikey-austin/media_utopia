@@ -13,6 +13,7 @@ import (
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/hooks/auth"
 	"github.com/mochi-mqtt/server/v2/listeners"
+	"go.uber.org/zap"
 )
 
 // Config configures the embedded MQTT broker.
@@ -28,13 +29,13 @@ type Config struct {
 
 // Module runs an embedded MQTT broker.
 type Module struct {
-	log    *slog.Logger
+	log    *zap.Logger
 	server *mqtt.Server
 	config Config
 }
 
 // NewModule creates a new embedded broker module.
-func NewModule(log *slog.Logger, cfg Config) (*Module, error) {
+func NewModule(log *zap.Logger, cfg Config) (*Module, error) {
 	if strings.TrimSpace(cfg.Listen) == "" {
 		cfg.Listen = "127.0.0.1:1883"
 	}
@@ -71,8 +72,8 @@ func (m *Module) Run(ctx context.Context) error {
 	return nil
 }
 
-func newServer(log *slog.Logger, cfg Config) (*mqtt.Server, error) {
-	options := &mqtt.Options{InlineClient: true, Logger: log}
+func newServer(log *zap.Logger, cfg Config) (*mqtt.Server, error) {
+	options := &mqtt.Options{InlineClient: true, Logger: newSlogLogger(log)}
 	server := mqtt.New(options)
 
 	if cfg.AllowAnonymous {
@@ -92,6 +93,72 @@ func newServer(log *slog.Logger, cfg Config) (*mqtt.Server, error) {
 	}
 
 	return server, nil
+}
+
+func newSlogLogger(logger *zap.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.Default()
+	}
+	return slog.New(&zapSlogHandler{logger: logger})
+}
+
+type zapSlogHandler struct {
+	logger *zap.Logger
+	attrs  []slog.Attr
+}
+
+func (h *zapSlogHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return true
+}
+
+func (h *zapSlogHandler) Handle(_ context.Context, record slog.Record) error {
+	fields := make([]zap.Field, 0, len(h.attrs)+record.NumAttrs())
+	for _, attr := range h.attrs {
+		fields = append(fields, slogAttrToField(attr))
+	}
+	record.Attrs(func(attr slog.Attr) bool {
+		fields = append(fields, slogAttrToField(attr))
+		return true
+	})
+	switch {
+	case record.Level >= slog.LevelError:
+		h.logger.Error(record.Message, fields...)
+	case record.Level >= slog.LevelWarn:
+		h.logger.Warn(record.Message, fields...)
+	case record.Level >= slog.LevelInfo:
+		h.logger.Info(record.Message, fields...)
+	default:
+		h.logger.Debug(record.Message, fields...)
+	}
+	return nil
+}
+
+func (h *zapSlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
+	next = append(next, h.attrs...)
+	next = append(next, attrs...)
+	return &zapSlogHandler{logger: h.logger, attrs: next}
+}
+
+func (h *zapSlogHandler) WithGroup(_ string) slog.Handler {
+	return h
+}
+
+func slogAttrToField(attr slog.Attr) zap.Field {
+	switch attr.Value.Kind() {
+	case slog.KindString:
+		return zap.String(attr.Key, attr.Value.String())
+	case slog.KindInt64:
+		return zap.Int64(attr.Key, attr.Value.Int64())
+	case slog.KindUint64:
+		return zap.Uint64(attr.Key, attr.Value.Uint64())
+	case slog.KindFloat64:
+		return zap.Float64(attr.Key, attr.Value.Float64())
+	case slog.KindBool:
+		return zap.Bool(attr.Key, attr.Value.Bool())
+	default:
+		return zap.Any(attr.Key, attr.Value.Any())
+	}
 }
 
 func buildTLSConfig(caPath, certPath, keyPath string) (*tls.Config, error) {

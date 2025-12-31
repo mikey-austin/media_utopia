@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
+	"go.uber.org/zap"
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/idgen"
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
@@ -28,7 +28,7 @@ type Config struct {
 
 // Module provides playlist server behavior.
 type Module struct {
-	log      *slog.Logger
+	log      *zap.Logger
 	client   *mqttserver.Client
 	storage  *Storage
 	idgen    idgen.Generator
@@ -37,7 +37,7 @@ type Module struct {
 }
 
 // NewModule initializes the playlist module.
-func NewModule(log *slog.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
+func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
 	if strings.TrimSpace(cfg.NodeID) == "" {
 		return nil, errors.New("playlist node_id required")
 	}
@@ -103,7 +103,7 @@ func (m *Module) publishPresence() error {
 func (m *Module) handleMessage(msg paho.Message) {
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
-		m.log.Warn("invalid command", "error", err)
+		m.log.Warn("invalid command", zap.Error(err))
 		return
 	}
 
@@ -113,11 +113,11 @@ func (m *Module) handleMessage(msg paho.Message) {
 	}
 	payload, err := json.Marshal(reply)
 	if err != nil {
-		m.log.Error("marshal reply", "error", err)
+		m.log.Error("marshal reply", zap.Error(err))
 		return
 	}
 	if err := m.client.Publish(cmd.ReplyTo, 1, false, payload); err != nil {
-		m.log.Error("publish reply", "error", err)
+		m.log.Error("publish reply", zap.Error(err))
 	}
 }
 

@@ -56,6 +56,7 @@ log_format = "text"
 log_output = "stdout"
 log_source = false
 log_utc = true
+log_color = false
 daemonize = false
 
 [server.tls]

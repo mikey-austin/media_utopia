@@ -1,10 +1,13 @@
 package mud
 
 import (
-	"log/slog"
 	"os"
 	"runtime/debug"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // LogConfig describes mud logging options.
@@ -14,58 +17,87 @@ type LogConfig struct {
 	Output    string
 	AddSource bool
 	UTC       bool
+	Color     bool
 }
 
 // NewLogger creates a structured logger for mud.
-func NewLogger(cfg LogConfig) *slog.Logger {
-	lvl := slog.LevelInfo
+func NewLogger(cfg LogConfig) *zap.Logger {
+	level := zapcore.InfoLevel
 	switch strings.ToLower(cfg.Level) {
 	case "debug":
-		lvl = slog.LevelDebug
+		level = zapcore.DebugLevel
 	case "warn":
-		lvl = slog.LevelWarn
+		level = zapcore.WarnLevel
 	case "error":
-		lvl = slog.LevelError
+		level = zapcore.ErrorLevel
 	}
 
-	writer := os.Stdout
+	output := "stdout"
 	switch strings.ToLower(cfg.Output) {
 	case "stderr":
-		writer = os.Stderr
+		output = "stderr"
 	case "", "stdout":
+		output = "stdout"
 	default:
-		writer = os.Stdout
+		output = "stdout"
 	}
 
-	opts := &slog.HandlerOptions{
-		Level:     lvl,
-		AddSource: cfg.AddSource,
+	encCfg := zapcore.EncoderConfig{
+		TimeKey:        "time",
+		LevelKey:       "level",
+		NameKey:        "logger",
+		CallerKey:      "caller",
+		MessageKey:     "msg",
+		StacktraceKey:  "stack",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeDuration: zapcore.StringDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
 	if cfg.UTC {
-		opts.ReplaceAttr = func(_ []string, attr slog.Attr) slog.Attr {
-			if attr.Key == slog.TimeKey {
-				t := attr.Value.Time().UTC()
-				return slog.Attr{Key: attr.Key, Value: slog.TimeValue(t)}
-			}
-			return attr
+		encCfg.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+			enc.AppendString(t.UTC().Format(time.RFC3339Nano))
 		}
-	}
-
-	var handler slog.Handler
-	if strings.ToLower(cfg.Format) == "json" {
-		handler = slog.NewJSONHandler(writer, opts)
 	} else {
-		handler = slog.NewTextHandler(writer, opts)
+		encCfg.EncodeTime = zapcore.ISO8601TimeEncoder
 	}
 
-	logger := slog.New(handler)
+	format := strings.ToLower(cfg.Format)
+	if format == "json" {
+		encCfg.EncodeLevel = zapcore.LowercaseLevelEncoder
+	} else if cfg.Color {
+		encCfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	} else {
+		encCfg.EncodeLevel = zapcore.CapitalLevelEncoder
+	}
+
+	var encoder zapcore.Encoder
+	if format == "json" {
+		encoder = zapcore.NewJSONEncoder(encCfg)
+	} else {
+		encoder = zapcore.NewConsoleEncoder(encCfg)
+	}
+
+	ws := zapcore.AddSync(selectOutput(output))
+	core := zapcore.NewCore(encoder, ws, level)
+	options := []zap.Option{}
+	if cfg.AddSource {
+		options = append(options, zap.AddCaller())
+	}
+	logger := zap.New(core, options...)
 	version, commit := buildVersion()
 	return logger.With(
-		"app", "mud",
-		"pid", os.Getpid(),
-		"version", version,
-		"commit", commit,
+		zap.String("app", "mud"),
+		zap.Int("pid", os.Getpid()),
+		zap.String("version", version),
+		zap.String("commit", commit),
 	)
+}
+
+func selectOutput(output string) *os.File {
+	if output == "stderr" {
+		return os.Stderr
+	}
+	return os.Stdout
 }
 
 func buildVersion() (string, string) {
