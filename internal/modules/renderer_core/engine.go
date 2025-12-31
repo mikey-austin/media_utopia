@@ -245,7 +245,7 @@ func (e *Engine) handleQueueJump(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope)
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	e.bumpQueue()
-	return reply
+	return e.startCurrentPlayback(reply)
 }
 
 func (e *Engine) handleQueueShuffle(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {

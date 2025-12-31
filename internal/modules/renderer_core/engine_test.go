@@ -88,6 +88,38 @@ func TestEngineQueueAddAndPlay(t *testing.T) {
 	}
 }
 
+func TestEngineQueueJumpStartsPlayback(t *testing.T) {
+	driver := &fakeDriver{}
+	engine := NewEngine("mu:renderer:test", "Test", driver)
+
+	lease := acquireLease(t, engine)
+
+	add := mu.CommandEnvelope{
+		ID:    "11",
+		Type:  "queue.add",
+		Lease: &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		Body: mustJSON(mu.QueueAddBody{Position: "end", Entries: []mu.QueueEntry{
+			{Resolved: &mu.ResolvedSource{URL: "http://track-1"}},
+			{Resolved: &mu.ResolvedSource{URL: "http://track-2"}},
+		}}),
+	}
+	engine.HandleCommand(add)
+
+	jump := mu.CommandEnvelope{
+		ID:    "12",
+		Type:  "queue.jump",
+		Lease: &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		Body:  mustJSON(mu.QueueJumpBody{Index: 1}),
+	}
+	reply := engine.HandleCommand(jump)
+	if reply.Type != "ack" {
+		t.Fatalf("expected ack")
+	}
+	if driver.playURL != "http://track-2" {
+		t.Fatalf("expected play track-2, got %s", driver.playURL)
+	}
+}
+
 func TestEngineSetVolume(t *testing.T) {
 	driver := &fakeDriver{}
 	engine := NewEngine("mu:renderer:test", "Test", driver)
