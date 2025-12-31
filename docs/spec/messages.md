@@ -29,6 +29,25 @@ This document defines the **wire-level MQTT message formats** emitted by the `mu
 - Epoch seconds:  
   `ts = 1735580000`
 
+### Node IDs (URN scheme)
+
+All node IDs use:
+
+```
+mu:<kind>:<provider>:<namespace>:<resource>
+```
+
+- `kind`: node type (`renderer`, `library`, `playlist`, `advisor`, `session`, etc).
+- `provider`: implementation/backend (`gstreamer`, `jellyfin`, `upnp`, `plsrv`).
+- `namespace`: deployment scope (defaults to `mud` server identity).
+- `resource`: instance name within the namespace (defaults to `default`).
+
+Examples:
+
+- `mu:renderer:gstreamer:mud@livingroom:default`
+- `mu:library:jellyfin:mud@livingroom:default`
+- `mu:playlist:plsrv:mud@livingroom:default`
+
 ### MQTT QoS / retained (normative)
 
 - `/cmd` publishes: **QoS 1**, **not retained**
@@ -917,6 +936,7 @@ Reply body (example):
       "mediaType": "Audio",
       "artists": ["Miles Davis"],
       "album": "Kind of Blue",
+      "containerId": "root",
       "overview": "Lorem ipsum",
       "durationMs": 322000,
       "imageUrl": "http://jellyfin.local:8096/Items/ff8b/Images/Primary?api_key=..."
@@ -927,6 +947,8 @@ Reply body (example):
   "total": 1
 }
 ```
+
+Items may include `containerId` when the library backend reports a parent container.
 
 ### 12.2 `library.search`
 
@@ -972,6 +994,8 @@ Reply body:
   ]
 }
 ```
+
+When resolving container items (albums/artists), `sources` may include multiple playable tracks.
 
 ---
 

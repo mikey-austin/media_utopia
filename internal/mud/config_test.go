@@ -16,6 +16,7 @@ func TestLoadConfig(t *testing.T) {
 		"\n" +
 		"[modules.playlist]\n" +
 		"enabled = true\n" +
+		"provider = \"plsrv\"\n" +
 		"storage_path = \"/tmp/mud\"\n")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

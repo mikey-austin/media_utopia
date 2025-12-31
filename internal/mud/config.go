@@ -19,6 +19,7 @@ type ServerConfig struct {
 	Broker    string     `toml:"broker"`
 	Identity  string     `toml:"identity"`
 	TopicBase string     `toml:"topic_base"`
+	Namespace string     `toml:"namespace"`
 	LogLevel  string     `toml:"log_level"`
 	LogFormat string     `toml:"log_format"`
 	LogOutput string     `toml:"log_output"`
@@ -55,14 +56,16 @@ type ModulesConfig struct {
 // PlaylistConfig configures the playlist module.
 type PlaylistConfig struct {
 	Enabled     bool   `toml:"enabled"`
-	NodeID      string `toml:"node_id"`
+	Provider    string `toml:"provider"`
+	Resource    string `toml:"resource"`
 	StoragePath string `toml:"storage_path"`
 }
 
 // RendererGStreamerConfig configures the GStreamer renderer module.
 type RendererGStreamerConfig struct {
 	Enabled     bool   `toml:"enabled"`
-	NodeID      string `toml:"node_id"`
+	Provider    string `toml:"provider"`
+	Resource    string `toml:"resource"`
 	Pipeline    string `toml:"pipeline"`
 	Device      string `toml:"device"`
 	CrossfadeMS int64  `toml:"crossfade_ms"`
@@ -70,15 +73,17 @@ type RendererGStreamerConfig struct {
 
 // BridgeUPNPLibraryConfig configures the UPnP library bridge.
 type BridgeUPNPLibraryConfig struct {
-	Enabled bool   `toml:"enabled"`
-	NodeID  string `toml:"node_id"`
-	Listen  string `toml:"listen"`
+	Enabled  bool   `toml:"enabled"`
+	Provider string `toml:"provider"`
+	Resource string `toml:"resource"`
+	Listen   string `toml:"listen"`
 }
 
 // JellyfinLibraryConfig configures the Jellyfin library bridge.
 type JellyfinLibraryConfig struct {
 	Enabled   bool   `toml:"enabled"`
-	NodeID    string `toml:"node_id"`
+	Provider  string `toml:"provider"`
+	Resource  string `toml:"resource"`
 	BaseURL   string `toml:"base_url"`
 	APIKey    string `toml:"api_key"`
 	UserID    string `toml:"user_id"`

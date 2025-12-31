@@ -23,3 +23,23 @@ mu:<kind>:<provider>:<namespace>:<resource>
 ```
 
 IDs are opaque outside the provider that minted them.
+
+### Components
+
+- `kind`: node type (`renderer`, `library`, `playlist`, `advisor`, `session`, etc).
+- `provider`: implementation or backend (`gstreamer`, `jellyfin`, `upnp`, `plsrv`).
+- `namespace`: deployment scope. Defaults to the server identity in `mud` (`mud@livingroom`, `media-hub`).
+- `resource`: instance name within the namespace (defaults to `default`).
+
+### Examples
+
+- `mu:renderer:gstreamer:mud@livingroom:default`
+- `mu:library:jellyfin:mud@livingroom:default`
+- `mu:playlist:plsrv:mud@livingroom:default`
+- `mu:library:upnp:mud@lab:basement-nas`
+
+### Use cases
+
+- **Multi-room:** same provider across namespaces (`mud@kitchen`, `mud@office`).
+- **Multi-instance:** multiple renderers per namespace (`default`, `livingroom`, `patio`).
+- **Bridges:** tie a provider name to a backend (`jellyfin`, `upnp`, `kodi`).

@@ -42,6 +42,7 @@ type stubBroker struct {
 	lastCmd    mu.CommandEnvelope
 	replyTopic string
 	state      mu.RendererState
+	calls      []mu.CommandEnvelope
 }
 
 func (s *stubBroker) ReplyTopic() string { return s.replyTopic }
@@ -49,6 +50,7 @@ func (s *stubBroker) ReplyTopic() string { return s.replyTopic }
 func (s *stubBroker) PublishCommand(ctx context.Context, nodeID string, cmd mu.CommandEnvelope) (mu.ReplyEnvelope, error) {
 	s.lastNode = nodeID
 	s.lastCmd = cmd
+	s.calls = append(s.calls, cmd)
 	if reply, ok := s.replies[cmd.Type]; ok {
 		return reply, nil
 	}
@@ -139,6 +141,88 @@ func TestSnapshotListUsesServerSelector(t *testing.T) {
 	}
 	if broker.lastCmd.Type != "snapshot.list" {
 		t.Fatalf("expected snapshot.list command")
+	}
+}
+
+func TestLeaseAutoRefreshesOnCommand(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test", Kind: "renderer", Name: "Test Renderer"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{renderer},
+		replyTopic: "mu/v1/reply/test",
+		replies: map[string]mu.ReplyEnvelope{
+			"session.renew": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+			"queue.clear":   {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	if err := service.QueueClear(context.Background(), renderer.NodeID); err != nil {
+		t.Fatalf("QueueClear: %v", err)
+	}
+	if len(broker.calls) < 2 {
+		t.Fatalf("expected refresh + command")
+	}
+	if broker.calls[0].Type != "session.renew" {
+		t.Fatalf("expected first call session.renew, got %s", broker.calls[0].Type)
+	}
+	if broker.calls[1].Type != "queue.clear" {
+		t.Fatalf("expected second call queue.clear, got %s", broker.calls[1].Type)
+	}
+}
+
+func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
+	playlistServer := mu.Presence{NodeID: "mu:playlist:plsrv:default:main", Kind: "playlist", Name: "Main"}
+	library := mu.Presence{NodeID: "mu:library:jellyfin:test", Kind: "library", Name: "Jellyfin"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{playlistServer, library},
+		replyTopic: "mu/v1/reply/test",
+	}
+
+	replyBody, err := json.Marshal(mu.LibraryResolveReply{
+		ItemID: "album-1",
+		Sources: []mu.ResolvedSource{
+			{URL: "http://a", Mime: "audio/mp3", ByteRange: true},
+			{URL: "http://b", Mime: "audio/mp3", ByteRange: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+	broker.replies = map[string]mu.ReplyEnvelope{
+		"library.resolve":   {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: replyBody},
+		"playlist.addItems": {ID: "id-2", Type: "ack", OK: true, TS: 101},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{"lib": library.NodeID}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	if err := service.PlaylistAdd(context.Background(), "pl-1", []string{"lib:lib:album-1"}, "yes", ""); err != nil {
+		t.Fatalf("PlaylistAdd: %v", err)
+	}
+
+	if broker.lastCmd.Type != "playlist.addItems" {
+		t.Fatalf("expected playlist.addItems, got %s", broker.lastCmd.Type)
+	}
+	var body mu.PlaylistAddItemsBody
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode add body: %v", err)
+	}
+	if len(body.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(body.Entries))
 	}
 }
 

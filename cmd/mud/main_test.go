@@ -9,8 +9,10 @@ import (
 func TestBuildModulesModuleOnlyFilter(t *testing.T) {
 	cfg := mud.Config{}
 	cfg.Modules.Playlist.Enabled = true
-	cfg.Modules.Playlist.NodeID = "mu:playlist:plsrv:default:main"
+	cfg.Modules.Playlist.Provider = "plsrv"
 	cfg.Modules.Playlist.StoragePath = "/tmp"
+	cfg.Server.Identity = "test"
+	cfg.Server.Namespace = "test"
 
 	logger := mud.NewLogger(mud.LogConfig{Level: "error"})
 	modules, err := buildModules(cfg, nil, logger, "playlist", false)

@@ -95,7 +95,18 @@ func playlistAddCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <playlistId> <item...>",
 		Short: "Add items to playlist",
-		Args:  cobra.MinimumNArgs(2),
+		Long: "Add items to a playlist.\n" +
+			"Items can be:\n" +
+			"  - http(s) URLs\n" +
+			"  - mu URNs (mu:...)\n" +
+			"  - library refs (lib:<selector>:<itemId>) with --resolve=yes\n" +
+			"    where selector can be a library alias or full nodeId\n" +
+			"\n" +
+			"Examples:\n" +
+			"  mu playlist add <playlistId> https://example.com/a.mp3\n" +
+			"  mu playlist add <playlistId> lib:jellyfin:ITEM_ID --resolve yes\n" +
+			"  mu playlist add <playlistId> lib:mu:library:jellyfin:ns:default:ITEM_ID --resolve yes\n",
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)

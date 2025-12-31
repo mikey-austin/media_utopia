@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/mikey-austin/media_utopia/internal/core"
@@ -13,6 +14,12 @@ import (
 
 // HumanPrinter prints human-readable output.
 type HumanPrinter struct{}
+
+// LibraryItemsOutput carries library browse/search payloads with context.
+type LibraryItemsOutput struct {
+	LibraryID string
+	Payload   json.RawMessage
+}
 
 // Print renders human output.
 func (HumanPrinter) Print(v any) error {
@@ -35,6 +42,8 @@ func (HumanPrinter) Print(v any) error {
 		return printSuggestions(data)
 	case core.LibraryResolveResult:
 		return printLibraryResolve(data)
+	case LibraryItemsOutput:
+		return printLibraryItemsOutput(data)
 	case core.RawResult:
 		return printRaw(data)
 	default:
@@ -44,13 +53,17 @@ func (HumanPrinter) Print(v any) error {
 }
 
 func printNodes(result core.NodesResult) error {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "NAME\tKIND\tNODE_ID"); err != nil {
+		return err
+	}
 	for _, node := range result.Nodes {
-		_, err := fmt.Fprintf(os.Stdout, "%s\t%s\t%s\n", node.Name, node.Kind, node.NodeID)
+		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\n", node.Name, node.Kind, node.NodeID)
 		if err != nil {
 			return err
 		}
 	}
-	return nil
+	return tw.Flush()
 }
 
 func printStatus(result core.StatusResult) error {
@@ -121,13 +134,17 @@ func printQueueNow(result core.QueueNowResult) error {
 }
 
 func printPlaylists(result core.PlaylistListResult) error {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "NAME\tPLAYLIST_ID\tREVISION"); err != nil {
+		return err
+	}
 	for _, pl := range result.Playlists {
-		_, err := fmt.Fprintf(os.Stdout, "%s\t%s\t%d\n", pl.Name, pl.PlaylistID, pl.Revision)
+		_, err := fmt.Fprintf(tw, "%s\t%s\t%d\n", pl.Name, pl.PlaylistID, pl.Revision)
 		if err != nil {
 			return err
 		}
 	}
-	return nil
+	return tw.Flush()
 }
 
 func printSnapshots(result core.SnapshotListResult) error {
@@ -165,13 +182,64 @@ func printLibraryResolve(result core.LibraryResolveResult) error {
 }
 
 func printRaw(result core.RawResult) error {
-	data, ok := result.Data.(json.RawMessage)
-	if !ok {
-		_, err := fmt.Fprintln(os.Stdout, result.Data)
+	raw, err := rawBytes(result.Data)
+	if err != nil {
 		return err
 	}
-	_, err := fmt.Fprintln(os.Stdout, string(data))
+	_, err = fmt.Fprintln(os.Stdout, string(raw))
 	return err
+}
+
+type libraryItemsReply struct {
+	Items []libraryItem `json:"items"`
+	Start int64         `json:"start"`
+	Count int64         `json:"count"`
+	Total int64         `json:"total"`
+}
+
+type libraryItem struct {
+	ItemID      string   `json:"itemId"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	MediaType   string   `json:"mediaType"`
+	Artists     []string `json:"artists,omitempty"`
+	Album       string   `json:"album,omitempty"`
+	ContainerID string   `json:"containerId,omitempty"`
+}
+
+func printLibraryItemsOutput(result LibraryItemsOutput) error {
+	var payload libraryItemsReply
+	if err := json.Unmarshal(result.Payload, &payload); err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "NAME\tTYPE\tARTIST\tALBUM\tCONTAINER_ID\tITEM_ID\tLIB_REF"); err != nil {
+		return err
+	}
+	for _, item := range payload.Items {
+		artist := strings.Join(item.Artists, ", ")
+		libRef := fmt.Sprintf("lib:%s:%s", result.LibraryID, item.ItemID)
+		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, item.MediaType, artist, item.Album, item.ContainerID, item.ItemID, libRef)
+		if err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func rawBytes(data any) ([]byte, error) {
+	switch val := data.(type) {
+	case json.RawMessage:
+		return val, nil
+	case []byte:
+		return val, nil
+	default:
+		out, err := json.Marshal(val)
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
 }
 
 func formatPosition(pos, dur int64) string {

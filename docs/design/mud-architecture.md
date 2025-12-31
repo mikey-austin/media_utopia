@@ -51,6 +51,7 @@ Example (TOML):
 broker = "mqtts://broker.local:8883"
 identity = "mud@livingroom"
 topic_base = "mu/v1"
+namespace = "mud@livingroom"
 log_level = "info"
 log_format = "text"
 log_output = "stdout"
@@ -66,20 +67,28 @@ key = "/etc/mud/key.pem"
 
 [modules.playlist]
 enabled = true
+provider = "plsrv"
+resource = "default"
 storage_path = "/var/lib/mud/playlists"
 
 [modules.renderer_gstreamer]
 enabled = true
+provider = "gstreamer"
+resource = "default"
 pipeline = "playbin uri={url} volume={volume}"
 device = "default"
 crossfade_ms = 500
 
 [modules.bridge_upnp_library]
 enabled = true
+provider = "upnp"
+resource = "default"
 listen = "0.0.0.0:9000"
 
 [modules.bridge_jellyfin_library]
 enabled = true
+provider = "jellyfin"
+resource = "default"
 base_url = "http://jellyfin.local:8096"
 api_key = "YOUR_KEY"
 user_id = "YOUR_USER_ID"

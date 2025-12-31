@@ -110,7 +110,7 @@ func (e *Engine) handleSessionAcquire(cmd mu.CommandEnvelope, reply mu.ReplyEnve
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
 	if body.TTLMS <= 0 {
-		body.TTLMS = 15000
+		body.TTLMS = 300000
 	}
 	lease, err := e.Leases.Acquire(cmd.From, time.Duration(body.TTLMS)*time.Millisecond)
 	if err != nil {
@@ -130,7 +130,7 @@ func (e *Engine) handleSessionRenew(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
 	if body.TTLMS <= 0 {
-		body.TTLMS = 15000
+		body.TTLMS = 300000
 	}
 	lease, err := e.Leases.Renew(cmd.Lease.SessionID, cmd.Lease.Token, time.Duration(body.TTLMS)*time.Millisecond)
 	if err != nil {

@@ -3,6 +3,7 @@ package jellyfinlibrary
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,6 +36,9 @@ func TestLibraryBrowse(t *testing.T) {
 	}
 	if len(payload.Items) != 1 {
 		t.Fatalf("expected 1 item")
+	}
+	if payload.Items[0].ContainerID == "" {
+		t.Fatalf("expected container id")
 	}
 	if payload.Items[0].ImageURL == "" {
 		t.Fatalf("expected image url")
@@ -125,6 +129,79 @@ func TestLibraryResolveIncludesMetadata(t *testing.T) {
 	}
 }
 
+func TestLibraryResolveExpandsAlbum(t *testing.T) {
+	handler := http.NewServeMux()
+
+	handler.HandleFunc("/Items/album-1", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfItem{
+			ID:           "album-1",
+			Name:         "Album",
+			Type:         "MusicAlbum",
+			MediaType:    "",
+			RunTimeTicks: 0,
+			Artists:      []string{"Artist"},
+			Album:        "Album",
+			ImageTags:    map[string]string{"Primary": "tag"},
+		}
+		writeJSON(t, w, resp)
+	})
+
+	handler.HandleFunc("/Users/user/Items", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("ParentId") != "album-1" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		resp := jfItemsResponse{
+			Items: []jfItem{
+				{ID: "track-1", Name: "Track 1", Type: "Audio", MediaType: "Audio"},
+				{ID: "track-2", Name: "Track 2", Type: "Audio", MediaType: "Audio"},
+			},
+			TotalRecordCount: 2,
+			StartIndex:       0,
+		}
+		writeJSON(t, w, resp)
+	})
+
+	handler.HandleFunc("/Items/track-1/PlaybackInfo", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfPlaybackInfo{MediaSources: []jfMediaSource{{
+			DirectStreamURL:      "/Audio/track-1/stream?api_key=key",
+			Container:            "mp3",
+			SupportsDirectStream: true,
+		}}}
+		writeJSON(t, w, resp)
+	})
+
+	handler.HandleFunc("/Items/track-2/PlaybackInfo", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfPlaybackInfo{MediaSources: []jfMediaSource{{
+			DirectStreamURL:      "/Audio/track-2/stream?api_key=key",
+			Container:            "mp3",
+			SupportsDirectStream: true,
+		}}}
+		writeJSON(t, w, resp)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "album-1"})}
+	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	var payload mu.LibraryResolveReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if len(payload.Sources) != 2 {
+		t.Fatalf("expected 2 sources")
+	}
+}
+
 func TestLibrarySearchRespectsTimeout(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(20 * time.Millisecond)
@@ -165,8 +242,8 @@ func TestResolveSourceFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSource: %v", err)
 	}
-	if !strings.Contains(source.URL, "/Items/item/Download") {
-		t.Fatalf("expected download url")
+	if !strings.Contains(source.URL, "/Audio/item/stream") {
+		t.Fatalf("expected stream url")
 	}
 }
 
@@ -244,6 +321,7 @@ func newJellyfinTestHandler(t *testing.T) http.Handler {
 				RunTimeTicks: 900000000,
 				Artists:      []string{"Artist"},
 				Album:        "Album",
+				ParentID:     "root",
 				ImageTags:    map[string]string{"Primary": "tag"},
 			}},
 			TotalRecordCount: 1,

@@ -113,13 +113,29 @@ func (h *zapSlogHandler) Enabled(_ context.Context, level slog.Level) bool {
 
 func (h *zapSlogHandler) Handle(_ context.Context, record slog.Record) error {
 	fields := make([]zap.Field, 0, len(h.attrs)+record.NumAttrs())
+	var errMsg string
 	for _, attr := range h.attrs {
 		fields = append(fields, slogAttrToField(attr))
 	}
 	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "error" {
+			switch attr.Value.Kind() {
+			case slog.KindString:
+				errMsg = attr.Value.String()
+			case slog.KindAny:
+				if v, ok := attr.Value.Any().(error); ok {
+					errMsg = v.Error()
+				}
+			}
+		}
 		fields = append(fields, slogAttrToField(attr))
 		return true
 	})
+	if errMsg != "" && (strings.Contains(errMsg, "read connection: EOF") || errMsg == "EOF") {
+		fields = append(fields, zap.String("note", "harmless connection close"))
+		h.logger.Debug("embedded mqtt connection closed", fields...)
+		return nil
+	}
 	switch {
 	case record.Level >= slog.LevelError:
 		h.logger.Error(record.Message, fields...)

@@ -189,10 +189,6 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	source, err := m.resolveSource(body.ItemID, item)
-	if err != nil {
-		return errorReply(cmd, "INVALID", err.Error())
-	}
 
 	metadata := map[string]any{
 		"title":      item.Name,
@@ -211,7 +207,12 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 		metadata["artworkUrl"] = m.imageURL(item.ID)
 	}
 
-	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: []mu.ResolvedSource{source}})
+	sources, err := m.resolveSources(item)
+	if err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+
+	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
 	reply.Body = payload
 	return reply
 }
@@ -224,15 +225,16 @@ type libraryItemsReply struct {
 }
 
 type libraryItem struct {
-	ItemID     string   `json:"itemId"`
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	MediaType  string   `json:"mediaType"`
-	Artists    []string `json:"artists,omitempty"`
-	Album      string   `json:"album,omitempty"`
-	Overview   string   `json:"overview,omitempty"`
-	DurationMS int64    `json:"durationMs,omitempty"`
-	ImageURL   string   `json:"imageUrl,omitempty"`
+	ItemID      string   `json:"itemId"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	MediaType   string   `json:"mediaType"`
+	Artists     []string `json:"artists,omitempty"`
+	Album       string   `json:"album,omitempty"`
+	ContainerID string   `json:"containerId,omitempty"`
+	Overview    string   `json:"overview,omitempty"`
+	DurationMS  int64    `json:"durationMs,omitempty"`
+	ImageURL    string   `json:"imageUrl,omitempty"`
 }
 
 type jfItemsResponse struct {
@@ -297,18 +299,36 @@ func (m *Module) fetchItems(containerID string, start int64, count int64, search
 			imageURL = m.imageURL(item.ID)
 		}
 		items = append(items, libraryItem{
-			ItemID:     item.ID,
-			Name:       item.Name,
-			Type:       item.Type,
-			MediaType:  item.MediaType,
-			Artists:    item.Artists,
-			Album:      item.Album,
-			Overview:   item.Overview,
-			DurationMS: ticksToMS(item.RunTimeTicks),
-			ImageURL:   imageURL,
+			ItemID:      item.ID,
+			Name:        item.Name,
+			Type:        item.Type,
+			MediaType:   item.MediaType,
+			Artists:     item.Artists,
+			Album:       item.Album,
+			ContainerID: item.ParentID,
+			Overview:    item.Overview,
+			DurationMS:  ticksToMS(item.RunTimeTicks),
+			ImageURL:    imageURL,
 		})
 	}
 	return items, resp.TotalRecordCount, nil
+}
+
+func (m *Module) fetchChildItems(parentID string, start int64, count int64) ([]jfItem, error) {
+	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
+	params := url.Values{}
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Recursive", "true")
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags")
+	params.Set("IncludeItemTypes", "Audio,Video")
+	params.Set("ParentId", parentID)
+
+	var resp jfItemsResponse
+	if err := m.doJSON("GET", endpoint, params, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
 }
 
 func (m *Module) fetchItem(itemID string) (jfItem, error) {
@@ -338,7 +358,7 @@ func (m *Module) resolveSource(itemID string, item jfItem) (mu.ResolvedSource, e
 		source := info.MediaSources[0]
 		streamURL := source.DirectStreamURL
 		if streamURL == "" {
-			streamURL = m.downloadURL(itemID)
+			streamURL = m.streamURL(itemID, item)
 		}
 		return mu.ResolvedSource{
 			URL:       m.absoluteURL(streamURL),
@@ -348,10 +368,44 @@ func (m *Module) resolveSource(itemID string, item jfItem) (mu.ResolvedSource, e
 	}
 
 	return mu.ResolvedSource{
-		URL:       m.downloadURL(itemID),
+		URL:       m.streamURL(itemID, item),
 		Mime:      mimeForContainer(item, ""),
 		ByteRange: false,
 	}, nil
+}
+
+func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, error) {
+	if !isContainerItem(item) {
+		source, err := m.resolveSource(item.ID, item)
+		if err != nil {
+			return nil, err
+		}
+		return []mu.ResolvedSource{source}, nil
+	}
+
+	children, err := m.fetchChildItems(item.ID, 0, 500)
+	if err != nil {
+		return nil, err
+	}
+	if len(children) == 0 {
+		return nil, errors.New("container has no playable items")
+	}
+
+	sources := make([]mu.ResolvedSource, 0, len(children))
+	for _, child := range children {
+		if isContainerItem(child) {
+			continue
+		}
+		source, err := m.resolveSource(child.ID, child)
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	if len(sources) == 0 {
+		return nil, errors.New("container has no playable items")
+	}
+	return sources, nil
 }
 
 func (m *Module) doJSON(method string, endpoint string, params url.Values, body any, out any) error {
@@ -409,6 +463,20 @@ func (m *Module) downloadURL(itemID string) string {
 	return u.String()
 }
 
+func (m *Module) streamURL(itemID string, item jfItem) string {
+	u, _ := url.Parse(m.config.BaseURL)
+	prefix := "Videos"
+	if strings.EqualFold(item.MediaType, "Audio") {
+		prefix = "Audio"
+	}
+	u.Path = path.Join(u.Path, "/", prefix, "/", itemID, "/stream")
+	q := u.Query()
+	q.Set("static", "true")
+	q.Set("api_key", m.config.APIKey)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 func (m *Module) absoluteURL(streamURL string) string {
 	if strings.HasPrefix(streamURL, "http://") || strings.HasPrefix(streamURL, "https://") {
 		return streamURL
@@ -421,6 +489,18 @@ func ticksToMS(ticks int64) int64 {
 		return 0
 	}
 	return ticks / 10000
+}
+
+func isContainerItem(item jfItem) bool {
+	if strings.EqualFold(item.MediaType, "Audio") || strings.EqualFold(item.MediaType, "Video") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(item.Type)) {
+	case "musicalbum", "musicalartist", "album", "artist":
+		return true
+	default:
+		return true
+	}
 }
 
 func mimeForContainer(item jfItem, container string) string {

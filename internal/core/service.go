@@ -22,6 +22,8 @@ type Service struct {
 	Config     Config
 }
 
+const defaultLeaseTTL = 5 * time.Minute
+
 // ListNodes returns presence entries with optional filters.
 func (s Service) ListNodes(ctx context.Context, kind string, onlineOnly bool) (NodesResult, error) {
 	nodes, err := s.Broker.ListPresence(ctx)
@@ -771,6 +773,11 @@ func (s Service) simplePlayback(ctx context.Context, selector string, cmdType st
 }
 
 func (s Service) publishSimple(ctx context.Context, nodeID string, cmd mu.CommandEnvelope) error {
+	if cmd.Lease != nil && !isSessionCommand(cmd.Type) {
+		if err := s.refreshLease(ctx, nodeID, *cmd.Lease); err != nil {
+			return err
+		}
+	}
 	reply, err := s.Broker.PublishCommand(ctx, nodeID, cmd)
 	if err != nil {
 		return WrapError(ExitRuntime, "publish command", err)
@@ -789,6 +796,26 @@ func (s Service) decorateCommand(cmd mu.CommandEnvelope, lease *mu.Lease, ifRev 
 	cmd.Lease = lease
 	cmd.IfRevision = ifRev
 	return cmd
+}
+
+func (s Service) refreshLease(ctx context.Context, nodeID string, lease mu.Lease) error {
+	cmd, err := mu.NewCommand("session.renew", mu.SessionRenewBody{TTLMS: defaultLeaseTTL.Milliseconds()})
+	if err != nil {
+		return WrapError(ExitRuntime, "build renew", err)
+	}
+	cmd = s.decorateCommand(cmd, &lease, nil)
+	reply, err := s.Broker.PublishCommand(ctx, nodeID, cmd)
+	if err != nil {
+		return WrapError(ExitRuntime, "renew lease", err)
+	}
+	if reply.Err != nil {
+		return ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	return nil
+}
+
+func isSessionCommand(cmdType string) bool {
+	return cmdType == "session.acquire" || cmdType == "session.renew" || cmdType == "session.release"
 }
 
 func (s Service) lookupLease(rendererID string) (mu.Lease, error) {
@@ -911,6 +938,14 @@ func (s Service) buildPlaylistEntries(ctx context.Context, items []string, resol
 	entries := make([]mu.QueueEntry, 0, len(items))
 	needsResolve := resolve == "yes"
 	for _, item := range items {
+		if needsResolve && strings.HasPrefix(strings.TrimSpace(item), "lib:") {
+			resolved, err := s.resolveLibraryEntries(ctx, item)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, resolved...)
+			continue
+		}
 		entry, err := s.parseQueueItem(ctx, item, needsResolve)
 		if err != nil {
 			return nil, err
@@ -932,18 +967,23 @@ func (s Service) parseQueueItem(ctx context.Context, item string, resolve bool) 
 		return mu.QueueEntry{Ref: &mu.ItemRef{ID: item}}, nil
 	}
 	if strings.HasPrefix(item, "lib:") {
-		parts := strings.SplitN(strings.TrimPrefix(item, "lib:"), ":", 2)
-		if len(parts) != 2 {
-			return mu.QueueEntry{}, &CLIError{Code: ExitUsage, Msg: "invalid library item (expected lib:<alias>:<id>)"}
-		}
-		if !resolve {
-			return mu.QueueEntry{Ref: &mu.ItemRef{ID: parts[1]}}, nil
-		}
-		lib, err := s.Resolver.ResolveLibrary(ctx, parts[0])
+		selector, itemID, err := parseLibraryRef(item)
 		if err != nil {
 			return mu.QueueEntry{}, err
 		}
-		cmd, err := mu.NewCommand("library.resolve", mu.LibraryResolveBody{ItemID: parts[1]})
+		if !resolve {
+			lib, err := s.Resolver.ResolveLibrary(ctx, selector)
+			if err != nil {
+				return mu.QueueEntry{}, err
+			}
+			refID := fmt.Sprintf("lib:%s:%s", lib.NodeID, itemID)
+			return mu.QueueEntry{Ref: &mu.ItemRef{ID: refID}}, nil
+		}
+		lib, err := s.Resolver.ResolveLibrary(ctx, selector)
+		if err != nil {
+			return mu.QueueEntry{}, err
+		}
+		cmd, err := mu.NewCommand("library.resolve", mu.LibraryResolveBody{ItemID: itemID})
 		if err != nil {
 			return mu.QueueEntry{}, WrapError(ExitRuntime, "build command", err)
 		}
@@ -969,6 +1009,50 @@ func (s Service) parseQueueItem(ctx context.Context, item string, resolve bool) 
 		return mu.QueueEntry{}, &CLIError{Code: ExitUsage, Msg: "playlist references require playlist load (not supported in queue add)"}
 	}
 	return mu.QueueEntry{}, &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("unsupported item: %s", item)}
+}
+
+func parseLibraryRef(item string) (string, string, error) {
+	ref := strings.TrimPrefix(item, "lib:")
+	idx := strings.LastIndex(ref, ":")
+	if idx <= 0 || idx >= len(ref)-1 {
+		return "", "", &CLIError{Code: ExitUsage, Msg: "invalid library item (expected lib:<selector>:<id>)"}
+	}
+	return ref[:idx], ref[idx+1:], nil
+}
+
+func (s Service) resolveLibraryEntries(ctx context.Context, item string) ([]mu.QueueEntry, error) {
+	selector, itemID, err := parseLibraryRef(item)
+	if err != nil {
+		return nil, err
+	}
+	lib, err := s.Resolver.ResolveLibrary(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	cmd, err := mu.NewCommand("library.resolve", mu.LibraryResolveBody{ItemID: itemID})
+	if err != nil {
+		return nil, WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, lib.NodeID, cmd)
+	if err != nil {
+		return nil, WrapError(ExitRuntime, "publish command", err)
+	}
+	if reply.Err != nil {
+		return nil, ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	var body mu.LibraryResolveReply
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		return nil, WrapError(ExitRuntime, "decode library reply", err)
+	}
+	if len(body.Sources) == 0 {
+		return nil, &CLIError{Code: ExitNotFound, Msg: "no sources returned"}
+	}
+	entries := make([]mu.QueueEntry, 0, len(body.Sources))
+	for _, src := range body.Sources {
+		entries = append(entries, mu.QueueEntry{Resolved: &mu.ResolvedSource{URL: src.URL, Mime: src.Mime, ByteRange: src.ByteRange}})
+	}
+	return entries, nil
 }
 
 func rendererCanResolve(renderer mu.Presence) bool {

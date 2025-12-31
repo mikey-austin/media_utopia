@@ -107,7 +107,7 @@ mu acquire <renderer> [--ttl <dur>] [--wait] [--json]
 
 Defaults:
 
-* `--ttl 15s`
+* `--ttl 5m`
 * prints session id + lease expiry
 
 `--wait`: if currently owned, wait until released/expired (bounded by timeout unless `--timeout` increased).
@@ -243,6 +243,12 @@ mu playlist rm  <playlistId> <entryId|index...> [--server <playlistServer>] [--j
 mu playlist rename <playlistId> "<name>" [--server <playlistServer>]
 ```
 
+Notes:
+- `playlistId` is the full playlist URN from `mu playlist ls`.
+- Items can be URLs, mu URNs, or library refs (`lib:<selector>:<itemId>`) when used with `--resolve yes`.
+- `selector` may be a library alias, name, or full node id (URN).
+- When resolving library refs, container items (albums/artists) expand into their playable tracks.
+
 ### 6.3 Load playlist into renderer queue (lease required)
 
 ```bash
@@ -279,14 +285,22 @@ mu lib ls [--json]
 ### Browse
 
 ```bash
-mu lib browse <library> <containerId> [--start <n>] [--count <n>] [--json]
+mu lib browse [library] [containerId] [--start <n>] [--count <n>] [--json]
 ```
+
+Notes:
+- Omit `containerId` to browse the library root.
+- Use `--container <id>` to disambiguate when relying on defaults.
+- Library selectors can be an alias, the library name, or the full node id (URN).
+- `containerId` values are library-specific (Jellyfin uses empty/root to list top-level folders).
 
 ### Search
 
 ```bash
 mu lib search <library> "<query>" [--start <n>] [--count <n>] [--json]
 ```
+
+Library selectors can be an alias, the library name, or the full node id (URN).
 
 ### Resolve
 

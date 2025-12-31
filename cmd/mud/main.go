@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -116,6 +117,7 @@ func main() {
 		zap.Bool("log_utc", cfg.Server.LogUTC),
 		zap.Bool("log_color", cfg.Server.LogColor),
 		zap.Strings("modules", enabledModules(cfg)),
+		zap.String("namespace", cfg.Server.Namespace),
 	)
 
 	if daemonize {
@@ -135,6 +137,8 @@ func main() {
 			TLSCert:   cfg.Server.TLS.Cert,
 			TLSKey:    cfg.Server.TLS.Key,
 			Timeout:   2 * time.Second,
+			Logger:    logger,
+			Debug:     logger.Core().Enabled(zap.DebugLevel),
 		})
 		if err != nil {
 			logger.Error("mqtt connection failed", zap.Error(err))
@@ -189,6 +193,9 @@ func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase s
 	if cfg.Server.TopicBase == "" {
 		cfg.Server.TopicBase = mu.BaseTopic
 	}
+	if cfg.Server.Namespace == "" {
+		cfg.Server.Namespace = cfg.Server.Identity
+	}
 	if cfg.Server.Broker == "" && cfg.Modules.EmbeddedMQTT.Enabled {
 		listen := cfg.Modules.EmbeddedMQTT.Listen
 		if listen == "" {
@@ -223,8 +230,12 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 	}
 	if cfg.Modules.Playlist.Enabled {
 		if moduleOnly == "" || moduleOnly == "playlist" {
+			nodeID, err := buildNodeID("playlist", cfg.Modules.Playlist.Provider, cfg.Server.Namespace, cfg.Modules.Playlist.Resource)
+			if err != nil {
+				return nil, err
+			}
 			pl, err := playlist.NewModule(logger.With(zap.String("module", "playlist")), client, playlist.Config{
-				NodeID:      cfg.Modules.Playlist.NodeID,
+				NodeID:      nodeID,
 				TopicBase:   cfg.Server.TopicBase,
 				StoragePath: cfg.Modules.Playlist.StoragePath,
 				Identity:    cfg.Server.Identity,
@@ -242,8 +253,12 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 	if cfg.Modules.BridgeJellyfinLibrary.Enabled {
 		if moduleOnly == "" || moduleOnly == "bridge_jellyfin_library" {
 			timeout := time.Duration(cfg.Modules.BridgeJellyfinLibrary.TimeoutMS) * time.Millisecond
+			nodeID, err := buildNodeID("library", cfg.Modules.BridgeJellyfinLibrary.Provider, cfg.Server.Namespace, cfg.Modules.BridgeJellyfinLibrary.Resource)
+			if err != nil {
+				return nil, err
+			}
 			jf, err := jellyfinlibrary.NewModule(logger.With(zap.String("module", "bridge_jellyfin_library")), client, jellyfinlibrary.Config{
-				NodeID:    cfg.Modules.BridgeJellyfinLibrary.NodeID,
+				NodeID:    nodeID,
 				TopicBase: cfg.Server.TopicBase,
 				BaseURL:   cfg.Modules.BridgeJellyfinLibrary.BaseURL,
 				APIKey:    cfg.Modules.BridgeJellyfinLibrary.APIKey,
@@ -263,8 +278,12 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 	if cfg.Modules.RendererGStreamer.Enabled {
 		if moduleOnly == "" || moduleOnly == "renderer_gstreamer" {
 			crossfade := time.Duration(cfg.Modules.RendererGStreamer.CrossfadeMS) * time.Millisecond
+			nodeID, err := buildNodeID("renderer", cfg.Modules.RendererGStreamer.Provider, cfg.Server.Namespace, cfg.Modules.RendererGStreamer.Resource)
+			if err != nil {
+				return nil, err
+			}
 			mod, err := renderergstreamer.NewModule(logger.With(zap.String("module", "renderer_gstreamer")), client, renderergstreamer.Config{
-				NodeID:       cfg.Modules.RendererGStreamer.NodeID,
+				NodeID:       nodeID,
 				TopicBase:    cfg.Server.TopicBase,
 				Name:         "GStreamer Renderer",
 				Pipeline:     cfg.Modules.RendererGStreamer.Pipeline,
@@ -307,6 +326,19 @@ func enabledModules(cfg mud.Config) []string {
 		out = append(out, "bridge_upnp_library")
 	}
 	return out
+}
+
+func buildNodeID(kind string, provider string, namespace string, resource string) (string, error) {
+	if strings.TrimSpace(provider) == "" {
+		return "", fmt.Errorf("%s provider required", kind)
+	}
+	if strings.TrimSpace(namespace) == "" {
+		return "", fmt.Errorf("%s namespace required", kind)
+	}
+	if strings.TrimSpace(resource) == "" {
+		resource = "default"
+	}
+	return fmt.Sprintf("mu:%s:%s:%s:%s", kind, provider, namespace, resource), nil
 }
 
 func printResolvedConfig(cfg mud.Config) error {

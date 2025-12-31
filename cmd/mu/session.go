@@ -35,7 +35,7 @@ func acquireCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().DurationVar(&ttl, "ttl", 15*time.Second, "lease ttl")
+	cmd.Flags().DurationVar(&ttl, "ttl", 5*time.Minute, "lease ttl")
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for lease release")
 
 	return cmd
@@ -61,7 +61,7 @@ func renewCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().DurationVar(&ttl, "ttl", 15*time.Second, "lease ttl")
+	cmd.Flags().DurationVar(&ttl, "ttl", 5*time.Minute, "lease ttl")
 	return cmd
 }
 

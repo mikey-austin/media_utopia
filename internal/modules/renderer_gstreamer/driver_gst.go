@@ -20,7 +20,8 @@ type Driver struct {
 	crossfade time.Duration
 	volume    float64
 	muted     bool
-	current   *gst.Pipeline
+	current   *gst.Element
+	volumeEl  *gst.Element
 }
 
 var gstInitOnce sync.Once
@@ -43,20 +44,22 @@ func (d *Driver) Play(url string, positionMS int64) error {
 	defer d.mu.Unlock()
 
 	volume := d.currentVolumeLocked()
-	pipeline, err := d.buildPipeline(url, volume, positionMS)
+	pipeline, volumeEl, err := d.buildPipeline(url, volume, positionMS)
 	if err != nil {
 		return err
 	}
-	if err := d.startPipeline(pipeline); err != nil {
+	if err := d.startPipeline(pipeline, volumeEl); err != nil {
 		return err
 	}
 
 	if d.current != nil && d.crossfade > 0 {
 		old := d.current
-		go d.fadeOut(old, d.crossfade)
+		oldVol := d.volumeEl
+		go d.fadeOut(old, oldVol, d.crossfade)
 	}
 
 	d.current = pipeline
+	d.volumeEl = volumeEl
 	return nil
 }
 
@@ -108,7 +111,10 @@ func (d *Driver) SetVolume(volume float64) error {
 
 	d.volume = volume
 	if d.current != nil {
-		_ = d.current.SetProperty("volume", d.currentVolumeLocked())
+		target := d.volumeTarget()
+		if target != nil {
+			_ = target.SetProperty("volume", d.currentVolumeLocked())
+		}
 	}
 	return nil
 }
@@ -120,32 +126,49 @@ func (d *Driver) SetMute(mute bool) error {
 
 	d.muted = mute
 	if d.current != nil {
-		_ = d.current.SetProperty("volume", d.currentVolumeLocked())
+		target := d.volumeTarget()
+		if target != nil {
+			_ = target.SetProperty("volume", d.currentVolumeLocked())
+		}
 	}
 	return nil
 }
 
-func (d *Driver) buildPipeline(url string, volume float64, positionMS int64) (*gst.Pipeline, error) {
+func (d *Driver) buildPipeline(url string, volume float64, positionMS int64) (*gst.Element, *gst.Element, error) {
 	pipeline := d.pipeline
-	pipeline = strings.ReplaceAll(pipeline, "{url}", url)
+	pipeline = replaceURL(pipeline, url)
 	pipeline = strings.ReplaceAll(pipeline, "{device}", d.device)
 	pipeline = strings.ReplaceAll(pipeline, "{start_ms}", fmt.Sprintf("%d", positionMS))
 	pipeline = strings.ReplaceAll(pipeline, "{volume}", fmt.Sprintf("%0.2f", volume))
 
-	el, err := gst.NewPipelineFromString(pipeline)
-	if err != nil {
-		return nil, err
+	if strings.Contains(pipeline, "!") {
+		el, err := gst.NewPipelineFromString(pipeline)
+		if err != nil {
+			return nil, nil, err
+		}
+		return el.Element, el.Element, nil
 	}
-	return el, nil
+	bin, err := gst.NewBinFromString(pipeline, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	if elems, err := bin.GetElements(); err == nil && len(elems) == 1 {
+		return bin.Element, elems[0], nil
+	}
+	return bin.Element, bin.Element, nil
 }
 
-func (d *Driver) startPipeline(pipeline *gst.Pipeline) error {
+func (d *Driver) startPipeline(pipeline *gst.Element, volumeEl *gst.Element) error {
+	target := volumeEl
+	if target == nil {
+		target = pipeline
+	}
 	if err := pipeline.SetState(gst.StatePlaying); err != nil {
 		return err
 	}
 	if d.crossfade > 0 {
-		_ = pipeline.SetProperty("volume", 0.0)
-		go d.fadeIn(pipeline, d.crossfade)
+		_ = target.SetProperty("volume", 0.0)
+		go d.fadeIn(pipeline, target, d.crossfade)
 	}
 	return nil
 }
@@ -156,10 +179,11 @@ func (d *Driver) stopCurrentLocked() error {
 	}
 	_ = d.current.SetState(gst.StateNull)
 	d.current = nil
+	d.volumeEl = nil
 	return nil
 }
 
-func (d *Driver) seekLocked(pipeline *gst.Pipeline, positionMS int64) error {
+func (d *Driver) seekLocked(pipeline *gst.Element, positionMS int64) error {
 	positionNS := positionMS * int64(time.Millisecond)
 	if ok := pipeline.SeekSimple(positionNS, gst.FormatTime, gst.SeekFlagFlush|gst.SeekFlagKeyUnit); !ok {
 		return errors.New("seek failed")
@@ -167,22 +191,26 @@ func (d *Driver) seekLocked(pipeline *gst.Pipeline, positionMS int64) error {
 	return nil
 }
 
-func (d *Driver) fadeIn(pipeline *gst.Pipeline, duration time.Duration) {
+func (d *Driver) fadeIn(pipeline *gst.Element, target *gst.Element, duration time.Duration) {
 	steps := 10
 	step := duration / time.Duration(steps)
 	for i := 0; i <= steps; i++ {
 		volume := (float64(i) / float64(steps)) * d.currentVolumeLocked()
-		_ = pipeline.SetProperty("volume", volume)
+		if target != nil {
+			_ = target.SetProperty("volume", volume)
+		}
 		time.Sleep(step)
 	}
 }
 
-func (d *Driver) fadeOut(pipeline *gst.Pipeline, duration time.Duration) {
+func (d *Driver) fadeOut(pipeline *gst.Element, target *gst.Element, duration time.Duration) {
 	steps := 10
 	step := duration / time.Duration(steps)
 	for i := steps; i >= 0; i-- {
 		volume := (float64(i) / float64(steps)) * d.currentVolumeLocked()
-		_ = pipeline.SetProperty("volume", volume)
+		if target != nil {
+			_ = target.SetProperty("volume", volume)
+		}
 		time.Sleep(step)
 	}
 	_ = pipeline.SetState(gst.StateNull)
@@ -193,4 +221,28 @@ func (d *Driver) currentVolumeLocked() float64 {
 		return 0
 	}
 	return d.volume
+}
+
+func (d *Driver) volumeTarget() *gst.Element {
+	if d.volumeEl != nil {
+		return d.volumeEl
+	}
+	return d.current
+}
+
+func replaceURL(pipeline string, url string) string {
+	quoted := quotePipelineValue(url)
+	needle := []string{
+		"uri={url}",
+		"uri='{url}'",
+		`uri="{url}"`,
+	}
+	for _, item := range needle {
+		pipeline = strings.ReplaceAll(pipeline, item, "uri="+quoted)
+	}
+	return strings.ReplaceAll(pipeline, "{url}", url)
+}
+
+func quotePipelineValue(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }

@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 
 	"github.com/spf13/cobra"
+
+	"github.com/mikey-austin/media_utopia/internal/adapters/output"
 )
 
 func libraryCommand() *cobra.Command {
@@ -41,21 +45,36 @@ func libListCommand() *cobra.Command {
 func libBrowseCommand() *cobra.Command {
 	var start int64
 	var count int64
+	var container string
 
 	cmd := &cobra.Command{
-		Use:   "browse [library] <containerId>",
+		Use:   "browse [library] [containerId]",
 		Short: "Browse library",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: "Browse a library by container. Omit containerId to browse the root.\n" +
+			"Library selectors can be a configured alias, the library name, or a full node id (URN).\n" +
+			"Container ids are library-specific; for Jellyfin, use empty to list the root folders.\n" +
+			"Examples:\n" +
+			"  mu lib browse               # root of default library\n" +
+			"  mu lib browse jellyfin      # root of jellyfin library\n" +
+			"  mu lib browse jellyfin abc  # container abc in jellyfin\n" +
+			"  mu lib browse --container abc\n",
+		Args: cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
 			selector := ""
-			containerID := ""
-			if len(args) == 1 {
-				containerID = args[0]
-			} else {
+			containerID := container
+			switch len(args) {
+			case 0:
+				// Use defaults and optional --container.
+			case 1:
+				selector = args[0]
+			case 2:
+				if container != "" {
+					return errors.New("use either [containerId] or --container, not both")
+				}
 				selector = args[0]
 				containerID = args[1]
 			}
@@ -63,12 +82,22 @@ func libBrowseCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if !app.json {
+				library, err := app.service.Resolver.ResolveLibrary(ctx, selector)
+				if err != nil {
+					return err
+				}
+				if payload, ok := result.Data.(json.RawMessage); ok {
+					return app.printer.Print(output.LibraryItemsOutput{LibraryID: library.NodeID, Payload: payload})
+				}
+			}
 			return app.printer.Print(result)
 		},
 	}
 
 	cmd.Flags().Int64Var(&start, "start", 0, "start offset")
 	cmd.Flags().Int64Var(&count, "count", 50, "page size")
+	cmd.Flags().StringVar(&container, "container", "", "container id (defaults to root)")
 	return cmd
 }
 
@@ -79,7 +108,9 @@ func libSearchCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "search [library] <query>",
 		Short: "Search library",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: "Search a library for matching items.\n" +
+			"Library selectors can be a configured alias, the library name, or a full node id (URN).",
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -96,6 +127,15 @@ func libSearchCommand() *cobra.Command {
 			result, err := app.service.LibrarySearch(ctx, selector, query, start, count)
 			if err != nil {
 				return err
+			}
+			if !app.json {
+				library, err := app.service.Resolver.ResolveLibrary(ctx, selector)
+				if err != nil {
+					return err
+				}
+				if payload, ok := result.Data.(json.RawMessage); ok {
+					return app.printer.Print(output.LibraryItemsOutput{LibraryID: library.NodeID, Payload: payload})
+				}
 			}
 			return app.printer.Print(result)
 		},

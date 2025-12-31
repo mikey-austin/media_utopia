@@ -597,12 +597,12 @@ func publishCommand(t *testing.T, h *integrationHarness, cmd mu.CommandEnvelope)
 	t.Helper()
 	ctx, cancel := context.WithTimeout(h.ctx, 3*time.Second)
 	t.Cleanup(cancel)
-	h.logger.Debug("publish command", "type", cmd.Type, "id", cmd.ID, "node", h.playlistNode)
+	h.logger.Debug("publish command", zap.String("type", cmd.Type), zap.String("id", cmd.ID), zap.String("node", h.playlistNode))
 	reply, err := h.client.PublishCommand(ctx, h.playlistNode, cmd)
 	if err != nil {
 		t.Fatalf("publish command: %v", err)
 	}
-	h.logger.Debug("command reply", "ok", reply.OK, "err", reply.Err)
+	h.logger.Debug("command reply", zap.Bool("ok", reply.OK), zap.Any("err", reply.Err))
 	return reply
 }
 
