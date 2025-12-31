@@ -47,7 +47,9 @@ func volumeCommand() *cobra.Command {
 			if arg == "" && mutePtr == nil {
 				return fmt.Errorf("volume value required")
 			}
-			return app.service.SetVolume(ctx, selector, arg, mutePtr)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.SetVolume(ctx, selector, arg, mutePtr)
+			})
 		},
 	}
 

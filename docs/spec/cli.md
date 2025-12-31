@@ -180,6 +180,8 @@ mu queue now  <renderer> [--json]
 
 ### 5.2 Modify queue (lease required)
 
+When a lease is missing, `mu` will automatically acquire one and retry the command (it prints a notice unless `--quiet` is set).
+
 ```bash
 mu queue clear <renderer>
 mu queue jump  <renderer> <index>

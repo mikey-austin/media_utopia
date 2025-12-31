@@ -179,7 +179,9 @@ func playlistLoadCommand() *cobra.Command {
 				selector = args[0]
 				playlistID = args[1]
 			}
-			return app.service.QueueLoadPlaylist(ctx, selector, playlistID, modeValue, resolveValue, server)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueLoadPlaylist(ctx, selector, playlistID, modeValue, resolveValue, server)
+			})
 		},
 	}
 

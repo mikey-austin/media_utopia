@@ -189,6 +189,37 @@ func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, c
 	return context.WithTimeout(ctx, timeout)
 }
 
+func (a *app) runWithLeaseRetry(ctx context.Context, selector string, fn func() error) error {
+	err := fn()
+	if err == nil {
+		return nil
+	}
+	cliErr, ok := err.(*core.CLIError)
+	if !ok || cliErr.Code != core.ExitLease {
+		return err
+	}
+
+	result, acquireErr := a.service.AcquireLease(ctx, selector, 5*time.Minute)
+	if acquireErr != nil {
+		return err
+	}
+	a.printLeaseNotice(result)
+	return fn()
+}
+
+func (a *app) printLeaseNotice(result core.SessionResult) {
+	if a.quiet {
+		return
+	}
+	expires := time.Unix(result.Session.LeaseExpiresAt, 0).Format(time.RFC3339)
+	msg := fmt.Sprintf("auto-acquired lease for %s (expires %s)", result.RendererID, expires)
+	if a.json {
+		_, _ = fmt.Fprintln(os.Stderr, msg)
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stdout, msg)
+}
+
 func defaultIdentity(flagVal string, cfgVal string) string {
 	if flagVal != "" {
 		return flagVal

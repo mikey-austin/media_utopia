@@ -96,7 +96,9 @@ func queueClearCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return app.service.QueueClear(ctx, selector)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueClear(ctx, selector)
+			})
 		},
 	}
 }
@@ -122,7 +124,9 @@ func queueJumpCommand() *cobra.Command {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
-			return app.service.QueueJump(ctx, selector, index)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueJump(ctx, selector, index)
+			})
 		},
 	}
 }
@@ -144,7 +148,9 @@ func queueRemoveCommand() *cobra.Command {
 				selector = args[0]
 				arg = args[1]
 			}
-			return app.service.QueueRemove(ctx, selector, arg)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueRemove(ctx, selector, arg)
+			})
 		},
 	}
 }
@@ -177,7 +183,9 @@ func queueMoveCommand() *cobra.Command {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
-			return app.service.QueueMove(ctx, selector, from, to)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueMove(ctx, selector, from, to)
+			})
 		},
 	}
 }
@@ -197,7 +205,9 @@ func queueShuffleCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return app.service.QueueShuffle(ctx, selector, seed)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueShuffle(ctx, selector, seed)
+			})
 		},
 	}
 
@@ -231,7 +241,9 @@ func queueRepeatCommand() *cobra.Command {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
-			return app.service.QueueRepeat(ctx, selector, repeat)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueRepeat(ctx, selector, repeat)
+			})
 		},
 	}
 }
@@ -275,7 +287,9 @@ func queueAddCommand() *cobra.Command {
 				selector = args[0]
 				items = args[1:]
 			}
-			return app.service.QueueAdd(ctx, selector, items, position, indexPtr, resolveValue)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueAdd(ctx, selector, items, position, indexPtr, resolveValue)
+			})
 		},
 	}
 
@@ -337,7 +351,9 @@ func queueSetCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return app.service.QueueSet(ctx, selector, entries, revPtr)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueSet(ctx, selector, entries, revPtr)
+			})
 		},
 	}
 

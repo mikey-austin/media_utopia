@@ -282,21 +282,20 @@ func (e *Engine) handlePlaybackPlay(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 			return errorReply(cmd, "INVALID", err.Error())
 		}
 	}
-	entry, ok := e.Queue.Current()
-	if !ok {
-		return errorReply(cmd, "NOT_FOUND", "queue empty")
+	if body.Index == nil {
+		switch e.State.Playback.Status {
+		case "paused":
+			if err := e.Driver.Resume(); err != nil {
+				return errorReply(cmd, "INVALID", err.Error())
+			}
+			e.State.Playback.Status = "playing"
+			e.bumpState()
+			return reply
+		case "playing":
+			return reply
+		}
 	}
-	url := resolvedURL(entry)
-	if url == "" {
-		return errorReply(cmd, "INVALID", "entry not resolved")
-	}
-	if err := e.Driver.Play(url, 0); err != nil {
-		return errorReply(cmd, "INVALID", err.Error())
-	}
-	e.State.Playback.Status = "playing"
-	e.State.Current = &mu.CurrentItemState{QueueEntryID: entry.QueueEntryID, ItemID: entry.ItemID, Metadata: entry.Metadata}
-	e.bumpState()
-	return reply
+	return e.startCurrentPlayback(reply)
 }
 
 func (e *Engine) handlePlaybackPause(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
@@ -346,7 +345,7 @@ func (e *Engine) handlePlaybackNext(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 	if err := e.Queue.Jump(e.Queue.Summary().Index + 1); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	return e.handlePlaybackPlay(cmd, reply)
+	return e.startCurrentPlayback(reply)
 }
 
 func (e *Engine) handlePlaybackPrev(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
@@ -356,7 +355,34 @@ func (e *Engine) handlePlaybackPrev(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 	if err := e.Queue.Jump(e.Queue.Summary().Index - 1); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	return e.handlePlaybackPlay(cmd, reply)
+	return e.startCurrentPlayback(reply)
+}
+
+func (e *Engine) startCurrentPlayback(reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	entry, ok := e.Queue.Current()
+	if !ok {
+		reply.OK = false
+		reply.Type = "error"
+		reply.Err = &mu.ReplyError{Code: "NOT_FOUND", Message: "queue empty"}
+		return reply
+	}
+	url := resolvedURL(entry)
+	if url == "" {
+		reply.OK = false
+		reply.Type = "error"
+		reply.Err = &mu.ReplyError{Code: "INVALID", Message: "entry not resolved"}
+		return reply
+	}
+	if err := e.Driver.Play(url, 0); err != nil {
+		reply.OK = false
+		reply.Type = "error"
+		reply.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
+		return reply
+	}
+	e.State.Playback.Status = "playing"
+	e.State.Current = &mu.CurrentItemState{QueueEntryID: entry.QueueEntryID, ItemID: entry.ItemID, Metadata: entry.Metadata}
+	e.bumpState()
+	return reply
 }
 
 func (e *Engine) handleSetVolume(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {

@@ -9,20 +9,26 @@ import (
 )
 
 type fakeDriver struct {
-	playURL string
-	seekMS  int64
-	volume  float64
-	mute    bool
+	playURL   string
+	seekMS    int64
+	volume    float64
+	mute      bool
+	playCnt   int
+	resumeCnt int
 }
 
 func (d *fakeDriver) Play(url string, positionMS int64) error {
 	d.playURL = url
 	d.seekMS = positionMS
+	d.playCnt++
 	return nil
 }
-func (d *fakeDriver) Pause() error  { return nil }
-func (d *fakeDriver) Resume() error { return nil }
-func (d *fakeDriver) Stop() error   { return nil }
+func (d *fakeDriver) Pause() error { return nil }
+func (d *fakeDriver) Resume() error {
+	d.resumeCnt++
+	return nil
+}
+func (d *fakeDriver) Stop() error { return nil }
 func (d *fakeDriver) Seek(positionMS int64) error {
 	d.seekMS = positionMS
 	return nil
@@ -116,6 +122,56 @@ func TestEngineSeek(t *testing.T) {
 	}
 	if driver.seekMS != 1200 {
 		t.Fatalf("expected seek 1200")
+	}
+}
+
+func TestEnginePlayResume(t *testing.T) {
+	driver := &fakeDriver{}
+	engine := NewEngine("mu:renderer:test", "Test", driver)
+	lease := acquireLease(t, engine)
+
+	add := mu.CommandEnvelope{
+		ID:    "7",
+		Type:  "queue.add",
+		Lease: &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		Body:  mustJSON(mu.QueueAddBody{Position: "end", Entries: []mu.QueueEntry{{Resolved: &mu.ResolvedSource{URL: "http://stream"}}}}),
+	}
+	addReply := engine.HandleCommand(add)
+	if addReply.Type != "ack" {
+		t.Fatalf("expected ack")
+	}
+
+	play := mu.CommandEnvelope{
+		ID:    "8",
+		Type:  "playback.play",
+		Lease: &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		Body:  mustJSON(mu.PlaybackPlayBody{}),
+	}
+	engine.HandleCommand(play)
+
+	pause := mu.CommandEnvelope{
+		ID:    "9",
+		Type:  "playback.pause",
+		Lease: &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		Body:  mustJSON(struct{}{}),
+	}
+	engine.HandleCommand(pause)
+
+	resume := mu.CommandEnvelope{
+		ID:    "10",
+		Type:  "playback.play",
+		Lease: &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		Body:  mustJSON(mu.PlaybackPlayBody{}),
+	}
+	reply := engine.HandleCommand(resume)
+	if reply.Type != "ack" {
+		t.Fatalf("expected ack")
+	}
+	if driver.resumeCnt != 1 {
+		t.Fatalf("expected resume called once")
+	}
+	if driver.playCnt != 1 {
+		t.Fatalf("expected play called once")
 	}
 }
 

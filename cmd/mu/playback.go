@@ -26,7 +26,9 @@ func playCommand() *cobra.Command {
 			if cmd.Flags().Changed("index") {
 				idxPtr = &index
 			}
-			return app.service.PlaybackPlay(ctx, selector, idxPtr)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.PlaybackPlay(ctx, selector, idxPtr)
+			})
 		},
 	}
 
@@ -49,7 +51,9 @@ func pauseCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return app.service.PlaybackPause(ctx, selector)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.PlaybackPause(ctx, selector)
+			})
 		},
 	}
 }
@@ -68,7 +72,9 @@ func toggleCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return app.service.PlaybackToggle(ctx, selector)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.PlaybackToggle(ctx, selector)
+			})
 		},
 	}
 }
@@ -87,7 +93,9 @@ func stopCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return app.service.PlaybackStop(ctx, selector)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.PlaybackStop(ctx, selector)
+			})
 		},
 	}
 }
@@ -110,7 +118,9 @@ func seekCommand() *cobra.Command {
 				selector = args[0]
 				seekArg = args[1]
 			}
-			return app.service.PlaybackSeek(ctx, selector, seekArg)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.PlaybackSeek(ctx, selector, seekArg)
+			})
 		},
 	}
 }
@@ -129,7 +139,9 @@ func nextCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return app.service.PlaybackNext(ctx, selector)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.PlaybackNext(ctx, selector)
+			})
 		},
 	}
 }
@@ -148,7 +160,9 @@ func prevCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			return app.service.PlaybackPrev(ctx, selector)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.PlaybackPrev(ctx, selector)
+			})
 		},
 	}
 }

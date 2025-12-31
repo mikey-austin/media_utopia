@@ -40,7 +40,9 @@ func snapshotSaveCommand() *cobra.Command {
 				selector = args[0]
 				name = args[1]
 			}
-			return app.service.SnapshotSave(ctx, selector, name, server)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.SnapshotSave(ctx, selector, name, server)
+			})
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
@@ -82,7 +84,9 @@ func snapshotLoadCommand() *cobra.Command {
 				selector = args[0]
 				snapshotID = args[1]
 			}
-			return app.service.QueueLoadSnapshot(ctx, selector, snapshotID, modeValue, resolveValue, server)
+			return app.runWithLeaseRetry(ctx, selector, func() error {
+				return app.service.QueueLoadSnapshot(ctx, selector, snapshotID, modeValue, resolveValue, server)
+			})
 		},
 	}
 
