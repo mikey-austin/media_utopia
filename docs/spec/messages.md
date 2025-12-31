@@ -959,9 +959,19 @@ Items may include `containerId` when the library backend reports a parent contai
   "ts": 1735580810,
   "from": "mikey@pixel",
   "replyTo": "mu/v1/reply/mu-4242-a1b2c3",
-  "body": { "query": "Miles Davis so what", "start": 0, "count": 25 }
+  "body": {
+    "query": "Miles Davis so what",
+    "start": 0,
+    "count": 25,
+    "types": ["Audio", "MusicAlbum"]
+  }
 }
 ```
+
+Optional request fields:
+
+- `types` (array of string): canonical types to filter by. Supported values:
+  `Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video,Playlist,Folder`.
 
 Reply body: same shape as `library.browse`.
 

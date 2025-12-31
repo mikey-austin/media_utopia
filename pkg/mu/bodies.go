@@ -234,9 +234,10 @@ type LibraryBrowseBody struct {
 
 // LibrarySearchBody is the payload for library.search.
 type LibrarySearchBody struct {
-	Query string `json:"query"`
-	Start int64  `json:"start"`
-	Count int64  `json:"count"`
+	Query string   `json:"query"`
+	Start int64    `json:"start"`
+	Count int64    `json:"count"`
+	Types []string `json:"types,omitempty"`
 }
 
 // LibraryResolveBody is the payload for library.resolve.

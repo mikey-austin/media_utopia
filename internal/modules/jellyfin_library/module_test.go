@@ -101,6 +101,38 @@ func TestLibrarySearch(t *testing.T) {
 	}
 }
 
+func TestLibrarySearchTypes(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/Users/user/Items", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("IncludeItemTypes") != "Audio,MusicAlbum" {
+			t.Fatalf("unexpected IncludeItemTypes: %s", r.URL.Query().Get("IncludeItemTypes"))
+		}
+		resp := jfItemsResponse{
+			Items:            []jfItem{},
+			TotalRecordCount: 0,
+			StartIndex:       0,
+		}
+		writeJSON(t, w, resp)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibrarySearchBody{Query: "Song", Start: 0, Count: 10, Types: []string{"Audio", "MusicAlbum"}})}
+	reply := module.librarySearch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	if reply.Type != "ack" || !reply.OK {
+		t.Fatalf("expected ack reply")
+	}
+}
+
 func TestLibraryResolveIncludesMetadata(t *testing.T) {
 	handler := newJellyfinTestHandler(t)
 

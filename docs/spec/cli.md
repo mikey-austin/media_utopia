@@ -305,10 +305,14 @@ Notes:
 ### Search
 
 ```bash
-mu lib search <library> "<query>" [--start <n>] [--count <n>] [--json]
+mu lib search <library> "<query>" [--start <n>] [--count <n>] [--type <list>] [--json]
 ```
 
 Library selectors can be an alias, the library name, or the full node id (URN).
+
+`--type` is a comma-separated list of canonical types:
+
+`Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video,Playlist,Folder`
 
 ### Resolve
 

@@ -750,12 +750,12 @@ func (s Service) LibraryBrowse(ctx context.Context, selector string, containerID
 }
 
 // LibrarySearch sends library.search.
-func (s Service) LibrarySearch(ctx context.Context, selector string, query string, start, count int64) (RawResult, error) {
+func (s Service) LibrarySearch(ctx context.Context, selector string, query string, start, count int64, types []string) (RawResult, error) {
 	library, err := s.Resolver.ResolveLibrary(ctx, selector)
 	if err != nil {
 		return RawResult{}, err
 	}
-	cmd, err := mu.NewCommand("library.search", mu.LibrarySearchBody{Query: query, Start: start, Count: count})
+	cmd, err := mu.NewCommand("library.search", mu.LibrarySearchBody{Query: query, Start: start, Count: count, Types: types})
 	if err != nil {
 		return RawResult{}, WrapError(ExitRuntime, "build command", err)
 	}

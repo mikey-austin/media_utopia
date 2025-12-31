@@ -157,7 +157,7 @@ func (m *Module) libraryBrowse(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	items, total, err := m.fetchItems(body.ContainerID, body.Start, body.Count, "", false)
+	items, total, err := m.fetchItems(body.ContainerID, body.Start, body.Count, "", nil, false)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
@@ -171,7 +171,11 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	items, total, err := m.fetchItems("", body.Start, body.Count, body.Query, true)
+	types, err := mapLibraryTypes(body.Types)
+	if err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	items, total, err := m.fetchItems("", body.Start, body.Count, body.Query, types, true)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
@@ -278,7 +282,7 @@ type jfMediaSource struct {
 	SupportsDirectStream bool   `json:"SupportsDirectStream"`
 }
 
-func (m *Module) fetchItems(containerID string, start int64, count int64, search string, recursive bool) ([]libraryItem, int64, error) {
+func (m *Module) fetchItems(containerID string, start int64, count int64, search string, types []string, recursive bool) ([]libraryItem, int64, error) {
 	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
 	params := url.Values{}
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
@@ -287,7 +291,11 @@ func (m *Module) fetchItems(containerID string, start int64, count int64, search
 		params.Set("Recursive", "true")
 	}
 	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags")
-	params.Set("IncludeItemTypes", "Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video")
+	typesParam := "Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video"
+	if len(types) > 0 {
+		typesParam = strings.Join(types, ",")
+	}
+	params.Set("IncludeItemTypes", typesParam)
 	if containerID != "" {
 		params.Set("ParentId", containerID)
 	}
@@ -532,6 +540,42 @@ func isContainerItem(item jfItem) bool {
 	default:
 		return false
 	}
+}
+
+func mapLibraryTypes(types []string) ([]string, error) {
+	if len(types) == 0 {
+		return nil, nil
+	}
+	allowed := map[string][]string{
+		"audio":       {"Audio"},
+		"musicalbum":  {"MusicAlbum"},
+		"musicartist": {"MusicArtist"},
+		"movie":       {"Movie"},
+		"series":      {"Series"},
+		"episode":     {"Episode"},
+		"video":       {"Video"},
+		"playlist":    {"Playlist"},
+		"folder":      {"Folder", "CollectionFolder"},
+	}
+	out := make([]string, 0, len(types))
+	seen := map[string]bool{}
+	for _, t := range types {
+		key := strings.ToLower(strings.TrimSpace(t))
+		if key == "" {
+			continue
+		}
+		mapped, ok := allowed[key]
+		if !ok {
+			return nil, fmt.Errorf("unsupported type %q", t)
+		}
+		for _, v := range mapped {
+			if !seen[v] {
+				out = append(out, v)
+				seen[v] = true
+			}
+		}
+	}
+	return out, nil
 }
 
 func mimeForContainer(item jfItem, container string) string {

@@ -105,6 +105,7 @@ func libBrowseCommand() *cobra.Command {
 func libSearchCommand() *cobra.Command {
 	var start int64
 	var count int64
+	var types string
 
 	cmd := &cobra.Command{
 		Use:   "search [library] <query>",
@@ -125,7 +126,11 @@ func libSearchCommand() *cobra.Command {
 				selector = args[0]
 				query = args[1]
 			}
-			result, err := app.service.LibrarySearch(ctx, selector, query, start, count)
+			typeList, err := parseLibraryTypes(types)
+			if err != nil {
+				return err
+			}
+			result, err := app.service.LibrarySearch(ctx, selector, query, start, count, typeList)
 			if err != nil {
 				return err
 			}
@@ -144,6 +149,7 @@ func libSearchCommand() *cobra.Command {
 
 	cmd.Flags().Int64Var(&start, "start", 0, "start offset")
 	cmd.Flags().Int64Var(&count, "count", 25, "page size")
+	cmd.Flags().StringVar(&types, "type", "", "comma-separated types (Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video,Playlist,Folder)")
 	return cmd
 }
 
@@ -183,4 +189,42 @@ func libResolveCommand() *cobra.Command {
 			return app.printer.Print(result)
 		},
 	}
+}
+
+func parseLibraryTypes(value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	allowed := map[string]string{
+		"audio":       "Audio",
+		"musicalbum":  "MusicAlbum",
+		"album":       "MusicAlbum",
+		"musicartist": "MusicArtist",
+		"artist":      "MusicArtist",
+		"movie":       "Movie",
+		"series":      "Series",
+		"episode":     "Episode",
+		"video":       "Video",
+		"playlist":    "Playlist",
+		"folder":      "Folder",
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		key := strings.ToLower(strings.TrimSpace(part))
+		if key == "" {
+			continue
+		}
+		canonical, ok := allowed[key]
+		if !ok {
+			return nil, errors.New("unknown type " + part + " (allowed: Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video,Playlist,Folder)")
+		}
+		if !seen[canonical] {
+			out = append(out, canonical)
+			seen[canonical] = true
+		}
+	}
+	return out, nil
 }
