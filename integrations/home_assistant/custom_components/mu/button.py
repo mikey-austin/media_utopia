@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -20,6 +21,8 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     bridge = data["bridge"]
 
+    _cleanup_snapshot_name_buttons(hass)
+
     selection_manager = data.get("playlist_selection_manager")
     if selection_manager is None:
         selection_manager = PlaylistSelectionManager(bridge)
@@ -30,10 +33,26 @@ async def async_setup_entry(
     data["button_manager"] = manager
 
 
+def _cleanup_snapshot_name_buttons(hass: HomeAssistant) -> None:
+    registry = er.async_get(hass)
+    for entry in list(registry.entities.values()):
+        if entry.domain != "button":
+            continue
+        if not entry.unique_id:
+            continue
+        if entry.unique_id.startswith("mu_snapshot_name_"):
+            registry.async_remove(entry.entity_id)
+
+
 class ButtonManager:
     """Create buttons for renderer leases and playlist loading."""
 
-    def __init__(self, bridge, selection_manager: PlaylistSelectionManager, async_add_entities) -> None:
+    def __init__(
+        self,
+        bridge,
+        selection_manager: PlaylistSelectionManager,
+        async_add_entities,
+    ) -> None:
         self._bridge = bridge
         self._selection_manager = selection_manager
         self._async_add_entities = async_add_entities
@@ -56,6 +75,7 @@ class ButtonManager:
             LeaseAcquireButton(self._bridge, node_id),
             LeaseRenewButton(self._bridge, node_id),
             LeaseReleaseButton(self._bridge, node_id),
+            SnapshotSaveButton(self._bridge, node_id),
         ]
         self._renderer_entities[node_id] = entities
         self._async_add_entities(entities)
@@ -100,6 +120,10 @@ class LeaseButton(ButtonEntity):
             "name": renderer.get("name", self._node_id),
             "manufacturer": "Mu",
         }
+
+    def _renderer_name(self) -> str:
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        return renderer.get("name", self._node_id)
 
 
 class LeaseAcquireButton(LeaseButton):
@@ -166,3 +190,37 @@ class PlaylistLoadButton(ButtonEntity):
         if renderer_id is None:
             return
         await self._bridge.async_load_playlist(renderer_id, self._playlist_id)
+
+
+class SnapshotSaveButton(ButtonEntity):
+    """Button to save a snapshot with the current queue."""
+
+    _attr_should_poll = False
+
+    def __init__(self, bridge, node_id: str) -> None:
+        self._bridge = bridge
+        self._node_id = node_id
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_snapshot_save_{safe}"
+
+    @property
+    def name(self) -> str | None:
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        base = renderer.get("name", self._node_id)
+        return f"Save Snapshot {base}"
+
+    @property
+    def device_info(self):
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        return {
+            "identifiers": {("mu", self._node_id)},
+            "name": renderer.get("name", self._node_id),
+            "manufacturer": "Mu",
+        }
+
+    async def async_press(self) -> None:
+        name = self._bridge.get_snapshot_name(self._node_id)
+        await self._bridge.async_save_snapshot(self._node_id, name)

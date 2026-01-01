@@ -80,6 +80,7 @@ class MudBridge:
         self._playlist_server: dict[str, Any] | None = None
         self._playlists: dict[str, dict[str, Any]] = {}
         self._leases: dict[str, Lease] = {}
+        self._snapshot_names: dict[str, str] = {}
         self._playlist_listeners: list[callable] = []
 
     async def async_start(self) -> None:
@@ -302,6 +303,12 @@ class MudBridge:
 
     def get_playlist(self, playlist_id: str) -> dict[str, Any] | None:
         return self._playlists.get(playlist_id)
+
+    def set_snapshot_name(self, node_id: str, name: str) -> None:
+        self._snapshot_names[node_id] = name
+
+    def get_snapshot_name(self, node_id: str) -> str:
+        return self._snapshot_names.get(node_id, "")
 
     def list_playlists(self) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
@@ -696,6 +703,14 @@ class MudBridge:
             if playlist_id:
                 await self.async_load_playlist(node_id, playlist_id)
             return
+        if str(media_id).startswith("snapshot:"):
+            snapshot_id = str(media_id)[len("snapshot:") :]
+            if "?page=" in snapshot_id:
+                snapshot_id = snapshot_id.split("?page=", 1)[0]
+            snapshot_id = snapshot_id.strip()
+            if snapshot_id:
+                await self.async_load_snapshot(node_id, snapshot_id)
+            return
         if str(media_id).startswith("library:"):
             await self.async_play_library_container(node_id, str(media_id))
             return
@@ -720,6 +735,119 @@ class MudBridge:
             return None
         body = reply.get("body") or {}
         return body
+
+    async def async_list_snapshots(self) -> list[tuple[str, str]]:
+        if self._playlist_server is None:
+            return []
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "snapshot.list",
+            {"owner": self.identity},
+        )
+        if reply is None or reply.get("type") != "ack":
+            return []
+        body = reply.get("body") or {}
+        snapshots = body.get("snapshots") or []
+        items = []
+        for snap in snapshots:
+            snapshot_id = snap.get("snapshotId")
+            name = snap.get("name") or snapshot_id
+            if snapshot_id:
+                items.append((snapshot_id, name))
+        items.sort(key=lambda item: item[1].lower())
+        return items
+
+    async def async_get_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        if self._playlist_server is None or not snapshot_id:
+            return None
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "snapshot.get",
+            {"snapshotId": snapshot_id},
+        )
+        if reply is None or reply.get("type") != "ack":
+            return None
+        return reply.get("body") or {}
+
+    async def async_remove_snapshot(self, snapshot_id: str) -> bool:
+        if self._playlist_server is None or not snapshot_id:
+            return False
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "snapshot.remove",
+            {"snapshotId": snapshot_id},
+        )
+        return bool(reply and reply.get("type") == "ack")
+
+    async def async_load_snapshot(self, renderer_id: str, snapshot_id: str) -> None:
+        if self._playlist_server is None:
+            return
+        body = {
+            "playlistServerId": self._playlist_server["nodeId"],
+            "snapshotId": snapshot_id,
+            "mode": "replace",
+            "resolve": "auto",
+        }
+        reply = await self._request_with_lease(
+            renderer_id, "queue.loadSnapshot", body, timeout_seconds=RENDERER_LOAD_TIMEOUT_SECONDS
+        )
+        if reply is None or reply.get("type") != "ack":
+            return
+        await self._send_renderer_command(renderer_id, "playback.play", {"index": 0})
+
+    async def async_save_snapshot(self, renderer_id: str, name: str) -> bool:
+        name = (name or "").strip()
+        if self._playlist_server is None or not name:
+            _LOGGER.warning("snapshot save skipped: name required")
+            return False
+        snapshots = await self.async_list_snapshots()
+        for _, existing in snapshots:
+            if existing.lower() == name.lower():
+                _LOGGER.warning("snapshot save skipped: name already exists")
+                return False
+        state = self.get_renderer_state(renderer_id)
+        queue = state.get("queue") or {}
+        playback = state.get("playback") or {}
+        session = state.get("session") or {}
+        length = queue.get("length") or 0
+        items: list[str] = []
+        from_index = 0
+        page_size = 100
+        while from_index < length:
+            reply = await self._request(
+                renderer_id,
+                "queue.get",
+                {"from": from_index, "count": page_size},
+                need_lease=False,
+            )
+            if reply is None or reply.get("type") != "ack":
+                break
+            body = reply.get("body") or {}
+            for entry in body.get("entries") or []:
+                item_id = entry.get("itemId")
+                if item_id:
+                    items.append(item_id)
+            from_index += page_size
+        capture = {
+            "queueRevision": queue.get("revision", 0),
+            "index": queue.get("index", 0),
+            "positionMs": playback.get("positionMs", 0),
+            "repeat": queue.get("repeat", False),
+            "repeatMode": queue.get("repeatMode", ""),
+            "shuffle": queue.get("shuffle", False),
+        }
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "snapshot.save",
+            {
+                "name": name,
+                "rendererId": renderer_id,
+                "sessionId": session.get("id"),
+                "capture": capture,
+                "items": items,
+            },
+        )
+        return bool(reply and reply.get("type") == "ack")
 
     async def async_browse_library(
         self, library_id: str, container_id: str, start: int, count: int
@@ -830,28 +958,31 @@ class MudBridge:
         else:
             await self._send_renderer_command(renderer_id, "playback.play", {})
 
-    async def async_acquire_lease(self, node_id: str) -> None:
-        await self._acquire_lease(node_id)
+    async def async_acquire_lease(self, node_id: str) -> bool:
+        return await self._acquire_lease(node_id) is not None
 
-    async def async_renew_lease(self, node_id: str) -> None:
+    async def async_renew_lease(self, node_id: str) -> bool:
         lease = self._leases.get(node_id)
         if lease is None:
-            await self._acquire_lease(node_id)
-            return
-        await self._renew_lease(node_id, lease)
+            return await self._acquire_lease(node_id) is not None
+        return await self._renew_lease(node_id, lease) is not None
 
-    async def async_release_lease(self, node_id: str) -> None:
+    async def async_release_lease(self, node_id: str) -> bool:
         lease = self._leases.get(node_id)
         if lease is None:
-            return
-        await self._request(
+            return False
+        reply = await self._request(
             node_id,
             "session.release",
             {},
             need_lease=True,
             lease=lease,
         )
-        self._leases.pop(node_id, None)
+        if reply and reply.get("type") == "ack":
+            self._leases.pop(node_id, None)
+            return True
+        return False
+
 
     async def _resolve_media_entries(self, media_id: str) -> list[dict[str, Any]]:
         media_id = str(media_id).strip()

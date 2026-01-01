@@ -306,6 +306,16 @@ class MuRendererEntity(MediaPlayerEntity):
                     can_expand=True,
                 )
             )
+            root.children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_DIRECTORY,
+                    media_content_id="snapshots",
+                    media_content_type=MEDIA_TYPE_DIRECTORY,
+                    title="Snapshots",
+                    can_play=False,
+                    can_expand=True,
+                )
+            )
             for library_id, name in self._bridge.list_libraries():
                 root.children.append(
                     BrowseMedia(
@@ -342,8 +352,34 @@ class MuRendererEntity(MediaPlayerEntity):
                 )
             return playlists
 
+        if str(media_content_id) == "snapshots":
+            snapshots = BrowseMedia(
+                media_class=MEDIA_CLASS_DIRECTORY,
+                media_content_id="snapshots",
+                media_content_type=MEDIA_TYPE_DIRECTORY,
+                title="Snapshots",
+                can_play=False,
+                can_expand=True,
+                children=[],
+            )
+            for snapshot_id, name in await self._bridge.async_list_snapshots():
+                snapshots.children.append(
+                    BrowseMedia(
+                        media_class=MEDIA_CLASS_DIRECTORY,
+                        media_content_id=f"snapshot:{snapshot_id}",
+                        media_content_type=MEDIA_TYPE_DIRECTORY,
+                        title=name,
+                        can_play=True,
+                        can_expand=True,
+                    )
+                )
+            return snapshots
+
         if str(media_content_id).startswith("library:"):
             return await self._browse_library(media_content_id)
+
+        if str(media_content_id).startswith("snapshot:"):
+            return await self._browse_snapshot(media_content_id)
 
         rest = str(media_content_id)[len("playlist:") :]
         page = 1
@@ -424,6 +460,99 @@ class MuRendererEntity(MediaPlayerEntity):
             media_content_id=f"playlist:{playlist_id}?page={page}",
             media_content_type=MEDIA_TYPE_PLAYLIST,
             title=f"{playlist.get('name', playlist_id)} (page {page})",
+            can_play=True,
+            can_expand=True,
+            children=children,
+        )
+
+    async def _browse_snapshot(self, media_content_id: str) -> BrowseMedia:
+        rest = str(media_content_id)[len("snapshot:") :]
+        page = 1
+        if "?page=" in rest:
+            rest, page_str = rest.rsplit("?page=", 1)
+            try:
+                page = max(1, int(page_str))
+            except ValueError:
+                page = 1
+        snapshot_id = rest.strip()
+        if not snapshot_id:
+            return BrowseMedia(
+                media_class=MEDIA_CLASS_DIRECTORY,
+                media_content_id="snapshots",
+                media_content_type=MEDIA_TYPE_DIRECTORY,
+                title="Snapshots",
+                can_play=False,
+                can_expand=True,
+                children=[],
+            )
+
+        snapshot = await self._bridge.async_get_snapshot(snapshot_id)
+        if not snapshot:
+            return BrowseMedia(
+                media_class=MEDIA_CLASS_DIRECTORY,
+                media_content_id=f"snapshot:{snapshot_id}",
+                media_content_type=MEDIA_TYPE_DIRECTORY,
+                title=snapshot_id,
+                can_play=False,
+                can_expand=True,
+                children=[],
+            )
+
+        items = snapshot.get("items") or []
+        page_size = 25
+        total = len(items)
+        start = max(0, (page - 1) * page_size)
+        end = min(total, start + page_size)
+        slice_items = items[start:end]
+
+        lib_ids = [item for item in slice_items if str(item).startswith("lib:")]
+        meta_map = {}
+        if lib_ids:
+            meta_map = await self._bridge.async_fetch_metadata_batch(lib_ids)
+
+        children = []
+
+        for item_id in slice_items:
+            meta = meta_map.get(item_id, {})
+            title = meta.get("title") or item_id
+            artist = meta.get("artist")
+            album = meta.get("album")
+            artwork = meta.get("artworkUrl")
+            if artist and album:
+                display = f"{title} — {artist} ({album})"
+            elif artist:
+                display = f"{title} — {artist}"
+            else:
+                display = title
+            children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_MUSIC,
+                    media_content_id=item_id,
+                    media_content_type=MEDIA_TYPE_MUSIC,
+                    title=display,
+                    thumbnail=artwork,
+                    can_play=True,
+                    can_expand=False,
+                )
+            )
+
+        if end < total:
+            children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_DIRECTORY,
+                    media_content_id=f"snapshot:{snapshot_id}?page={page+1}",
+                    media_content_type=MEDIA_TYPE_DIRECTORY,
+                    title="Next page",
+                    can_play=False,
+                    can_expand=True,
+                )
+            )
+
+        return BrowseMedia(
+            media_class=MEDIA_CLASS_DIRECTORY,
+            media_content_id=f"snapshot:{snapshot_id}?page={page}",
+            media_content_type=MEDIA_TYPE_DIRECTORY,
+            title=f"{snapshot.get('name', snapshot_id)} (page {page})",
             can_play=True,
             can_expand=True,
             children=children,

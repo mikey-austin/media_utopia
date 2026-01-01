@@ -25,11 +25,13 @@ MQTT is configured by Home Assistant. The integration assumes the HA MQTT integr
 - **Playlist sensors**
   - One sensor per playlist with name, id, revision
 - Load playlists via `mu.load_playlist` service (suitable for automations)
+- **Snapshots**
+  - Snapshot name text input per renderer
+  - Save snapshot button per renderer
+  - Snapshots folder in media browser (browse, play to load, delete)
 
 ## Future Features
 
-- Library browsing entities and media browser integration
-- Snapshot entities and management
 - Renderer/playlist grouping
 - More control surface (e.g., queue management)
 
@@ -108,6 +110,8 @@ In Home Assistant:
 - A `button` is created for each playlist to load it into the selected renderer
 - Lease control buttons are created for each renderer (acquire/renew/release)
 - Playlist contents are available via the media browser
+- Snapshot name text inputs and save buttons are available per renderer
+- Snapshot browsing is available under the media browser "Snapshots" folder
 
 ### 6) Use automations
 
