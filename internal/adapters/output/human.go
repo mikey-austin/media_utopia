@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 	"time"
+
+	"github.com/mattn/go-runewidth"
+	"github.com/pterm/pterm"
 
 	"github.com/mikey-austin/media_utopia/internal/core"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
@@ -15,64 +17,76 @@ import (
 // HumanPrinter prints human-readable output.
 type HumanPrinter struct{}
 
+func init() {
+	runewidth.DefaultCondition.EastAsianWidth = true
+}
+
 // LibraryItemsOutput carries library browse/search payloads with context.
 type LibraryItemsOutput struct {
 	LibraryID string
 	Payload   json.RawMessage
 }
 
+// Render returns human output as a string.
+func (HumanPrinter) Render(v any) (string, error) {
+	return renderHuman(v)
+}
+
 // Print renders human output.
 func (HumanPrinter) Print(v any) error {
+	out, err := renderHuman(v)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprint(os.Stdout, out)
+	return err
+}
+
+func renderHuman(v any) (string, error) {
 	switch data := v.(type) {
 	case core.NodesResult:
-		return printNodes(data)
+		return renderNodes(data)
 	case core.StatusResult:
-		return printStatus(data)
+		return renderStatus(data)
 	case core.SessionResult:
-		return printSession(data)
+		return renderSession(data)
 	case core.QueueResult:
-		return printQueue(data)
+		return renderQueue(data)
 	case core.QueueNowResult:
-		return printQueueNow(data)
+		return renderQueueNow(data)
 	case core.PlaylistListResult:
-		return printPlaylists(data)
+		return renderPlaylists(data)
 	case core.PlaylistShowResult:
-		return printPlaylistShow(data)
+		return renderPlaylistShow(data)
 	case core.SnapshotListResult:
-		return printSnapshots(data)
+		return renderSnapshots(data)
 	case core.SuggestListResult:
-		return printSuggestions(data)
+		return renderSuggestions(data)
 	case core.LibraryResolveResult:
-		return printLibraryResolve(data)
+		return renderLibraryResolve(data)
 	case LibraryItemsOutput:
-		return printLibraryItemsOutput(data)
+		return renderLibraryItemsOutput(data)
 	case core.RawResult:
-		return printRaw(data)
+		return renderRaw(data)
 	default:
-		_, err := fmt.Fprintln(os.Stdout, "ok")
-		return err
+		return "ok\n", nil
 	}
 }
 
-func printNodes(result core.NodesResult) error {
-	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "NAME\tKIND\tNODE_ID"); err != nil {
-		return err
-	}
+func renderNodes(result core.NodesResult) (string, error) {
+	rows := make([][]string, 0, len(result.Nodes))
 	for _, node := range result.Nodes {
-		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\n", node.Name, node.Kind, node.NodeID)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, []string{node.Name, node.Kind, node.NodeID})
 	}
-	return tw.Flush()
+	return renderTable([]string{"NAME", "KIND", "NODE_ID"}, rows)
 }
 
-func printStatus(result core.StatusResult) error {
+func renderStatus(result core.StatusResult) (string, error) {
 	status := "unknown"
 	position := ""
 	volume := ""
 	item := ""
+	artistLine := ""
 	owner := ""
 	queue := ""
 
@@ -85,7 +99,19 @@ func printStatus(result core.StatusResult) error {
 		}
 	}
 	if result.State.Current != nil {
-		item = formatItem(result.State.Current)
+		if result.State.Current.Metadata != nil {
+			title, _ := result.State.Current.Metadata["title"].(string)
+			artist, _ := result.State.Current.Metadata["artist"].(string)
+			if title != "" {
+				item = title
+			}
+			if artist != "" {
+				artistLine = artist
+			}
+		}
+		if item == "" {
+			item = result.State.Current.ItemID
+		}
 	}
 	if result.State.Queue != nil {
 		queue = fmt.Sprintf("Queue: %d tracks (index %d) rev %d", result.State.Queue.Length, result.State.Queue.Index, result.State.Queue.Revision)
@@ -99,32 +125,60 @@ func printStatus(result core.StatusResult) error {
 		owner = fmt.Sprintf("owner %s", result.State.Session.Owner)
 	}
 
-	line := strings.TrimSpace(fmt.Sprintf("%s  [%s]  %s  %s  %s", result.Renderer.Name, status, item, position, volume))
-	if _, err := fmt.Fprintln(os.Stdout, line); err != nil {
-		return err
+	statusStyled := styleStatus(status)
+	innerWidth := pterm.GetTerminalWidth() - 4
+	if innerWidth < 20 {
+		innerWidth = 80
+	}
+	titleName := truncateCell(result.Renderer.Name, innerWidth-10)
+	title := fmt.Sprintf("%s [%s]", titleName, statusStyled)
+	suffix := strings.TrimSpace(fmt.Sprintf("%s  %s", position, volume))
+	itemMax := innerWidth
+	if suffix != "" {
+		itemMax = innerWidth - displayWidth(suffix) - 2
+		if itemMax < 10 {
+			itemMax = 10
+		}
+	}
+	if itemMax > 60 {
+		itemMax = 60
+	}
+	item = truncateCell(item, itemMax)
+	if displayWidth(item) > itemMax {
+		item = truncateByWidth(item, itemMax)
+	}
+	line := strings.TrimSpace(item)
+	if suffix != "" {
+		line = strings.TrimSpace(fmt.Sprintf("%s  %s", item, suffix))
+	}
+	lines := []string{truncateCell(line, innerWidth)}
+	if artistLine != "" {
+		label := fmt.Sprintf("Artist: %s", artistLine)
+		label = truncateCell(label, itemMax)
+		if displayWidth(label) > itemMax {
+			label = truncateByWidth(label, itemMax)
+		}
+		lines = append(lines, pterm.FgCyan.Sprint(label))
 	}
 	if queue != "" || owner != "" {
-		_, err := fmt.Fprintf(os.Stdout, "%s %s\n", queue, owner)
-		return err
+		infoLine := strings.TrimSpace(fmt.Sprintf("%s %s", queue, owner))
+		lines = append(lines, truncateCell(infoLine, innerWidth))
 	}
-	return nil
+	box := pterm.DefaultBox.WithTitle(title)
+	return box.Sprint(strings.Join(lines, "\n")), nil
 }
 
-func printSession(result core.SessionResult) error {
+func renderSession(result core.SessionResult) (string, error) {
 	expires := time.Unix(result.Session.LeaseExpiresAt, 0).Format(time.RFC3339)
-	_, err := fmt.Fprintf(os.Stdout, "session %s expires %s\n", result.Session.ID, expires)
-	return err
+	return fmt.Sprintf("session %s expires %s\n", result.Session.ID, expires), nil
 }
 
-func printQueue(result core.QueueResult) error {
-	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
-	header := "INDEX\tTITLE\tTYPE\tARTIST\tALBUM\tLEN"
+func renderQueue(result core.QueueResult) (string, error) {
+	headers := []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"}
 	if result.FullIDs {
-		header += "\tQUEUE_ID\tITEM_ID"
+		headers = append(headers, "QUEUE_ID", "ITEM_ID")
 	}
-	if _, err := fmt.Fprintln(tw, header); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(result.Queue.Entries))
 	for idx, entry := range result.Queue.Entries {
 		title := entry.ItemID
 		typ := ""
@@ -148,58 +202,44 @@ func printQueue(result core.QueueResult) error {
 			}
 			length = formatDuration(entry.Metadata["durationMs"])
 		}
-		title = truncateCell(title, 64)
-		typ = truncateCell(typ, 16)
-		artist = truncateCell(artist, 32)
-		album = truncateCell(album, 40)
+		row := []string{
+			fmt.Sprintf("%d", idx),
+			truncateCell(title, 64),
+			truncateCell(typ, 16),
+			truncateCell(artist, 32),
+			truncateCell(album, 40),
+			length,
+		}
 		if result.FullIDs {
-			_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length, entry.QueueEntryID, entry.ItemID)
-			if err != nil {
-				return err
-			}
-			continue
+			row = append(row, entry.QueueEntryID, entry.ItemID)
 		}
-		_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, row)
 	}
-	return tw.Flush()
+	return renderTable(headers, rows)
 }
 
-func printQueueNow(result core.QueueNowResult) error {
+func renderQueueNow(result core.QueueNowResult) (string, error) {
 	if result.Current == nil {
-		_, err := fmt.Fprintln(os.Stdout, "(none)")
-		return err
+		return "(none)\n", nil
 	}
 	item := formatItem(result.Current)
-	_, err := fmt.Fprintln(os.Stdout, item)
-	return err
+	return fmt.Sprintf("%s\n", item), nil
 }
 
-func printPlaylists(result core.PlaylistListResult) error {
-	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "NAME\tPLAYLIST_ID\tREVISION"); err != nil {
-		return err
-	}
+func renderPlaylists(result core.PlaylistListResult) (string, error) {
+	rows := make([][]string, 0, len(result.Playlists))
 	for _, pl := range result.Playlists {
-		_, err := fmt.Fprintf(tw, "%s\t%s\t%d\n", pl.Name, pl.PlaylistID, pl.Revision)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, []string{pl.Name, pl.PlaylistID, fmt.Sprintf("%d", pl.Revision)})
 	}
-	return tw.Flush()
+	return renderTable([]string{"NAME", "PLAYLIST_ID", "REVISION"}, rows)
 }
 
-func printPlaylistShow(result core.PlaylistShowResult) error {
-	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
-	header := "INDEX\tTITLE\tTYPE\tARTIST\tALBUM\tLEN"
+func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
+	headers := []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"}
 	if result.FullIDs {
-		header += "\tENTRY_ID\tITEM_ID"
+		headers = append(headers, "ENTRY_ID", "ITEM_ID")
 	}
-	if _, err := fmt.Fprintln(tw, header); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(result.Entries))
 	for idx, entry := range result.Entries {
 		title := entry.ItemID
 		typ := ""
@@ -223,66 +263,55 @@ func printPlaylistShow(result core.PlaylistShowResult) error {
 			}
 			length = formatDuration(entry.Metadata["durationMs"])
 		}
-		title = truncateCell(title, 64)
-		typ = truncateCell(typ, 16)
-		artist = truncateCell(artist, 32)
-		album = truncateCell(album, 40)
+		row := []string{
+			fmt.Sprintf("%d", idx),
+			truncateCell(title, 64),
+			truncateCell(typ, 16),
+			truncateCell(artist, 32),
+			truncateCell(album, 40),
+			length,
+		}
 		if result.FullIDs {
-			_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length, entry.EntryID, entry.ItemID)
-			if err != nil {
-				return err
-			}
-			continue
+			row = append(row, entry.EntryID, entry.ItemID)
 		}
-		_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, row)
 	}
-	return tw.Flush()
+	return renderTable(headers, rows)
 }
 
-func printSnapshots(result core.SnapshotListResult) error {
+func renderSnapshots(result core.SnapshotListResult) (string, error) {
+	rows := make([][]string, 0, len(result.Snapshots))
 	for _, snap := range result.Snapshots {
-		_, err := fmt.Fprintf(os.Stdout, "%s\t%s\t%d\n", snap.Name, snap.SnapshotID, snap.Revision)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, []string{snap.Name, snap.SnapshotID, fmt.Sprintf("%d", snap.Revision)})
 	}
-	return nil
+	return renderTable([]string{"NAME", "SNAPSHOT_ID", "REVISION"}, rows)
 }
 
-func printSuggestions(result core.SuggestListResult) error {
+func renderSuggestions(result core.SuggestListResult) (string, error) {
+	rows := make([][]string, 0, len(result.Suggestions))
 	for _, sug := range result.Suggestions {
-		_, err := fmt.Fprintf(os.Stdout, "%s\t%s\t%d\n", sug.Name, sug.SuggestionID, sug.Revision)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, []string{sug.Name, sug.SuggestionID, fmt.Sprintf("%d", sug.Revision)})
 	}
-	return nil
+	return renderTable([]string{"NAME", "SUGGESTION_ID", "REVISION"}, rows)
 }
 
-func printLibraryResolve(result core.LibraryResolveResult) error {
+func renderLibraryResolve(result core.LibraryResolveResult) (string, error) {
 	if len(result.Item.Sources) == 0 {
-		_, err := fmt.Fprintln(os.Stdout, "no sources")
-		return err
+		return "no sources\n", nil
 	}
+	rows := make([][]string, 0, len(result.Item.Sources))
 	for _, src := range result.Item.Sources {
-		_, err := fmt.Fprintf(os.Stdout, "%s\t%s\n", src.URL, src.Mime)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, []string{src.URL, src.Mime})
 	}
-	return nil
+	return renderTable([]string{"URL", "MIME"}, rows)
 }
 
-func printRaw(result core.RawResult) error {
+func renderRaw(result core.RawResult) (string, error) {
 	raw, err := rawBytes(result.Data)
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, err = fmt.Fprintln(os.Stdout, string(raw))
-	return err
+	return fmt.Sprintf("%s\n", string(raw)), nil
 }
 
 type libraryItemsReply struct {
@@ -302,29 +331,26 @@ type libraryItem struct {
 	ContainerID string   `json:"containerId,omitempty"`
 }
 
-func printLibraryItemsOutput(result LibraryItemsOutput) error {
+func renderLibraryItemsOutput(result LibraryItemsOutput) (string, error) {
 	var payload libraryItemsReply
 	if err := json.Unmarshal(result.Payload, &payload); err != nil {
-		return err
+		return "", err
 	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "NAME\tTYPE\tARTIST\tALBUM\tCONTAINER_ID\tITEM_ID\tLIB_REF"); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(payload.Items))
 	for _, item := range payload.Items {
 		artist := strings.Join(item.Artists, ", ")
 		libRef := fmt.Sprintf("lib:%s:%s", result.LibraryID, item.ItemID)
-		name := truncateCell(item.Name, 64)
-		typ := truncateCell(item.Type, 16)
-		artist = truncateCell(artist, 32)
-		album := truncateCell(item.Album, 40)
-		container := truncateCell(item.ContainerID, 36)
-		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, typ, artist, album, container, item.ItemID, libRef)
-		if err != nil {
-			return err
-		}
+		rows = append(rows, []string{
+			truncateCell(item.Name, 64),
+			truncateCell(item.Type, 16),
+			truncateCell(artist, 32),
+			truncateCell(item.Album, 40),
+			truncateCell(item.ContainerID, 36),
+			item.ItemID,
+			libRef,
+		})
 	}
-	return tw.Flush()
+	return renderTable([]string{"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID", "LIB_REF"}, rows)
 }
 
 func rawBytes(data any) ([]byte, error) {
@@ -394,19 +420,60 @@ func formatDuration(value any) string {
 	return ""
 }
 
+func renderTable(headers []string, rows [][]string) (string, error) {
+	data := pterm.TableData{headers}
+	data = append(data, rows...)
+	table := pterm.DefaultTable.WithHasHeader(true).WithData(data)
+	return table.Srender()
+}
+
+func styleStatus(status string) string {
+	switch strings.ToLower(status) {
+	case "playing":
+		return pterm.FgGreen.Sprint(status)
+	case "paused":
+		return pterm.FgYellow.Sprint(status)
+	case "stopped":
+		return pterm.FgRed.Sprint(status)
+	default:
+		return pterm.FgGray.Sprint(status)
+	}
+}
+
+func displayWidth(value string) int {
+	return runewidth.StringWidth(value)
+}
+
 func truncateCell(value string, max int) string {
 	value = strings.ReplaceAll(value, "\t", " ")
 	value = strings.ReplaceAll(value, "\n", " ")
 	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "|", "/")
 	if max <= 0 {
 		return value
 	}
-	runes := []rune(value)
-	if len(runes) <= max {
+	if runewidth.StringWidth(value) <= max {
 		return value
 	}
 	if max <= 3 {
-		return string(runes[:max])
+		return truncateByWidth(value, max)
 	}
-	return string(runes[:max-3]) + "..."
+	return truncateByWidth(value, max-3) + "..."
+}
+
+func truncateByWidth(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	width := 0
+	var out strings.Builder
+	for _, r := range value {
+		rw := runewidth.RuneWidth(r)
+		if width+rw > max {
+			break
+		}
+		out.WriteRune(r)
+		width += rw
+	}
+	return out.String()
 }

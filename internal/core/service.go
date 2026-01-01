@@ -85,7 +85,27 @@ func (s Service) WatchStatus(ctx context.Context, selector string) (<-chan mu.Re
 		return nil, nil, nil, err
 	}
 	states, events, errs := s.Broker.WatchRenderer(ctx, renderer.NodeID)
-	return states, events, errs, nil
+	outStates := make(chan mu.RendererState)
+	go func() {
+		defer close(outStates)
+		for state := range states {
+			if state.Current != nil && strings.HasPrefix(state.Current.ItemID, "lib:") {
+				needsMeta := state.Current.Metadata == nil
+				if !needsMeta {
+					if title, ok := state.Current.Metadata["title"].(string); !ok || title == "" {
+						needsMeta = true
+					}
+				}
+				if needsMeta {
+					if meta := s.resolveLibraryMetadata(ctx, state.Current.ItemID); meta != nil {
+						state.Current.Metadata = meta
+					}
+				}
+			}
+			outStates <- state
+		}
+	}()
+	return outStates, events, errs, nil
 }
 
 // AcquireLease acquires a renderer lease and caches it.

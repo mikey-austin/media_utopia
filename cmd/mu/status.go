@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"strings"
 
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 
 	"github.com/mikey-austin/media_utopia/internal/core"
@@ -45,8 +47,28 @@ func watchStatus(cmd *cobra.Command, app *app, selector string) error {
 	if err != nil {
 		return err
 	}
-	if err := app.printer.Print(initial); err != nil {
-		return err
+	renderer, ok := app.printer.(interface {
+		Render(any) (string, error)
+	})
+	if !ok {
+		if err := app.printer.Print(initial); err != nil {
+			return err
+		}
+	}
+
+	var area *pterm.AreaPrinter
+	maxLines := 0
+	if ok {
+		area, err = pterm.DefaultArea.WithRemoveWhenDone().WithFullscreen().Start()
+		if err != nil {
+			return err
+		}
+		defer area.Stop()
+		out, err := renderer.Render(initial)
+		if err != nil {
+			return err
+		}
+		area.Update(padArea(out, &maxLines))
 	}
 
 	states, events, errs, err := app.service.WatchStatus(ctx, selector)
@@ -61,7 +83,13 @@ func watchStatus(cmd *cobra.Command, app *app, selector string) error {
 				return nil
 			}
 			result := coreStatusFromState(initial.Renderer, state)
-			if err := app.printer.Print(result); err != nil {
+			if area != nil {
+				out, err := renderer.Render(result)
+				if err != nil {
+					return err
+				}
+				area.Update(padArea(out, &maxLines))
+			} else if err := app.printer.Print(result); err != nil {
 				return err
 			}
 		case <-events:
@@ -72,6 +100,22 @@ func watchStatus(cmd *cobra.Command, app *app, selector string) error {
 			}
 		}
 	}
+}
+
+func padArea(out string, maxLines *int) string {
+	out = strings.TrimRight(out, "\n")
+	lines := 1
+	if out != "" {
+		lines = strings.Count(out, "\n") + 1
+	}
+	if lines > *maxLines {
+		*maxLines = lines
+	}
+	for lines < *maxLines {
+		out += "\n"
+		lines++
+	}
+	return out
 }
 
 func coreStatusFromState(renderer mu.Presence, state mu.RendererState) core.StatusResult {
