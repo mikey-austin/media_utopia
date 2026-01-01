@@ -6,6 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/go-gst/go-gst v1.4.0
+	github.com/mattn/go-runewidth v0.0.16
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/pterm/pterm v0.12.82
@@ -27,7 +28,6 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/mattn/go-pointer v0.0.1 // indirect
-	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mmcdole/goxpp v1.1.1-0.20240225020742-a0c311522b23 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
