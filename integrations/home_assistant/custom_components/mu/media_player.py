@@ -242,3 +242,14 @@ class MuRendererEntity(MediaPlayerEntity):
     def _queue(self) -> dict[str, Any]:
         state = self._bridge.get_renderer_state(self._node_id)
         return state.get("queue") or {}
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        state = self._bridge.get_renderer_state(self._node_id)
+        current = state.get("current") or {}
+        metadata = current.get("metadata") or {}
+        return {
+            "artist": metadata.get("artist"),
+            "album": metadata.get("album"),
+            "item_id": current.get("itemId"),
+        }

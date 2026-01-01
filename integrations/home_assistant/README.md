@@ -104,6 +104,9 @@ In Home Assistant:
 
 - A `media_player` is created for each renderer
 - A `sensor` is created for each playlist
+- A `select` is created for each playlist to choose a renderer
+- A `button` is created for each playlist to load it into the selected renderer
+- Lease control buttons are created for each renderer (acquire/renew/release)
 
 ### 6) Use automations
 

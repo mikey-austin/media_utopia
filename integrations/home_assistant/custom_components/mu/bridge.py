@@ -76,6 +76,7 @@ class MudBridge:
         self._playlist_server: dict[str, Any] | None = None
         self._playlists: dict[str, dict[str, Any]] = {}
         self._leases: dict[str, Lease] = {}
+        self._playlist_listeners: list[callable] = []
 
     async def async_start(self) -> None:
         """Start the bridge."""
@@ -240,6 +241,11 @@ class MudBridge:
     def register_renderer_state_listener(self, callback) -> None:
         self._renderer_state_listeners.append(callback)
 
+    def register_playlist_listener(self, callback) -> None:
+        self._playlist_listeners.append(callback)
+        for playlist_id in list(self._playlists.keys()):
+            self._notify_playlist_listener(callback, playlist_id)
+
     def _notify_renderer_listeners(self, node_id: str) -> None:
         for callback in self._renderer_listeners:
             self._notify_renderer_listener(callback, node_id)
@@ -257,11 +263,36 @@ class MudBridge:
             except Exception:
                 continue
 
+    def _notify_playlist_listener(self, callback, playlist_id: str) -> None:
+        try:
+            callback(playlist_id)
+        except Exception:
+            pass
+
+    def _notify_playlist_listeners(self, playlist_id: str) -> None:
+        for callback in self._playlist_listeners:
+            self._notify_playlist_listener(callback, playlist_id)
+
     def get_renderer(self, node_id: str) -> dict[str, Any] | None:
         return self._renderers.get(node_id)
 
     def get_renderer_state(self, node_id: str) -> dict[str, Any]:
         return self._renderers.get(node_id, {}).get("state") or {}
+
+    def list_renderers(self) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for node_id, info in self._renderers.items():
+            out.append((node_id, info.get("name", node_id)))
+        return out
+
+    def get_playlist(self, playlist_id: str) -> dict[str, Any] | None:
+        return self._playlists.get(playlist_id)
+
+    def list_playlists(self) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for playlist_id, info in self._playlists.items():
+            out.append((playlist_id, info.get("name", playlist_id)))
+        return out
 
     async def _maybe_resolve_metadata(self, node_id: str, payload: dict[str, Any]) -> None:
         current = payload.get("current") or {}
@@ -515,6 +546,48 @@ class MudBridge:
         await self._send_renderer_command(node_id, "queue.set", body)
         await self._send_renderer_command(node_id, "playback.play", {})
 
+    async def async_load_playlist(
+        self, renderer_id: str, playlist_id: str, mode: str = "replace", resolve: str = "auto"
+    ) -> None:
+        if self._playlist_server is None:
+            return
+        body = {
+            "playlistServerId": self._playlist_server["nodeId"],
+            "playlistId": playlist_id,
+            "mode": mode,
+            "resolve": resolve,
+        }
+        await self._send_renderer_command(renderer_id, "queue.loadPlaylist", body)
+
+    async def async_acquire_lease(self, node_id: str) -> None:
+        await self._ensure_lease(node_id)
+
+    async def async_renew_lease(self, node_id: str) -> None:
+        lease = self._leases.get(node_id)
+        if lease is None:
+            await self._ensure_lease(node_id)
+            return
+        await self._request(
+            node_id,
+            "session.renew",
+            {"ttlMs": LEASE_TTL_MS},
+            need_lease=True,
+            lease=lease,
+        )
+
+    async def async_release_lease(self, node_id: str) -> None:
+        lease = self._leases.get(node_id)
+        if lease is None:
+            return
+        await self._request(
+            node_id,
+            "session.release",
+            {},
+            need_lease=True,
+            lease=lease,
+        )
+        self._leases.pop(node_id, None)
+
     async def _resolve_media_entries(self, media_id: str) -> list[dict[str, Any]]:
         media_id = str(media_id).strip()
         if media_id.startswith("http://") or media_id.startswith("https://"):
@@ -628,6 +701,7 @@ class MudBridge:
             "revision": playlist.get("revision"),
         }
         await self._publish(state_topic, state_payload, retain=True)
+        self._notify_playlist_listeners(playlist_id)
 
     async def _send_renderer_command(
         self, node_id: str, cmd_type: str, body: dict[str, Any]
