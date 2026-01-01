@@ -333,6 +333,61 @@ func TestLibraryResolveExpandsAlbum(t *testing.T) {
 	}
 }
 
+func TestLibraryResolveExpandsPlaylist(t *testing.T) {
+	handler := http.NewServeMux()
+
+	handler.HandleFunc("/Items/playlist-1", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfItem{
+			ID:        "playlist-1",
+			Name:      "Playlist",
+			Type:      "Playlist",
+			ImageTags: map[string]string{"Primary": "tag"},
+		}
+		writeJSON(t, w, resp)
+	})
+
+	handler.HandleFunc("/Playlists/playlist-1/Items", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfItemsResponse{
+			Items: []jfItem{
+				{ID: "track-1", Name: "Track 1", Type: "Audio", MediaType: "Audio"},
+			},
+			TotalRecordCount: 1,
+			StartIndex:       0,
+		}
+		writeJSON(t, w, resp)
+	})
+
+	handler.HandleFunc("/Items/track-1/PlaybackInfo", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfPlaybackInfo{MediaSources: []jfMediaSource{{
+			DirectStreamURL:      "/Audio/track-1/stream?api_key=key",
+			Container:            "mp3",
+			SupportsDirectStream: true,
+		}}}
+		writeJSON(t, w, resp)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "playlist-1"})}
+	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	var payload mu.LibraryResolveReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if len(payload.Sources) != 1 {
+		t.Fatalf("expected 1 source")
+	}
+}
+
 func TestLibrarySearchRespectsTimeout(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(20 * time.Millisecond)

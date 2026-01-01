@@ -289,6 +289,8 @@ func (m *Module) buildMetadata(item jfItem) map[string]any {
 	}
 	if len(item.Artists) > 0 {
 		metadata["artist"] = strings.Join(item.Artists, ", ")
+	} else if item.AlbumArtist != "" {
+		metadata["artist"] = item.AlbumArtist
 	}
 	if item.PrimaryImageTag != "" {
 		metadata["artworkUrl"] = m.imageURL(item.ID)
@@ -421,6 +423,39 @@ type jfMediaSource struct {
 }
 
 func (m *Module) fetchItems(containerID string, start int64, count int64, search string, types []string, recursive bool) ([]libraryItem, int64, error) {
+	if containerID != "" {
+		item, err := m.fetchItem(containerID)
+		if err == nil && strings.EqualFold(item.Type, "Playlist") {
+			children, err := m.fetchPlaylistItems(containerID, start, count)
+			if err != nil {
+				return nil, 0, err
+			}
+			items := make([]libraryItem, 0, len(children))
+			for _, child := range children {
+				imageTag := ""
+				if child.ImageTags != nil {
+					imageTag = child.ImageTags["Primary"]
+				}
+				imageURL := ""
+				if imageTag != "" {
+					imageURL = m.imageURL(child.ID)
+				}
+				items = append(items, libraryItem{
+					ItemID:      child.ID,
+					Name:        child.Name,
+					Type:        child.Type,
+					MediaType:   child.MediaType,
+					Artists:     child.Artists,
+					Album:       child.Album,
+					ContainerID: child.ParentID,
+					Overview:    child.Overview,
+					DurationMS:  ticksToMS(child.RunTimeTicks),
+					ImageURL:    imageURL,
+				})
+			}
+			return items, int64(len(items)), nil
+		}
+	}
 	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
 	params := url.Values{}
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
@@ -541,7 +576,13 @@ func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, map[string]an
 		return []mu.ResolvedSource{source}, nil, nil
 	}
 
-	children, err := m.fetchChildItems(item.ID, 0, 500)
+	var children []jfItem
+	var err error
+	if strings.EqualFold(item.Type, "Playlist") {
+		children, err = m.fetchPlaylistItems(item.ID, 0, 500)
+	} else {
+		children, err = m.fetchChildItems(item.ID, 0, 500)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -566,6 +607,8 @@ func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, map[string]an
 		}
 		if len(child.Artists) > 0 {
 			meta["artist"] = strings.Join(child.Artists, ", ")
+		} else if child.AlbumArtist != "" {
+			meta["artist"] = child.AlbumArtist
 		}
 		if child.Album != "" {
 			meta["album"] = child.Album
@@ -583,6 +626,21 @@ func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, map[string]an
 		return []mu.ResolvedSource{}, meta, nil
 	}
 	return sources, meta, nil
+}
+
+func (m *Module) fetchPlaylistItems(playlistID string, start int64, count int64) ([]jfItem, error) {
+	endpoint := fmt.Sprintf("/Playlists/%s/Items", url.PathEscape(playlistID))
+	params := url.Values{}
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("UserId", m.config.UserID)
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags")
+
+	var resp jfItemsResponse
+	if err := m.doJSON("GET", endpoint, params, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
 }
 
 func (m *Module) doJSON(method string, endpoint string, params url.Values, body any, out any) error {
@@ -669,6 +727,9 @@ func ticksToMS(ticks int64) int64 {
 }
 
 func isContainerItem(item jfItem) bool {
+	if strings.EqualFold(item.Type, "Playlist") {
+		return true
+	}
 	if strings.EqualFold(item.MediaType, "Audio") || strings.EqualFold(item.MediaType, "Video") {
 		return false
 	}

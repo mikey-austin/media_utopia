@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from typing import Any
+from urllib.parse import parse_qs
 
 from homeassistant.components.media_player import MediaPlayerEntity
 try:
@@ -33,14 +34,24 @@ REPEAT_ALL = MediaPlayerRepeatMode.ALL if MediaPlayerRepeatMode else "all"
 REPEAT_OFF = MediaPlayerRepeatMode.OFF if MediaPlayerRepeatMode else "off"
 
 try:
-    from homeassistant.components.media_player.const import MEDIA_CLASS_MUSIC, MEDIA_CLASS_PLAYLIST
+    from homeassistant.components.media_player.const import (
+        MEDIA_CLASS_DIRECTORY,
+        MEDIA_CLASS_MUSIC,
+        MEDIA_CLASS_PLAYLIST,
+    )
 except Exception:  # pragma: no cover
+    MEDIA_CLASS_DIRECTORY = "directory"
     MEDIA_CLASS_MUSIC = "music"
     MEDIA_CLASS_PLAYLIST = "playlist"
 
 try:
-    from homeassistant.components.media_player.const import MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLIST
+    from homeassistant.components.media_player.const import (
+        MEDIA_TYPE_DIRECTORY,
+        MEDIA_TYPE_MUSIC,
+        MEDIA_TYPE_PLAYLIST,
+    )
 except Exception:  # pragma: no cover
+    MEDIA_TYPE_DIRECTORY = "directory"
     MEDIA_TYPE_MUSIC = "music"
     MEDIA_TYPE_PLAYLIST = "playlist"
 
@@ -261,18 +272,51 @@ class MuRendererEntity(MediaPlayerEntity):
 
     async def async_browse_media(self, media_content_type=None, media_content_id=None):
         root = BrowseMedia(
-            media_class=MEDIA_CLASS_PLAYLIST,
+            media_class=MEDIA_CLASS_DIRECTORY,
             media_content_id="root",
-            media_content_type=MEDIA_TYPE_PLAYLIST,
-            title="Mu Playlists",
+            media_content_type=MEDIA_TYPE_DIRECTORY,
+            title="Media Utopia",
             can_play=False,
             can_expand=True,
             children=[],
         )
 
         if not media_content_id or media_content_id == "root":
-            for playlist_id, name in self._bridge.list_playlists():
+            root.children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_DIRECTORY,
+                    media_content_id="playlists",
+                    media_content_type=MEDIA_TYPE_DIRECTORY,
+                    title="Playlists",
+                    can_play=False,
+                    can_expand=True,
+                )
+            )
+            for library_id, name in self._bridge.list_libraries():
                 root.children.append(
+                    BrowseMedia(
+                        media_class=MEDIA_CLASS_DIRECTORY,
+                        media_content_id=f"library:{library_id}",
+                        media_content_type=MEDIA_TYPE_DIRECTORY,
+                        title=name,
+                        can_play=True,
+                        can_expand=True,
+                    )
+                )
+            return root
+
+        if str(media_content_id) == "playlists":
+            playlists = BrowseMedia(
+                media_class=MEDIA_CLASS_DIRECTORY,
+                media_content_id="playlists",
+                media_content_type=MEDIA_TYPE_DIRECTORY,
+                title="Playlists",
+                can_play=False,
+                can_expand=True,
+                children=[],
+            )
+            for playlist_id, name in self._bridge.list_playlists():
+                playlists.children.append(
                     BrowseMedia(
                         media_class=MEDIA_CLASS_PLAYLIST,
                         media_content_id=f"playlist:{playlist_id}",
@@ -282,10 +326,10 @@ class MuRendererEntity(MediaPlayerEntity):
                         can_expand=True,
                     )
                 )
-            return root
+            return playlists
 
-        if not str(media_content_id).startswith("playlist:"):
-            return root
+        if str(media_content_id).startswith("library:"):
+            return await self._browse_library(media_content_id)
 
         rest = str(media_content_id)[len("playlist:") :]
         page = 1
@@ -366,6 +410,137 @@ class MuRendererEntity(MediaPlayerEntity):
             media_content_id=f"playlist:{playlist_id}?page={page}",
             media_content_type=MEDIA_TYPE_PLAYLIST,
             title=f"{playlist.get('name', playlist_id)} (page {page})",
+            can_play=True,
+            can_expand=True,
+            children=children,
+        )
+
+    async def _browse_library(self, media_content_id: str) -> BrowseMedia:
+        rest = str(media_content_id)[len("library:") :]
+        node_id = rest
+        container_id = ""
+        page = 1
+        if "?" in rest:
+            node_id, query = rest.split("?", 1)
+            params = parse_qs(query)
+            container_id = (params.get("container") or [""])[0]
+            try:
+                page = max(1, int((params.get("page") or ["1"])[0]))
+            except ValueError:
+                page = 1
+        node_id = node_id.strip()
+        if not node_id:
+            return BrowseMedia(
+                media_class=MEDIA_CLASS_DIRECTORY,
+                media_content_id="root",
+                media_content_type=MEDIA_TYPE_DIRECTORY,
+                title="Media Utopia",
+                can_play=False,
+                can_expand=True,
+                children=[],
+            )
+
+        page_size = 50
+        start = (page - 1) * page_size
+        payload = await self._bridge.async_browse_library(
+            node_id, container_id, start, page_size
+        )
+        if not payload:
+            return BrowseMedia(
+                media_class=MEDIA_CLASS_DIRECTORY,
+                media_content_id=f"library:{node_id}",
+                media_content_type=MEDIA_TYPE_DIRECTORY,
+                title=node_id,
+                can_play=False,
+                can_expand=True,
+                children=[],
+            )
+
+        items = payload.get("items") or []
+        total = payload.get("total") or 0
+        info = self._bridge.get_library(node_id) or {}
+        title = info.get("name") or node_id
+        if container_id:
+            title = f"{title} (page {page})"
+
+        children = []
+        for item in items:
+            item_id = item.get("itemId")
+            if not item_id:
+                continue
+            media_type = (item.get("mediaType") or "").lower()
+            item_type = (item.get("type") or "").lower()
+            title_text = item.get("name") or item_id
+            artist = ""
+            if item.get("artists"):
+                artist = ", ".join(item.get("artists"))
+            album = item.get("album")
+            if artist and album:
+                display = f"{title_text} — {artist} ({album})"
+            elif artist:
+                display = f"{title_text} — {artist}"
+            else:
+                display = title_text
+            artwork = item.get("imageUrl")
+
+            if item_type == "playlist":
+                playable = False
+            else:
+                playable = media_type in {"audio", "video"} or item_type in {
+                "audio",
+                "video",
+                "movie",
+                "episode",
+                "musicvideo",
+                }
+            if playable:
+                children.append(
+                    BrowseMedia(
+                        media_class=MEDIA_CLASS_MUSIC,
+                        media_content_id=f"lib:{node_id}:{item_id}",
+                        media_content_type=MEDIA_TYPE_MUSIC,
+                        title=display,
+                        thumbnail=artwork,
+                        can_play=True,
+                        can_expand=False,
+                    )
+                )
+                continue
+
+            children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_DIRECTORY,
+                    media_content_id=f"library:{node_id}?container={item_id}",
+                    media_content_type=MEDIA_TYPE_DIRECTORY,
+                    title=display,
+                    thumbnail=artwork,
+                    can_play=True,
+                    can_expand=True,
+                )
+            )
+
+        if isinstance(total, int) and total > start+len(items):
+            next_id = f"library:{node_id}?container={container_id}&page={page+1}"
+            children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_DIRECTORY,
+                    media_content_id=next_id,
+                    media_content_type=MEDIA_TYPE_DIRECTORY,
+                    title="Next page",
+                    can_play=False,
+                    can_expand=True,
+                )
+            )
+
+        current_id = f"library:{node_id}"
+        if container_id or page > 1:
+            current_id = f"library:{node_id}?container={container_id}&page={page}"
+
+        return BrowseMedia(
+            media_class=MEDIA_CLASS_DIRECTORY,
+            media_content_id=current_id,
+            media_content_type=MEDIA_TYPE_DIRECTORY,
+            title=title,
             can_play=True,
             can_expand=True,
             children=children,

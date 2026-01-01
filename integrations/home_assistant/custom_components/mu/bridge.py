@@ -245,6 +245,17 @@ class MudBridge:
     def register_renderer_state_listener(self, callback) -> None:
         self._renderer_state_listeners.append(callback)
 
+    def list_libraries(self) -> list[tuple[str, str]]:
+        items = []
+        for node_id, info in self._libraries.items():
+            name = info.get("name") or node_id
+            items.append((node_id, name))
+        items.sort(key=lambda item: item[1].lower())
+        return items
+
+    def get_library(self, node_id: str) -> dict[str, Any] | None:
+        return self._libraries.get(node_id)
+
     def register_playlist_listener(self, callback) -> None:
         self._playlist_listeners.append(callback)
         for playlist_id in list(self._playlists.keys()):
@@ -422,6 +433,45 @@ class MudBridge:
                     continue
                 self._metadata_cache[ref] = metadata
                 results[ref] = metadata
+        return results
+
+    async def _resolve_sources_batch(
+        self, library_id: str, item_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        results: dict[str, list[dict[str, Any]]] = {}
+        if not item_ids:
+            return results
+        reply = await self._request(
+            library_id,
+            "library.resolveBatch",
+            {"itemIds": item_ids},
+            need_lease=False,
+            timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
+        )
+        if reply is None or reply.get("type") != "ack":
+            err = (reply or {}).get("err") or {}
+            message = str(err.get("message") or "")
+            if "unsupported command" in message.lower():
+                for item_id in item_ids:
+                    reply = await self._request(
+                        library_id,
+                        "library.resolve",
+                        {"itemId": item_id},
+                        need_lease=False,
+                        timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
+                    )
+                    if reply is None or reply.get("type") != "ack":
+                        continue
+                    sources = (reply.get("body") or {}).get("sources") or []
+                    if sources:
+                        results[item_id] = sources
+            return results
+        items = (reply.get("body") or {}).get("items") or []
+        for item in items:
+            item_id = item.get("itemId")
+            sources = item.get("sources") or []
+            if item_id and sources:
+                results[item_id] = sources
         return results
 
     async def _publish_renderer_state(self, node_id: str, state: dict[str, Any]) -> None:
@@ -635,6 +685,9 @@ class MudBridge:
             if playlist_id:
                 await self.async_load_playlist(node_id, playlist_id)
             return
+        if str(media_id).startswith("library:"):
+            await self.async_play_library_container(node_id, str(media_id))
+            return
         entries = await self._resolve_media_entries(media_id)
         if not entries:
             return
@@ -656,6 +709,86 @@ class MudBridge:
             return None
         body = reply.get("body") or {}
         return body
+
+    async def async_browse_library(
+        self, library_id: str, container_id: str, start: int, count: int
+    ) -> dict[str, Any] | None:
+        if not library_id:
+            return None
+        body = {"containerId": container_id, "start": start, "count": count}
+        reply = await self._request(
+            library_id,
+            "library.browse",
+            body,
+            need_lease=False,
+        )
+        if reply is None or reply.get("type") != "ack":
+            return None
+        return reply.get("body") or {}
+
+    async def async_play_library_container(self, node_id: str, media_id: str) -> None:
+        library_id, container_id, page = self._parse_library_media_id(media_id)
+        if not library_id:
+            return
+        if page <= 0:
+            page = 1
+        page_size = 200
+        start = (page - 1) * page_size
+        payload = await self.async_browse_library(library_id, container_id, start, page_size)
+        if not payload:
+            return
+        items = payload.get("items") or []
+        item_ids = []
+        for item in items:
+            item_id = item.get("itemId")
+            if not item_id:
+                continue
+            media_type = (item.get("mediaType") or "").lower()
+            item_type = (item.get("type") or "").lower()
+            playable = media_type in {"audio", "video"} or item_type in {
+                "audio",
+                "video",
+                "movie",
+                "episode",
+                "musicvideo",
+            }
+            if playable:
+                item_ids.append(item_id)
+        if not item_ids:
+            return
+        sources_map = await self._resolve_sources_batch(library_id, item_ids)
+        entries = []
+        for item_id in item_ids:
+            sources = sources_map.get(item_id)
+            if not sources:
+                continue
+            ref_id = f"lib:{library_id}:{item_id}"
+            ref = {"id": ref_id}
+            for source in sources:
+                entries.append({"ref": ref, "resolved": source})
+        if not entries:
+            return
+        reply = await self._request_with_lease(
+            node_id, "queue.set", {"startIndex": 0, "entries": entries}
+        )
+        if reply is None or reply.get("type") != "ack":
+            return
+        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+
+    def _parse_library_media_id(self, media_id: str) -> tuple[str, str, int]:
+        rest = media_id[len("library:") :]
+        node_id = rest
+        container_id = ""
+        page = 1
+        if "?" in rest:
+            node_id, query = rest.split("?", 1)
+            params = dict(pair.split("=", 1) for pair in query.split("&") if "=" in pair)
+            container_id = params.get("container", "")
+            try:
+                page = max(1, int(params.get("page", "1")))
+            except ValueError:
+                page = 1
+        return node_id.strip(), container_id, page
 
     async def async_fetch_metadata(self, item_id: str) -> dict[str, Any]:
         return await self._fetch_metadata(item_id)
