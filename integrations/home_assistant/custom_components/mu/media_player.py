@@ -1,0 +1,244 @@
+"""Media player entities for Media Utopia."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from homeassistant.components.media_player import MediaPlayerEntity
+from homeassistant.components.media_player.const import (
+    MediaPlayerEntityFeature,
+    MediaPlayerState,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
+
+from .const import DOMAIN
+
+import logging
+
+try:
+    from homeassistant.components.media_player.const import MediaPlayerRepeatMode
+except ImportError:  # pragma: no cover - older HA compatibility
+    MediaPlayerRepeatMode = None
+
+REPEAT_ALL = MediaPlayerRepeatMode.ALL if MediaPlayerRepeatMode else "all"
+REPEAT_OFF = MediaPlayerRepeatMode.OFF if MediaPlayerRepeatMode else "off"
+
+_LOGGER = logging.getLogger(__name__)
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Media Utopia media players."""
+    data = hass.data[DOMAIN][entry.entry_id]
+    bridge = data["bridge"]
+
+    manager = RendererManager(bridge, async_add_entities)
+    await manager.async_start()
+    data["renderer_manager"] = manager
+
+
+class RendererManager:
+    """Manage renderer entities from mu presence."""
+
+    def __init__(self, bridge, async_add_entities: AddEntitiesCallback) -> None:
+        self._bridge = bridge
+        self._async_add_entities = async_add_entities
+        self._entities: dict[str, MuRendererEntity] = {}
+
+    async def async_start(self) -> None:
+        self._bridge.register_renderer_listener(self._on_renderer)
+        self._bridge.register_renderer_state_listener(self._on_state)
+
+    @callback
+    def _on_renderer(self, node_id: str) -> None:
+        if node_id in self._entities:
+            return
+        entity = MuRendererEntity(self._bridge, node_id)
+        self._entities[node_id] = entity
+        self._async_add_entities([entity])
+
+    @callback
+    def _on_state(self, node_id: str, _state: dict[str, Any]) -> None:
+        entity = self._entities.get(node_id)
+        if entity is None:
+            return
+        entity.async_write_ha_state()
+
+
+class MuRendererEntity(MediaPlayerEntity):
+    """Media player entity backed by a mu renderer node."""
+
+    _attr_should_poll = False
+
+    def __init__(self, bridge, node_id: str) -> None:
+        self._bridge = bridge
+        self._node_id = node_id
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_renderer_{safe}"
+
+    @property
+    def name(self) -> str | None:
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        return renderer.get("name", self._node_id)
+
+    @property
+    def available(self) -> bool:
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        return bool(renderer.get("online", True))
+
+    @property
+    def state(self) -> MediaPlayerState | None:
+        status = (self._playback().get("status") or "").lower()
+        if status == "playing":
+            return MediaPlayerState.PLAYING
+        if status == "paused":
+            return MediaPlayerState.PAUSED
+        if status == "stopped":
+            return MediaPlayerState.IDLE
+        return MediaPlayerState.IDLE
+
+    @property
+    def volume_level(self) -> float | None:
+        return self._playback().get("volume")
+
+    @property
+    def is_volume_muted(self) -> bool | None:
+        return self._playback().get("mute")
+
+    @property
+    def media_title(self) -> str | None:
+        return self._metadata().get("title")
+
+    @property
+    def media_artist(self) -> str | None:
+        return self._metadata().get("artist")
+
+    @property
+    def media_album_name(self) -> str | None:
+        return self._metadata().get("album")
+
+    @property
+    def media_duration(self) -> int | None:
+        duration = self._playback().get("durationMs")
+        if duration is None:
+            return None
+        return int(duration / 1000)
+
+    @property
+    def media_position(self) -> int | None:
+        position = self._playback().get("positionMs")
+        if position is None:
+            return None
+        return int(position / 1000)
+
+    @property
+    def media_position_updated_at(self) -> datetime | None:
+        state = self._bridge.get_renderer_state(self._node_id)
+        status = (state.get("playback") or {}).get("status", "").lower()
+        if status == "playing":
+            return dt_util.utcnow()
+        ts = state.get("ts")
+        if ts is None:
+            return None
+        return dt_util.as_utc(datetime.utcfromtimestamp(float(ts)))
+
+    @property
+    def media_image_url(self) -> str | None:
+        return self._metadata().get("artworkUrl")
+
+    @property
+    def shuffle(self) -> bool | None:
+        queue = self._queue()
+        return queue.get("shuffle")
+
+    @property
+    def repeat(self) -> str | None:
+        queue = self._queue()
+        if queue.get("repeat"):
+            return REPEAT_ALL
+        return REPEAT_OFF
+
+    @property
+    def supported_features(self) -> MediaPlayerEntityFeature:
+        return (
+            MediaPlayerEntityFeature.PLAY
+            | MediaPlayerEntityFeature.PAUSE
+            | MediaPlayerEntityFeature.STOP
+            | MediaPlayerEntityFeature.NEXT_TRACK
+            | MediaPlayerEntityFeature.PREVIOUS_TRACK
+            | MediaPlayerEntityFeature.SEEK
+            | MediaPlayerEntityFeature.VOLUME_SET
+            | MediaPlayerEntityFeature.VOLUME_MUTE
+            | MediaPlayerEntityFeature.SHUFFLE_SET
+            | MediaPlayerEntityFeature.REPEAT_SET
+            | MediaPlayerEntityFeature.PLAY_MEDIA
+        )
+
+    async def async_media_play(self) -> None:
+        _LOGGER.debug("play %s", self._node_id)
+        await self._bridge.async_play(self._node_id)
+
+    async def async_media_pause(self) -> None:
+        _LOGGER.debug("pause %s", self._node_id)
+        await self._bridge.async_pause(self._node_id)
+
+    async def async_media_stop(self) -> None:
+        _LOGGER.debug("stop %s", self._node_id)
+        await self._bridge.async_stop(self._node_id)
+
+    async def async_media_next_track(self) -> None:
+        _LOGGER.debug("next %s", self._node_id)
+        await self._bridge.async_next(self._node_id)
+
+    async def async_media_previous_track(self) -> None:
+        _LOGGER.debug("prev %s", self._node_id)
+        await self._bridge.async_previous(self._node_id)
+
+    async def async_set_volume_level(self, volume: float) -> None:
+        _LOGGER.debug("volume %s %.2f", self._node_id, volume)
+        await self._bridge.async_set_volume(self._node_id, volume)
+
+    async def async_mute_volume(self, mute: bool) -> None:
+        _LOGGER.debug("mute %s %s", self._node_id, mute)
+        await self._bridge.async_mute(self._node_id, mute)
+
+    async def async_media_seek(self, position: float) -> None:
+        _LOGGER.debug("seek %s %.2f", self._node_id, position)
+        await self._bridge.async_seek(self._node_id, position)
+
+    async def async_set_shuffle(self, shuffle: bool) -> None:
+        _LOGGER.debug("shuffle %s %s", self._node_id, shuffle)
+        await self._bridge.async_shuffle(self._node_id, shuffle)
+
+    async def async_set_repeat(self, repeat: str) -> None:
+        _LOGGER.debug("repeat %s %s", self._node_id, repeat)
+        await self._bridge.async_repeat(self._node_id, repeat.lower() != "off")
+
+    async def async_play_media(
+        self, media_type: str, media_id: str, **kwargs: Any
+    ) -> None:
+        _ = media_type
+        _LOGGER.debug("play_media %s %s", self._node_id, media_id)
+        await self._bridge.async_play_media(self._node_id, media_id)
+
+    def _playback(self) -> dict[str, Any]:
+        state = self._bridge.get_renderer_state(self._node_id)
+        return state.get("playback") or {}
+
+    def _metadata(self) -> dict[str, Any]:
+        state = self._bridge.get_renderer_state(self._node_id)
+        current = state.get("current") or {}
+        return current.get("metadata") or {}
+
+    def _queue(self) -> dict[str, Any]:
+        state = self._bridge.get_renderer_state(self._node_id)
+        return state.get("queue") or {}

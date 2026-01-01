@@ -1,0 +1,36 @@
+load_playlist:
+  name: Load Playlist
+  description: Load a playlist into a renderer queue.
+  fields:
+    renderer:
+      name: Renderer
+      description: Renderer node id or name.
+      required: true
+      selector:
+        text:
+    playlist:
+      name: Playlist
+      description: Playlist id or name.
+      required: true
+      selector:
+        text:
+    mode:
+      name: Mode
+      description: Load mode (replace, append, next).
+      default: replace
+      selector:
+        select:
+          options:
+            - replace
+            - append
+            - next
+    resolve:
+      name: Resolve
+      description: Resolve mode (auto, yes, no).
+      default: auto
+      selector:
+        select:
+          options:
+            - auto
+            - "yes"
+            - "no"

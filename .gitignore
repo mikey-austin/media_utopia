@@ -1,7 +1,6 @@
 .gocache
-mu
-mud
 bin/
+__pycache*
 integrations/home_assistant/ha_config/.*
 integrations/home_assistant/ha_config/*.log.*
 integrations/home_assistant/ha_config/*.db*

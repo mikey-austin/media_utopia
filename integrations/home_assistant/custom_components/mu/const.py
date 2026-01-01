@@ -1,0 +1,19 @@
+"""Constants for the Mud integration."""
+
+DOMAIN = "mu"
+
+CONF_TOPIC_BASE = "topic_base"
+CONF_DISCOVERY_PREFIX = "discovery_prefix"
+CONF_ENTITY_PREFIX = "entity_prefix"
+CONF_PLAYLIST_REFRESH = "playlist_refresh_seconds"
+CONF_IDENTITY = "identity"
+
+DEFAULT_TOPIC_BASE = "mu/v1"
+DEFAULT_DISCOVERY_PREFIX = "homeassistant"
+DEFAULT_ENTITY_PREFIX = "mu/ha"
+DEFAULT_PLAYLIST_REFRESH = 30
+DEFAULT_IDENTITY = "homeassistant"
+
+REPLY_TIMEOUT_SECONDS = 10
+LEASE_TTL_MS = 300000
+LEASE_RENEW_THRESHOLD_SECONDS = 30

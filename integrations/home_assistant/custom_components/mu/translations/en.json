@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Media Utopia",
+        "description": "Configure MQTT discovery and topic settings for Media Utopia (Mu).",
+        "data": {
+          "topic_base": "Mu topic base",
+          "discovery_prefix": "Home Assistant discovery prefix",
+          "entity_prefix": "Entity topic prefix",
+          "identity": "Controller identity",
+          "playlist_refresh_seconds": "Playlist refresh interval (seconds)"
+        }
+      }
+    }
+  }
+}
