@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover - fallback for older HA
 from .bridge import MudBridge
 from .const import DOMAIN
 
-PLATFORMS: list[str] = ["media_player", "button", "select"]
+PLATFORMS: list[str] = ["media_player", "button", "select", "sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

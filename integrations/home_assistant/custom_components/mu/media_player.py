@@ -399,10 +399,21 @@ class MuRendererEntity(MediaPlayerEntity):
         state = self._bridge.get_renderer_state(self._node_id)
         current = state.get("current") or {}
         metadata = current.get("metadata") or {}
+        session = state.get("session") or {}
+        queue = state.get("queue") or {}
         return {
             "artist": self._artist(),
             "album": metadata.get("album"),
+            "media_type": metadata.get("mediaType"),
+            "item_type": metadata.get("type"),
+            "duration_ms": metadata.get("durationMs"),
+            "position_ms": (state.get("playback") or {}).get("positionMs"),
             "item_id": current.get("itemId"),
+            "lease_owner": session.get("owner"),
+            "lease_id": session.get("id"),
+            "lease_expires_at": session.get("leaseExpiresAt"),
+            "queue_length": queue.get("length"),
+            "queue_index": queue.get("index"),
         }
 
     @property

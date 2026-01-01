@@ -304,7 +304,11 @@ class MudBridge:
         if not item_id or not str(item_id).startswith("lib:"):
             return
         metadata = current.get("metadata") or {}
-        if metadata.get("title") or metadata.get("artworkUrl"):
+        if metadata.get("title") and (
+            metadata.get("artist")
+            or metadata.get("album")
+            or metadata.get("artworkUrl")
+        ):
             return
         cached = self._metadata_cache.get(item_id)
         if cached:
