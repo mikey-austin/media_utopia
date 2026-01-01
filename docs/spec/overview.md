@@ -37,6 +37,7 @@ IDs are opaque outside the provider that minted them.
 - `mu:library:jellyfin:mud@livingroom:default`
 - `mu:playlist:plsrv:mud@livingroom:default`
 - `mu:library:upnp:mud@lab:basement-nas`
+- `mu:library:podcast:mud@studio:default`
 
 ### Use cases
 

@@ -38,6 +38,7 @@ Planned modules:
 - `renderer_gstreamer`: native renderer using GStreamer pipelines
 - `bridge_upnp_library`: UPnP library bridge
 - `bridge_jellyfin_library`: Jellyfin library bridge
+- `podcast`: RSS/Podcast library module
 
 ## Configuration Model
 
@@ -99,6 +100,20 @@ user_id = "YOUR_USER_ID"
 timeout_ms = 5000
 cache_ttl_ms = 600000
 cache_size = 1000
+
+[modules.podcast]
+enabled = true
+name = "Podcasts"
+provider = "podcast"
+resource = "default"
+feeds = [
+  "https://example.com/feed.xml",
+  "https://feeds.example.org/show/rss"
+]
+refresh_interval_ms = 86400000
+reverse_sort_by_date = true
+cache_dir = "/var/lib/mud/podcasts"
+timeout_ms = 10000
 
 [modules.embedded_mqtt]
 enabled = true

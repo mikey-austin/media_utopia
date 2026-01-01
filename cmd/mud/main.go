@@ -16,6 +16,7 @@ import (
 	embeddedmqtt "github.com/mikey-austin/media_utopia/internal/modules/embedded_mqtt"
 	jellyfinlibrary "github.com/mikey-austin/media_utopia/internal/modules/jellyfin_library"
 	"github.com/mikey-austin/media_utopia/internal/modules/playlist"
+	podcastlibrary "github.com/mikey-austin/media_utopia/internal/modules/podcast_library"
 	renderergstreamer "github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
 	"github.com/mikey-austin/media_utopia/internal/mud"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
@@ -260,6 +261,34 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
+	if cfg.Modules.PodcastLibrary.Enabled {
+		if moduleOnly == "" || moduleOnly == "podcast" {
+			timeout := time.Duration(cfg.Modules.PodcastLibrary.TimeoutMS) * time.Millisecond
+			refresh := time.Duration(cfg.Modules.PodcastLibrary.RefreshIntervalMS) * time.Millisecond
+			nodeID, err := buildNodeID("library", cfg.Modules.PodcastLibrary.Provider, cfg.Server.Namespace, cfg.Modules.PodcastLibrary.Resource)
+			if err != nil {
+				return nil, err
+			}
+			mod, err := podcastlibrary.NewModule(logger.With(zap.String("module", "podcast")), client, podcastlibrary.Config{
+				NodeID:            nodeID,
+				TopicBase:         cfg.Server.TopicBase,
+				Name:              cfg.Modules.PodcastLibrary.Name,
+				Feeds:             cfg.Modules.PodcastLibrary.Feeds,
+				RefreshInterval:   refresh,
+				CacheDir:          cfg.Modules.PodcastLibrary.CacheDir,
+				Timeout:           timeout,
+				ReverseSortByDate: cfg.Modules.PodcastLibrary.ReverseSortByDate,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "podcast",
+				Run:  mod.Run,
+			})
+		}
+	}
+
 	if cfg.Modules.RendererGStreamer.Enabled {
 		if moduleOnly == "" || moduleOnly == "renderer_gstreamer" {
 			crossfade := time.Duration(cfg.Modules.RendererGStreamer.CrossfadeMS) * time.Millisecond
@@ -303,6 +332,9 @@ func enabledModules(cfg mud.Config) []string {
 	}
 	if cfg.Modules.BridgeJellyfinLibrary.Enabled {
 		out = append(out, "bridge_jellyfin_library")
+	}
+	if cfg.Modules.PodcastLibrary.Enabled {
+		out = append(out, "podcast")
 	}
 	if cfg.Modules.RendererGStreamer.Enabled {
 		out = append(out, "renderer_gstreamer")

@@ -50,6 +50,7 @@ type ModulesConfig struct {
 	RendererGStreamer     RendererGStreamerConfig `toml:"renderer_gstreamer"`
 	BridgeUPNPLibrary     BridgeUPNPLibraryConfig `toml:"bridge_upnp_library"`
 	BridgeJellyfinLibrary JellyfinLibraryConfig   `toml:"bridge_jellyfin_library"`
+	PodcastLibrary        PodcastLibraryConfig    `toml:"podcast"`
 	EmbeddedMQTT          EmbeddedMQTTConfig      `toml:"embedded_mqtt"`
 }
 
@@ -94,6 +95,19 @@ type JellyfinLibraryConfig struct {
 	TimeoutMS  int64  `toml:"timeout_ms"`
 	CacheTTLMS int64  `toml:"cache_ttl_ms"`
 	CacheSize  int    `toml:"cache_size"`
+}
+
+// PodcastLibraryConfig configures the podcast library module.
+type PodcastLibraryConfig struct {
+	Enabled           bool     `toml:"enabled"`
+	Name              string   `toml:"name"`
+	Provider          string   `toml:"provider"`
+	Resource          string   `toml:"resource"`
+	Feeds             []string `toml:"feeds"`
+	RefreshIntervalMS int64    `toml:"refresh_interval_ms"`
+	CacheDir          string   `toml:"cache_dir"`
+	TimeoutMS         int64    `toml:"timeout_ms"`
+	ReverseSortByDate bool     `toml:"reverse_sort_by_date"`
 }
 
 // EmbeddedMQTTConfig configures the embedded MQTT broker.
