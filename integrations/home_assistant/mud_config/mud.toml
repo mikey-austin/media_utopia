@@ -1,0 +1,20 @@
+[server]
+broker = "mqtt://mqtt:2883"
+identity = "mud@ha"
+log_level = "debug"
+log_format = "text"
+log_output = "stdout"
+log_utc = true
+
+[modules.playlist]
+enabled = true
+provider = "playlist"
+resource = "local"
+storage_path = "/config/playlists"
+
+[modules.renderer_gstreamer]
+enabled = true
+provider = "gstreamer"
+resource = "default"
+pipeline = "playbin uri={url} volume={volume}"
+publish_state = true

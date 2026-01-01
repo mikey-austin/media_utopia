@@ -5,3 +5,5 @@
 *.md
 **/*_test.go
 **/testdata
+integrations/home_assistant/ha_config/.storage
+integrations/home_assistant/mosquitto/*

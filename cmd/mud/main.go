@@ -208,26 +208,6 @@ func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase s
 
 func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger, moduleOnly string, skipEmbedded bool) ([]mud.ModuleRunner, error) {
 	modules := []mud.ModuleRunner{}
-	if cfg.Modules.EmbeddedMQTT.Enabled && !skipEmbedded {
-		if moduleOnly == "" || moduleOnly == "embedded_mqtt" {
-			mod, err := embeddedmqtt.NewModule(logger.With(zap.String("module", "embedded_mqtt")), embeddedmqtt.Config{
-				Listen:         cfg.Modules.EmbeddedMQTT.Listen,
-				AllowAnonymous: cfg.Modules.EmbeddedMQTT.AllowAnonymous,
-				Username:       cfg.Modules.EmbeddedMQTT.Username,
-				Password:       cfg.Modules.EmbeddedMQTT.Password,
-				TLSCA:          cfg.Modules.EmbeddedMQTT.TLSCA,
-				TLSCert:        cfg.Modules.EmbeddedMQTT.TLSCert,
-				TLSKey:         cfg.Modules.EmbeddedMQTT.TLSKey,
-			})
-			if err != nil {
-				return nil, err
-			}
-			modules = append(modules, mud.ModuleRunner{
-				Name: "embedded_mqtt",
-				Run:  mod.Run,
-			})
-		}
-	}
 	if cfg.Modules.Playlist.Enabled {
 		if moduleOnly == "" || moduleOnly == "playlist" {
 			nodeID, err := buildNodeID("playlist", cfg.Modules.Playlist.Provider, cfg.Server.Namespace, cfg.Modules.Playlist.Resource)

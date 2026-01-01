@@ -53,6 +53,10 @@ func Load() (Config, error) {
 }
 
 func configPath() (string, error) {
+	if confEnvOverride := os.Getenv("MU_CONFIG"); confEnvOverride != "" {
+		return confEnvOverride, nil
+	}
+
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
 		return filepath.Join(dir, "mu", "config.toml"), nil
 	}

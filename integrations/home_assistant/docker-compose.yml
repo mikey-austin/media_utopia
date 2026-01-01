@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: media_utopia_ha
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./ha_config:/config
+      - ./custom_components/mu:/config/custom_components/mu
+    environment:
+      - TZ=UTC
+    depends_on:
+      - mqtt
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: media_utopia_mqtt
+    restart: unless-stopped
+    ports:
+      - "2883:2883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+  mud:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: mud
+    image: media_utopia_mud
+    container_name: media_utopia_mud
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    volumes:
+      - ./mud_config:/config
+    devices:
+      - "/dev/snd:/dev/snd"
+    entrypoint: ["/usr/local/bin/mud"]
+    command: ["--config", "/config/mud.toml"]
