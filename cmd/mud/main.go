@@ -219,6 +219,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				TopicBase:   cfg.Server.TopicBase,
 				StoragePath: cfg.Modules.Playlist.StoragePath,
 				Identity:    cfg.Server.Identity,
+				Name:        cfg.Modules.Playlist.Name,
 			})
 			if err != nil {
 				return nil, err
@@ -240,6 +241,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			jf, err := jellyfinlibrary.NewModule(logger.With(zap.String("module", "bridge_jellyfin_library")), client, jellyfinlibrary.Config{
 				NodeID:    nodeID,
 				TopicBase: cfg.Server.TopicBase,
+				Name:      cfg.Modules.BridgeJellyfinLibrary.Name,
 				BaseURL:   cfg.Modules.BridgeJellyfinLibrary.BaseURL,
 				APIKey:    cfg.Modules.BridgeJellyfinLibrary.APIKey,
 				UserID:    cfg.Modules.BridgeJellyfinLibrary.UserID,
@@ -265,7 +267,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			mod, err := renderergstreamer.NewModule(logger.With(zap.String("module", "renderer_gstreamer")), client, renderergstreamer.Config{
 				NodeID:       nodeID,
 				TopicBase:    cfg.Server.TopicBase,
-				Name:         "GStreamer Renderer",
+				Name:         cfg.Modules.RendererGStreamer.Name,
 				Pipeline:     cfg.Modules.RendererGStreamer.Pipeline,
 				Device:       cfg.Modules.RendererGStreamer.Device,
 				Crossfade:    crossfade,

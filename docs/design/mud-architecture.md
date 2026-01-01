@@ -67,12 +67,14 @@ key = "/etc/mud/key.pem"
 
 [modules.playlist]
 enabled = true
+name = "Office Playlists"
 provider = "plsrv"
 resource = "default"
 storage_path = "/var/lib/mud/playlists"
 
 [modules.renderer_gstreamer]
 enabled = true
+name = "Office Renderer"
 provider = "gstreamer"
 resource = "default"
 pipeline = "playbin uri={url} volume={volume}"
@@ -81,12 +83,14 @@ crossfade_ms = 500
 
 [modules.bridge_upnp_library]
 enabled = true
+name = "UPnP Library"
 provider = "upnp"
 resource = "default"
 listen = "0.0.0.0:9000"
 
 [modules.bridge_jellyfin_library]
 enabled = true
+name = "Jellyfin Library"
 provider = "jellyfin"
 resource = "default"
 base_url = "http://jellyfin.local:8096"

@@ -56,6 +56,7 @@ type ModulesConfig struct {
 // PlaylistConfig configures the playlist module.
 type PlaylistConfig struct {
 	Enabled     bool   `toml:"enabled"`
+	Name        string `toml:"name"`
 	Provider    string `toml:"provider"`
 	Resource    string `toml:"resource"`
 	StoragePath string `toml:"storage_path"`
@@ -64,6 +65,7 @@ type PlaylistConfig struct {
 // RendererGStreamerConfig configures the GStreamer renderer module.
 type RendererGStreamerConfig struct {
 	Enabled     bool   `toml:"enabled"`
+	Name        string `toml:"name"`
 	Provider    string `toml:"provider"`
 	Resource    string `toml:"resource"`
 	Pipeline    string `toml:"pipeline"`
@@ -74,6 +76,7 @@ type RendererGStreamerConfig struct {
 // BridgeUPNPLibraryConfig configures the UPnP library bridge.
 type BridgeUPNPLibraryConfig struct {
 	Enabled  bool   `toml:"enabled"`
+	Name     string `toml:"name"`
 	Provider string `toml:"provider"`
 	Resource string `toml:"resource"`
 	Listen   string `toml:"listen"`
@@ -82,6 +85,7 @@ type BridgeUPNPLibraryConfig struct {
 // JellyfinLibraryConfig configures the Jellyfin library bridge.
 type JellyfinLibraryConfig struct {
 	Enabled   bool   `toml:"enabled"`
+	Name      string `toml:"name"`
 	Provider  string `toml:"provider"`
 	Resource  string `toml:"resource"`
 	BaseURL   string `toml:"base_url"`

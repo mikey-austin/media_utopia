@@ -24,6 +24,7 @@ type Config struct {
 	TopicBase   string
 	StoragePath string
 	Identity    string
+	Name        string
 }
 
 // Module provides playlist server behavior.
@@ -43,6 +44,9 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 	if strings.TrimSpace(cfg.TopicBase) == "" {
 		cfg.TopicBase = mu.BaseTopic
+	}
+	if strings.TrimSpace(cfg.Name) == "" {
+		cfg.Name = "Playlist Server"
 	}
 	if strings.TrimSpace(cfg.StoragePath) == "" {
 		return nil, errors.New("storage_path required")
@@ -88,7 +92,7 @@ func (m *Module) publishPresence() error {
 	presence := mu.Presence{
 		NodeID: m.config.NodeID,
 		Kind:   "playlist",
-		Name:   "Playlist Server",
+		Name:   m.config.Name,
 		Caps:   map[string]any{},
 		TS:     time.Now().Unix(),
 	}

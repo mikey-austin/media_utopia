@@ -8,12 +8,14 @@ log_utc = true
 
 [modules.playlist]
 enabled = true
+name = "HA Playlists"
 provider = "playlist"
 resource = "local"
 storage_path = "/config/playlists"
 
 [modules.renderer_gstreamer]
 enabled = true
+name = "HA Renderer"
 provider = "gstreamer"
 resource = "default"
 pipeline = "playbin uri={url} volume={volume}"

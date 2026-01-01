@@ -23,6 +23,7 @@ import (
 type Config struct {
 	NodeID    string
 	TopicBase string
+	Name      string
 	BaseURL   string
 	APIKey    string
 	UserID    string
@@ -54,6 +55,9 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 	if strings.TrimSpace(cfg.TopicBase) == "" {
 		cfg.TopicBase = mu.BaseTopic
+	}
+	if strings.TrimSpace(cfg.Name) == "" {
+		cfg.Name = "Jellyfin Library"
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Second
@@ -96,7 +100,7 @@ func (m *Module) publishPresence() error {
 	presence := mu.Presence{
 		NodeID: m.config.NodeID,
 		Kind:   "library",
-		Name:   "Jellyfin Library",
+		Name:   m.config.Name,
 		Caps: map[string]any{
 			"resolve": true,
 			"browse":  true,
