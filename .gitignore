@@ -7,3 +7,4 @@ integrations/home_assistant/ha_config/*.log.*
 integrations/home_assistant/ha_config/*.db*
 integrations/home_assistant/mosquitto/data/
 integrations/home_assistant/mosquitto/log/
+*.log
