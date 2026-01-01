@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
 from homeassistant.components.media_player import MediaPlayerEntity
+try:
+    from homeassistant.components.media_player import BrowseMedia
+except Exception:  # pragma: no cover
+    from homeassistant.components.media_player.browse_media import BrowseMedia
 from homeassistant.components.media_player.const import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
@@ -26,6 +31,18 @@ except ImportError:  # pragma: no cover - older HA compatibility
 
 REPEAT_ALL = MediaPlayerRepeatMode.ALL if MediaPlayerRepeatMode else "all"
 REPEAT_OFF = MediaPlayerRepeatMode.OFF if MediaPlayerRepeatMode else "off"
+
+try:
+    from homeassistant.components.media_player.const import MEDIA_CLASS_MUSIC, MEDIA_CLASS_PLAYLIST
+except Exception:  # pragma: no cover
+    MEDIA_CLASS_MUSIC = "music"
+    MEDIA_CLASS_PLAYLIST = "playlist"
+
+try:
+    from homeassistant.components.media_player.const import MEDIA_TYPE_MUSIC, MEDIA_TYPE_PLAYLIST
+except Exception:  # pragma: no cover
+    MEDIA_TYPE_MUSIC = "music"
+    MEDIA_TYPE_PLAYLIST = "playlist"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -120,7 +137,7 @@ class MuRendererEntity(MediaPlayerEntity):
 
     @property
     def media_artist(self) -> str | None:
-        return self._metadata().get("artist")
+        return self._artist()
 
     @property
     def media_album_name(self) -> str | None:
@@ -156,6 +173,17 @@ class MuRendererEntity(MediaPlayerEntity):
         return self._metadata().get("artworkUrl")
 
     @property
+    def media_content_id(self) -> str | None:
+        state = self._bridge.get_renderer_state(self._node_id)
+        current = state.get("current") or {}
+        return current.get("itemId")
+
+    @property
+    def media_content_type(self) -> str | None:
+        meta = self._metadata()
+        return meta.get("mediaType") or meta.get("type")
+
+    @property
     def shuffle(self) -> bool | None:
         queue = self._queue()
         return queue.get("shuffle")
@@ -181,6 +209,7 @@ class MuRendererEntity(MediaPlayerEntity):
             | MediaPlayerEntityFeature.SHUFFLE_SET
             | MediaPlayerEntityFeature.REPEAT_SET
             | MediaPlayerEntityFeature.PLAY_MEDIA
+            | MediaPlayerEntityFeature.BROWSE_MEDIA
         )
 
     async def async_media_play(self) -> None:
@@ -230,6 +259,120 @@ class MuRendererEntity(MediaPlayerEntity):
         _LOGGER.debug("play_media %s %s", self._node_id, media_id)
         await self._bridge.async_play_media(self._node_id, media_id)
 
+    async def async_browse_media(self, media_content_type=None, media_content_id=None):
+        root = BrowseMedia(
+            media_class=MEDIA_CLASS_PLAYLIST,
+            media_content_id="root",
+            media_content_type=MEDIA_TYPE_PLAYLIST,
+            title="Mu Playlists",
+            can_play=False,
+            can_expand=True,
+            children=[],
+        )
+
+        if not media_content_id or media_content_id == "root":
+            for playlist_id, name in self._bridge.list_playlists():
+                root.children.append(
+                    BrowseMedia(
+                        media_class=MEDIA_CLASS_PLAYLIST,
+                        media_content_id=f"playlist:{playlist_id}",
+                        media_content_type=MEDIA_TYPE_PLAYLIST,
+                        title=name,
+                        can_play=True,
+                        can_expand=True,
+                    )
+                )
+            return root
+
+        if not str(media_content_id).startswith("playlist:"):
+            return root
+
+        rest = str(media_content_id)[len("playlist:") :]
+        page = 1
+        if "?page=" in rest:
+            rest, page_str = rest.rsplit("?page=", 1)
+            try:
+                page = max(1, int(page_str))
+            except ValueError:
+                page = 1
+        playlist_id = rest.strip()
+        if not playlist_id:
+            return root
+
+        playlist = await self._bridge.async_fetch_playlist(playlist_id)
+        if not playlist:
+            return root
+
+        entries = playlist.get("entries") or []
+        page_size = 25
+        total = len(entries)
+        start = max(0, (page - 1) * page_size)
+        end = min(total, start + page_size)
+        slice_entries = entries[start:end]
+        children = []
+
+        tasks = []
+        item_ids = []
+        for entry in slice_entries:
+            ref = (entry or {}).get("ref") or {}
+            resolved = (entry or {}).get("resolved") or {}
+            item_id = ref.get("id") or resolved.get("url")
+            if not item_id:
+                continue
+            if str(item_id).startswith("lib:"):
+                tasks.append(self._bridge.async_fetch_metadata(item_id))
+                item_ids.append(item_id)
+            else:
+                tasks.append(asyncio.sleep(0, result={}))
+                item_ids.append(item_id)
+
+        metadata_list = await asyncio.gather(*tasks)
+
+        for item_id, meta in zip(item_ids, metadata_list):
+            title = meta.get("title") or item_id
+            artist = meta.get("artist")
+            album = meta.get("album")
+            artwork = meta.get("artworkUrl")
+            if artist and album:
+                display = f"{title} — {artist} ({album})"
+            elif artist:
+                display = f"{title} — {artist}"
+            else:
+                display = title
+            children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_MUSIC,
+                    media_content_id=item_id,
+                    media_content_type=MEDIA_TYPE_MUSIC,
+                    title=display,
+                    thumbnail=artwork,
+                    can_play=True,
+                    can_expand=False,
+                )
+            )
+
+        if end < total:
+            children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_PLAYLIST,
+                    media_content_id=f"playlist:{playlist_id}?page={page+1}",
+                    media_content_type=MEDIA_TYPE_PLAYLIST,
+                    title="Next page",
+                    can_play=False,
+                    can_expand=True,
+                )
+            )
+
+        return BrowseMedia(
+            media_class=MEDIA_CLASS_PLAYLIST,
+            media_content_id=f"playlist:{playlist_id}?page={page}",
+            media_content_type=MEDIA_TYPE_PLAYLIST,
+            title=f"{playlist.get('name', playlist_id)} (page {page})",
+            can_play=True,
+            can_expand=True,
+            children=children,
+        )
+
     def _playback(self) -> dict[str, Any]:
         state = self._bridge.get_renderer_state(self._node_id)
         return state.get("playback") or {}
@@ -243,13 +386,32 @@ class MuRendererEntity(MediaPlayerEntity):
         state = self._bridge.get_renderer_state(self._node_id)
         return state.get("queue") or {}
 
+    def _artist(self) -> str | None:
+        meta = self._metadata()
+        artist = meta.get("artist")
+        if artist:
+            return artist
+        artists = meta.get("artists")
+        if isinstance(artists, list) and artists:
+            return ", ".join(str(a) for a in artists if a)
+        return None
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         state = self._bridge.get_renderer_state(self._node_id)
         current = state.get("current") or {}
         metadata = current.get("metadata") or {}
         return {
-            "artist": metadata.get("artist"),
+            "artist": self._artist(),
             "album": metadata.get("album"),
             "item_id": current.get("itemId"),
+        }
+
+    @property
+    def device_info(self):
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        return {
+            "identifiers": {("mu", self._node_id)},
+            "name": renderer.get("name", self._node_id),
+            "manufacturer": "Mu",
         }

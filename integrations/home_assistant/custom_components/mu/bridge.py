@@ -31,6 +31,7 @@ from .const import (
     DOMAIN,
     LEASE_RENEW_THRESHOLD_SECONDS,
     LEASE_TTL_MS,
+    RENDERER_LOAD_TIMEOUT_SECONDS,
     REPLY_TIMEOUT_SECONDS,
 )
 
@@ -72,6 +73,9 @@ class MudBridge:
         self._renderer_state_listeners: list[callable] = []
         self._metadata_cache: dict[str, dict[str, Any]] = {}
         self._metadata_inflight: set[str] = set()
+        self._metadata_failures: dict[str, float] = {}
+        self._request_sema = asyncio.Semaphore(4)
+        self._metadata_sema = asyncio.Semaphore(2)
         self._libraries: dict[str, dict[str, Any]] = {}
         self._playlist_server: dict[str, Any] | None = None
         self._playlists: dict[str, dict[str, Any]] = {}
@@ -155,7 +159,7 @@ class MudBridge:
                 "mode": mode,
                 "resolve": resolve,
             }
-            await self._send_renderer_command(renderer_id, "queue.loadPlaylist", body)
+            await self.async_load_playlist(renderer_id, playlist_id, mode, resolve)
 
         schema = vol.Schema(
             {
@@ -313,18 +317,9 @@ class MudBridge:
 
     async def _resolve_metadata(self, node_id: str, item_id: str) -> None:
         try:
-            library_id, raw_id = self._split_lib_ref(item_id)
-            if not library_id or not raw_id:
-                return
-            body = {"itemId": raw_id, "metadataOnly": True}
-            reply = await self._request(library_id, "library.resolve", body, need_lease=False)
-            if reply is None or reply.get("type") != "ack":
-                _LOGGER.debug("resolve metadata failed %s reply=%s", item_id, reply)
-                return
-            metadata = (reply.get("body") or {}).get("metadata") or {}
+            metadata = await self._fetch_metadata(item_id)
             if not metadata:
                 return
-            self._metadata_cache[item_id] = metadata
             state = self._renderers.get(node_id, {}).get("state")
             if not state:
                 return
@@ -335,6 +330,34 @@ class MudBridge:
             self._notify_renderer_state_listeners(node_id, state)
         finally:
             self._metadata_inflight.discard(item_id)
+
+    async def _fetch_metadata(self, item_id: str) -> dict[str, Any]:
+        cached = self._metadata_cache.get(item_id)
+        if cached:
+            return cached
+        last_fail = self._metadata_failures.get(item_id)
+        if last_fail and time.time()-last_fail < 60:
+            return {}
+        library_id, raw_id = self._split_lib_ref(item_id)
+        if not library_id or not raw_id:
+            return {}
+        body = {"itemId": raw_id, "metadataOnly": True}
+        async with self._metadata_sema:
+            reply = await self._request(
+                library_id,
+                "library.resolve",
+                body,
+                need_lease=False,
+                timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
+            )
+        if reply is None or reply.get("type") != "ack":
+            _LOGGER.debug("resolve metadata failed %s reply=%s", item_id, reply)
+            self._metadata_failures[item_id] = time.time()
+            return {}
+        metadata = (reply.get("body") or {}).get("metadata") or {}
+        if metadata:
+            self._metadata_cache[item_id] = metadata
+        return metadata
 
     async def _publish_renderer_state(self, node_id: str, state: dict[str, Any]) -> None:
         topics = self._renderer_topics.get(node_id)
@@ -486,10 +509,10 @@ class MudBridge:
             return
         body = {"startIndex": 0, "entries": entries}
         await self._send_renderer_command(node_id, "queue.set", body)
-        await self._send_renderer_command(node_id, "playback.play", {})
+        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
 
     async def async_play(self, node_id: str) -> None:
-        await self._send_renderer_command(node_id, "playback.play", {})
+        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
 
     async def async_pause(self, node_id: str) -> None:
         await self._send_renderer_command(node_id, "playback.pause", {})
@@ -515,7 +538,7 @@ class MudBridge:
         index = queue.get("index")
         repeat = queue.get("repeat")
         if isinstance(index, int) and index <= 0 and not repeat:
-            await self._send_renderer_command(node_id, "playback.seek", {"positionMs": 0})
+            await self._send_renderer_command(node_id, "playback.play", {"index": 0})
             return
         await self._send_renderer_command(node_id, "playback.prev", {})
 
@@ -539,12 +562,38 @@ class MudBridge:
         await self._send_renderer_command(node_id, "queue.setRepeat", {"repeat": repeat})
 
     async def async_play_media(self, node_id: str, media_id: str) -> None:
+        if str(media_id).startswith("playlist:"):
+            playlist_id = str(media_id)[len("playlist:") :]
+            if "?page=" in playlist_id:
+                playlist_id = playlist_id.split("?page=", 1)[0]
+            playlist_id = playlist_id.strip()
+            if playlist_id:
+                await self.async_load_playlist(node_id, playlist_id)
+            return
         entries = await self._resolve_media_entries(media_id)
         if not entries:
             return
         body = {"startIndex": 0, "entries": entries}
-        await self._send_renderer_command(node_id, "queue.set", body)
-        await self._send_renderer_command(node_id, "playback.play", {})
+        reply = await self._request_with_lease(node_id, "queue.set", body)
+        if reply is None or reply.get("type") != "ack":
+            return
+        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+
+    async def async_fetch_playlist(self, playlist_id: str) -> dict[str, Any] | None:
+        if self._playlist_server is None:
+            return None
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.get",
+            {"playlistId": playlist_id},
+        )
+        if reply is None or reply.get("type") != "ack":
+            return None
+        body = reply.get("body") or {}
+        return body
+
+    async def async_fetch_metadata(self, item_id: str) -> dict[str, Any]:
+        return await self._fetch_metadata(item_id)
 
     async def async_load_playlist(
         self, renderer_id: str, playlist_id: str, mode: str = "replace", resolve: str = "auto"
@@ -557,23 +606,25 @@ class MudBridge:
             "mode": mode,
             "resolve": resolve,
         }
-        await self._send_renderer_command(renderer_id, "queue.loadPlaylist", body)
+        reply = await self._request_with_lease(
+            renderer_id, "queue.loadPlaylist", body, timeout_seconds=RENDERER_LOAD_TIMEOUT_SECONDS
+        )
+        if reply is None or reply.get("type") != "ack":
+            return
+        if mode == "replace":
+            await self._send_renderer_command(renderer_id, "playback.play", {"index": 0})
+        else:
+            await self._send_renderer_command(renderer_id, "playback.play", {})
 
     async def async_acquire_lease(self, node_id: str) -> None:
-        await self._ensure_lease(node_id)
+        await self._acquire_lease(node_id)
 
     async def async_renew_lease(self, node_id: str) -> None:
         lease = self._leases.get(node_id)
         if lease is None:
-            await self._ensure_lease(node_id)
+            await self._acquire_lease(node_id)
             return
-        await self._request(
-            node_id,
-            "session.renew",
-            {"ttlMs": LEASE_TTL_MS},
-            need_lease=True,
-            lease=lease,
-        )
+        await self._renew_lease(node_id, lease)
 
     async def async_release_lease(self, node_id: str) -> None:
         lease = self._leases.get(node_id)
@@ -713,28 +764,74 @@ class MudBridge:
         _LOGGER.debug("send renderer cmd=%s node=%s body=%s", cmd_type, node_id, body)
         await self._publish_command(node_id, cmd_type, body, lease=lease)
 
+    async def _request_with_lease(
+        self,
+        node_id: str,
+        cmd_type: str,
+        body: dict[str, Any],
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any] | None:
+        lease = await self._ensure_lease(node_id)
+        if lease is None:
+            _LOGGER.warning("lease unavailable for renderer %s cmd=%s", node_id, cmd_type)
+            return None
+        reply = await self._request(
+            node_id,
+            cmd_type,
+            body,
+            need_lease=True,
+            lease=lease,
+            timeout_seconds=timeout_seconds,
+        )
+        if reply is None:
+            return None
+        if reply.get("type") == "error":
+            code = ((reply.get("err") or {}).get("code") or "").upper()
+            if code == "LEASE_MISMATCH":
+                _LOGGER.info("lease mismatch for %s, reacquiring", node_id)
+                lease = await self._acquire_lease(node_id)
+                if lease is None:
+                    return reply
+                return await self._request(
+                    node_id,
+                    cmd_type,
+                    body,
+                    need_lease=True,
+                    lease=lease,
+                    timeout_seconds=timeout_seconds,
+                )
+        return reply
+
     async def _ensure_lease(self, node_id: str) -> Lease | None:
         lease = self._leases.get(node_id)
         now = int(time.time())
-        if lease is None or lease.expires_at - now < LEASE_RENEW_THRESHOLD_SECONDS:
-            reply = await self._request(
-                node_id,
-                "session.acquire",
-                {"ttlMs": LEASE_TTL_MS},
-                need_lease=False,
-            )
-            if reply is None or reply.get("type") != "ack":
-                _LOGGER.warning("lease acquire failed for %s reply=%s", node_id, reply)
-                return None
-            body = reply.get("body") or {}
-            session = body.get("session") or {}
-            lease = Lease(
-                session_id=session.get("id"),
-                token=session.get("token"),
-                expires_at=session.get("leaseExpiresAt"),
-            )
-            self._leases[node_id] = lease
+        if lease is None:
+            return await self._acquire_lease(node_id)
+        if lease.expires_at-now >= LEASE_RENEW_THRESHOLD_SECONDS:
             return lease
+        return await self._renew_lease(node_id, lease)
+
+    async def _acquire_lease(self, node_id: str) -> Lease | None:
+        reply = await self._request(
+            node_id,
+            "session.acquire",
+            {"ttlMs": LEASE_TTL_MS},
+            need_lease=False,
+        )
+        if reply is None or reply.get("type") != "ack":
+            _LOGGER.warning("lease acquire failed for %s reply=%s", node_id, reply)
+            return None
+        body = reply.get("body") or {}
+        session = body.get("session") or {}
+        lease = Lease(
+            session_id=session.get("id"),
+            token=session.get("token"),
+            expires_at=session.get("leaseExpiresAt"),
+        )
+        self._leases[node_id] = lease
+        return lease
+
+    async def _renew_lease(self, node_id: str, lease: Lease) -> Lease | None:
         reply = await self._request(
             node_id,
             "session.renew",
@@ -742,7 +839,17 @@ class MudBridge:
             need_lease=True,
             lease=lease,
         )
-        if reply is None or reply.get("type") != "ack":
+        if reply is None:
+            _LOGGER.warning("lease renew failed for %s reply=%s", node_id, reply)
+            return lease
+        if reply.get("type") == "error":
+            code = ((reply.get("err") or {}).get("code") or "").upper()
+            if code == "LEASE_MISMATCH":
+                _LOGGER.info("lease mismatch for %s, reacquiring", node_id)
+                return await self._acquire_lease(node_id)
+            _LOGGER.warning("lease renew failed for %s reply=%s", node_id, reply)
+            return lease
+        if reply.get("type") != "ack":
             _LOGGER.warning("lease renew failed for %s reply=%s", node_id, reply)
             return lease
         body = reply.get("body") or {}
@@ -757,19 +864,22 @@ class MudBridge:
         body: dict[str, Any],
         need_lease: bool = False,
         lease: Lease | None = None,
+        timeout_seconds: int | None = None,
     ) -> dict[str, Any] | None:
-        cmd_id = uuid.uuid4().hex
-        future = self.hass.loop.create_future()
-        self._pending[cmd_id] = future
-        await self._publish_command(node_id, cmd_type, body, cmd_id, need_lease, lease)
-        try:
-            payload = await asyncio.wait_for(future, timeout=REPLY_TIMEOUT_SECONDS)
-            return payload
-        except asyncio.TimeoutError:
-            _LOGGER.warning("command timeout node=%s type=%s", node_id, cmd_type)
-            return None
-        finally:
-            self._pending.pop(cmd_id, None)
+        async with self._request_sema:
+            cmd_id = uuid.uuid4().hex
+            future = self.hass.loop.create_future()
+            self._pending[cmd_id] = future
+            await self._publish_command(node_id, cmd_type, body, cmd_id, need_lease, lease)
+            try:
+                timeout = timeout_seconds or REPLY_TIMEOUT_SECONDS
+                payload = await asyncio.wait_for(future, timeout=timeout)
+                return payload
+            except asyncio.TimeoutError:
+                _LOGGER.warning("command timeout node=%s type=%s", node_id, cmd_type)
+                return None
+            finally:
+                self._pending.pop(cmd_id, None)
 
     async def _publish_command(
         self,

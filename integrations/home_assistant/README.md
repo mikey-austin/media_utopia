@@ -107,6 +107,7 @@ In Home Assistant:
 - A `select` is created for each playlist to choose a renderer
 - A `button` is created for each playlist to load it into the selected renderer
 - Lease control buttons are created for each renderer (acquire/renew/release)
+- Playlist contents are available via the media browser
 
 ### 6) Use automations
 

@@ -168,3 +168,13 @@ class PlaylistRendererSelect(SelectEntity):
         return {
             "playlist_id": self._playlist_id,
         }
+
+    @property
+    def device_info(self):
+        playlist = self._bridge.get_playlist(self._playlist_id) or {}
+        name = playlist.get("name", self._playlist_id)
+        return {
+            "identifiers": {("mu_playlist", self._playlist_id)},
+            "name": f"Playlist {name}",
+            "manufacturer": "Mu",
+        }

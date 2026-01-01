@@ -18,5 +18,5 @@ enabled = true
 name = "HA Renderer"
 provider = "gstreamer"
 resource = "default"
-pipeline = "playbin uri={url} volume={volume}"
+pipeline = "playbin uri={url} volume={volume} audio-sink=pulsesink video-sink=fakesink"
 publish_state = true

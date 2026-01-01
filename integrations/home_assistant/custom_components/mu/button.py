@@ -151,6 +151,16 @@ class PlaylistLoadButton(ButtonEntity):
     def extra_state_attributes(self):
         return {"playlist_id": self._playlist_id}
 
+    @property
+    def device_info(self):
+        playlist = self._bridge.get_playlist(self._playlist_id) or {}
+        name = playlist.get("name", self._playlist_id)
+        return {
+            "identifiers": {("mu_playlist", self._playlist_id)},
+            "name": f"Playlist {name}",
+            "manufacturer": "Mu",
+        }
+
     async def async_press(self) -> None:
         renderer_id = self._selection_manager.selected_renderer_id(self._playlist_id)
         if renderer_id is None:

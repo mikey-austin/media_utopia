@@ -36,9 +36,22 @@ services:
     restart: unless-stopped
     depends_on:
       - mqtt
-    volumes:
-      - ./mud_config:/config
     devices:
       - "/dev/snd:/dev/snd"
+    group_add:
+      - audio
+    user: "1000:1000"
+    volumes:
+      - ./mud_config:/config
+      - /run/user/1000/pipewire-0:/run/user/1000/pipewire-0
+      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
+      - ${HOME}/.config/pulse/cookie:/tmp/.config/pulse/cookie:ro
+    environment:
+      - HOME=/tmp
+      - XDG_CACHE_HOME=/tmp/.cache
+      - XDG_CONFIG_HOME=/tmp/.config
+      - XDG_DATA_HOME=/tmp/.local/share
+      - XDG_RUNTIME_DIR=/tmp
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
     entrypoint: ["/usr/local/bin/mud"]
     command: ["--config", "/config/mud.toml"]
