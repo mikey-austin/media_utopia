@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
@@ -28,6 +29,8 @@ type Config struct {
 	APIKey    string
 	UserID    string
 	Timeout   time.Duration
+	CacheTTL  time.Duration
+	CacheSize int
 }
 
 // Module handles library commands via Jellyfin.
@@ -37,6 +40,8 @@ type Module struct {
 	http     *http.Client
 	config   Config
 	cmdTopic string
+	cacheMu  sync.Mutex
+	cache    map[string]resolveCacheEntry
 }
 
 // NewModule creates a Jellyfin library module.
@@ -62,6 +67,12 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Second
 	}
+	if cfg.CacheTTL == 0 {
+		cfg.CacheTTL = 10 * time.Minute
+	}
+	if cfg.CacheSize == 0 {
+		cfg.CacheSize = 1000
+	}
 
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	cfg.BaseURL = baseURL
@@ -74,6 +85,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		http:     &http.Client{Timeout: cfg.Timeout},
 		config:   cfg,
 		cmdTopic: cmdTopic,
+		cache:    make(map[string]resolveCacheEntry),
 	}, nil
 }
 
@@ -102,9 +114,10 @@ func (m *Module) publishPresence() error {
 		Kind:   "library",
 		Name:   m.config.Name,
 		Caps: map[string]any{
-			"resolve": true,
-			"browse":  true,
-			"search":  true,
+			"resolve":      true,
+			"resolveBatch": true,
+			"browse":       true,
+			"search":       true,
 		},
 		TS: time.Now().Unix(),
 	}
@@ -151,6 +164,8 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.librarySearch(cmd, reply)
 	case "library.resolve":
 		return m.libraryResolve(cmd, reply)
+	case "library.resolveBatch":
+		return m.libraryResolveBatch(cmd, reply)
 	default:
 		return errorReply(cmd, "INVALID", "unsupported command")
 	}
@@ -193,11 +208,75 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	item, err := m.fetchItem(body.ItemID)
+	metadata, sources, err := m.resolveItem(body.ItemID, body.MetadataOnly)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
+	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
+	reply.Body = payload
+	return reply
+}
 
+func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveBatchBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if len(body.ItemIDs) == 0 {
+		return errorReply(cmd, "INVALID", "itemIds required")
+	}
+	items := make([]mu.LibraryResolveBatchItem, 0, len(body.ItemIDs))
+	for _, itemID := range body.ItemIDs {
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			continue
+		}
+		metadata, sources, err := m.resolveItem(itemID, body.MetadataOnly)
+		entry := mu.LibraryResolveBatchItem{ItemID: itemID, Metadata: metadata, Sources: sources}
+		if err != nil {
+			entry.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
+		}
+		items = append(items, entry)
+	}
+	payload, _ := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
+	reply.Body = payload
+	return reply
+}
+
+type resolveCacheEntry struct {
+	metadata  map[string]any
+	sources   []mu.ResolvedSource
+	expiresAt time.Time
+	addedAt   time.Time
+}
+
+func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, error) {
+	if metadata, sources, ok := m.cacheGet(itemID, metadataOnly); ok {
+		return metadata, sources, nil
+	}
+	item, err := m.fetchItem(itemID)
+	if err != nil {
+		return nil, nil, err
+	}
+	metadata := m.buildMetadata(item)
+	sources := []mu.ResolvedSource{}
+	if !metadataOnly {
+		var meta map[string]any
+		sources, meta, err = m.resolveSources(item)
+		if err != nil {
+			return nil, nil, err
+		}
+		for k, v := range meta {
+			if v != nil {
+				metadata[k] = v
+			}
+		}
+	}
+	m.cachePut(itemID, metadata, sources)
+	return metadata, sources, nil
+}
+
+func (m *Module) buildMetadata(item jfItem) map[string]any {
 	metadata := map[string]any{
 		"title":      item.Name,
 		"type":       item.Type,
@@ -214,25 +293,80 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	if item.PrimaryImageTag != "" {
 		metadata["artworkUrl"] = m.imageURL(item.ID)
 	}
+	return metadata
+}
 
-	sources := []mu.ResolvedSource{}
-	if !body.MetadataOnly {
-		var meta map[string]any
-		var err error
-		sources, meta, err = m.resolveSources(item)
-		if err != nil {
-			return errorReply(cmd, "INVALID", err.Error())
+func (m *Module) cacheGet(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, bool) {
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	if m.cache == nil {
+		return nil, nil, false
+	}
+	entry, ok := m.cache[itemID]
+	if !ok {
+		return nil, nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(m.cache, itemID)
+		return nil, nil, false
+	}
+	if metadataOnly {
+		if entry.metadata == nil {
+			return nil, nil, false
 		}
-		for k, v := range meta {
-			if v != nil {
-				metadata[k] = v
-			}
+		return copyMetadata(entry.metadata), nil, true
+	}
+	if entry.metadata == nil || len(entry.sources) == 0 {
+		return nil, nil, false
+	}
+	return copyMetadata(entry.metadata), append([]mu.ResolvedSource(nil), entry.sources...), true
+}
+
+func (m *Module) cachePut(itemID string, metadata map[string]any, sources []mu.ResolvedSource) {
+	if metadata == nil {
+		return
+	}
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	if m.cache == nil {
+		m.cache = make(map[string]resolveCacheEntry)
+	}
+	now := time.Now()
+	m.cache[itemID] = resolveCacheEntry{
+		metadata:  copyMetadata(metadata),
+		sources:   append([]mu.ResolvedSource(nil), sources...),
+		expiresAt: now.Add(m.config.CacheTTL),
+		addedAt:   now,
+	}
+	m.evictCache()
+}
+
+func (m *Module) evictCache() {
+	if m.config.CacheSize <= 0 || len(m.cache) <= m.config.CacheSize {
+		return
+	}
+	oldestID := ""
+	var oldest time.Time
+	for id, entry := range m.cache {
+		if oldestID == "" || entry.addedAt.Before(oldest) {
+			oldestID = id
+			oldest = entry.addedAt
 		}
 	}
+	if oldestID != "" {
+		delete(m.cache, oldestID)
+	}
+}
 
-	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
-	reply.Body = payload
-	return reply
+func copyMetadata(metadata map[string]any) map[string]any {
+	if metadata == nil {
+		return nil
+	}
+	out := make(map[string]any, len(metadata))
+	for k, v := range metadata {
+		out[k] = v
+	}
+	return out
 }
 
 type libraryItemsReply struct {

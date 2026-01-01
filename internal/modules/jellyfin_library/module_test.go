@@ -76,6 +76,105 @@ func TestLibraryResolve(t *testing.T) {
 	}
 }
 
+func TestLibraryResolveBatch(t *testing.T) {
+	handler := http.NewServeMux()
+
+	handler.HandleFunc("/Items/item-1", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfItem{ID: "item-1", Name: "Song 1", Type: "Audio", MediaType: "Audio"}
+		writeJSON(t, w, resp)
+	})
+	handler.HandleFunc("/Items/item-2", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfItem{ID: "item-2", Name: "Song 2", Type: "Audio", MediaType: "Audio"}
+		writeJSON(t, w, resp)
+	})
+	handler.HandleFunc("/Items/item-1/PlaybackInfo", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfPlaybackInfo{MediaSources: []jfMediaSource{{
+			DirectStreamURL:      "/Audio/item-1/stream?api_key=key",
+			Container:            "mp3",
+			SupportsDirectStream: true,
+		}}}
+		writeJSON(t, w, resp)
+	})
+	handler.HandleFunc("/Items/item-2/PlaybackInfo", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfPlaybackInfo{MediaSources: []jfMediaSource{{
+			DirectStreamURL:      "/Audio/item-2/stream?api_key=key",
+			Container:            "mp3",
+			SupportsDirectStream: true,
+		}}}
+		writeJSON(t, w, resp)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL:  "http://jellyfin.test",
+			APIKey:   "key",
+			UserID:   "user",
+			CacheTTL: time.Minute,
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBatchBody{ItemIDs: []string{"item-1", "item-2"}})}
+	reply := module.libraryResolveBatch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	var payload mu.LibraryResolveBatchReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("expected 2 items")
+	}
+	for _, item := range payload.Items {
+		if item.Err != nil {
+			t.Fatalf("unexpected error: %v", item.Err.Message)
+		}
+		if len(item.Sources) != 1 {
+			t.Fatalf("expected sources")
+		}
+	}
+}
+
+func TestLibraryResolveUsesCache(t *testing.T) {
+	var itemHits int
+	var playbackHits int
+	handler := http.NewServeMux()
+
+	handler.HandleFunc("/Items/item-1", func(w http.ResponseWriter, r *http.Request) {
+		itemHits++
+		resp := jfItem{ID: "item-1", Name: "Song", Type: "Audio", MediaType: "Audio"}
+		writeJSON(t, w, resp)
+	})
+	handler.HandleFunc("/Items/item-1/PlaybackInfo", func(w http.ResponseWriter, r *http.Request) {
+		playbackHits++
+		resp := jfPlaybackInfo{MediaSources: []jfMediaSource{{
+			DirectStreamURL:      "/Audio/item-1/stream?api_key=key",
+			Container:            "mp3",
+			SupportsDirectStream: true,
+		}}}
+		writeJSON(t, w, resp)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL:  "http://jellyfin.test",
+			APIKey:   "key",
+			UserID:   "user",
+			CacheTTL: time.Minute,
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "item-1"})}
+	_ = module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	_ = module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	if itemHits != 1 || playbackHits != 1 {
+		t.Fatalf("expected cache hits item=%d playback=%d", itemHits, playbackHits)
+	}
+}
+
 func TestLibrarySearch(t *testing.T) {
 	handler := newJellyfinTestHandler(t)
 

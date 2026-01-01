@@ -396,24 +396,35 @@ func (m *Module) fetchPlaylistEntries(owner string, serverID string, playlistID 
 
 	needsResolve := resolve != "no"
 	entries := make([]mu.QueueEntry, 0, len(payload.Entries))
+	refs := make([]string, 0, len(payload.Entries))
 	for _, entry := range payload.Entries {
 		if entry.Resolved == nil && entry.Ref != nil {
 			if !needsResolve {
 				return nil, errors.New("playlist contains unresolved refs; add with --resolve yes")
 			}
-			resolved, err := m.resolveRef(owner, entry.Ref.ID)
-			if err != nil {
-				return nil, err
-			}
-			for _, source := range resolved {
-				entries = append(entries, mu.QueueEntry{Ref: entry.Ref, Resolved: &source})
-			}
+			refs = append(refs, entry.Ref.ID)
 			continue
 		}
 		if entry.Ref == nil && entry.Resolved == nil {
 			continue
 		}
 		entries = append(entries, mu.QueueEntry{Ref: entry.Ref, Resolved: entry.Resolved})
+	}
+	if len(refs) > 0 {
+		resolved, err := m.resolveRefs(owner, refs)
+		if err != nil {
+			return nil, err
+		}
+		for _, refID := range refs {
+			sources := resolved[refID]
+			if len(sources) == 0 {
+				return nil, errors.New("library item has no sources")
+			}
+			ref := &mu.ItemRef{ID: refID}
+			for _, source := range sources {
+				entries = append(entries, mu.QueueEntry{Ref: ref, Resolved: &source})
+			}
+		}
 	}
 	return entries, nil
 }
@@ -436,6 +447,7 @@ func (m *Module) fetchSnapshotItems(owner string, serverID string, snapshotID st
 func (m *Module) buildSnapshotEntries(owner string, items []string, resolve string) ([]mu.QueueEntry, error) {
 	needsResolve := resolve != "no"
 	entries := make([]mu.QueueEntry, 0, len(items))
+	refs := make([]string, 0, len(items))
 	for _, item := range items {
 		item = strings.TrimSpace(item)
 		if item == "" {
@@ -449,19 +461,29 @@ func (m *Module) buildSnapshotEntries(owner string, items []string, resolve stri
 			if !needsResolve {
 				return nil, errors.New("snapshot contains unresolved refs; load with --resolve yes")
 			}
-			resolved, err := m.resolveRef(owner, item)
-			if err != nil {
-				return nil, err
-			}
-			for _, source := range resolved {
-				entries = append(entries, mu.QueueEntry{Ref: &mu.ItemRef{ID: item}, Resolved: &source})
-			}
+			refs = append(refs, item)
 			continue
 		}
 		if strings.HasPrefix(item, "mu:") {
 			return nil, errors.New("snapshot contains mu URN; load with --resolve yes")
 		}
 		return nil, errors.New("unsupported snapshot item")
+	}
+	if len(refs) > 0 {
+		resolved, err := m.resolveRefs(owner, refs)
+		if err != nil {
+			return nil, err
+		}
+		for _, refID := range refs {
+			sources := resolved[refID]
+			if len(sources) == 0 {
+				return nil, errors.New("library item has no sources")
+			}
+			ref := &mu.ItemRef{ID: refID}
+			for _, source := range sources {
+				entries = append(entries, mu.QueueEntry{Ref: ref, Resolved: &source})
+			}
+		}
 	}
 	return entries, nil
 }
@@ -557,4 +579,61 @@ func (m *Module) resolveRef(owner string, refID string) ([]mu.ResolvedSource, er
 		return nil, errors.New("renderer cannot resolve mu URNs; add with --resolve yes")
 	}
 	return nil, errors.New("unsupported ref; re-add with lib:<libraryNodeId>:<itemId> or --resolve yes")
+}
+
+func (m *Module) resolveRefs(owner string, refIDs []string) (map[string][]mu.ResolvedSource, error) {
+	libraryItems := make(map[string]map[string]string)
+	for _, refID := range refIDs {
+		ref := strings.TrimPrefix(refID, "lib:")
+		idx := strings.LastIndex(ref, ":")
+		if idx <= 0 || idx >= len(ref)-1 {
+			return nil, errors.New("invalid library ref (expected lib:<libraryNodeId>:<itemId>)")
+		}
+		libraryID := ref[:idx]
+		itemID := ref[idx+1:]
+		if !strings.HasPrefix(libraryID, "mu:") {
+			return nil, errors.New("library ref must use full node id")
+		}
+		if libraryItems[libraryID] == nil {
+			libraryItems[libraryID] = make(map[string]string)
+		}
+		libraryItems[libraryID][itemID] = refID
+	}
+
+	resolved := make(map[string][]mu.ResolvedSource)
+	for libraryID, itemMap := range libraryItems {
+		itemIDs := make([]string, 0, len(itemMap))
+		for itemID := range itemMap {
+			itemIDs = append(itemIDs, itemID)
+		}
+		reply, err := m.publishCommand(libraryID, owner, "library.resolveBatch", mu.LibraryResolveBatchBody{ItemIDs: itemIDs})
+		if err != nil {
+			return nil, err
+		}
+		if reply.Err != nil {
+			if reply.Err.Code == "INVALID" && strings.Contains(strings.ToLower(reply.Err.Message), "unsupported command") {
+				for _, refID := range itemMap {
+					sources, err := m.resolveRef(owner, refID)
+					if err != nil {
+						return nil, err
+					}
+					resolved[refID] = sources
+				}
+				continue
+			}
+			return nil, fmt.Errorf("%s", reply.Err.Message)
+		}
+		var payload mu.LibraryResolveBatchReply
+		if err := json.Unmarshal(reply.Body, &payload); err != nil {
+			return nil, errors.New("invalid library reply")
+		}
+		for _, item := range payload.Items {
+			if item.Err != nil {
+				return nil, fmt.Errorf("%s", item.Err.Message)
+			}
+			refID := itemMap[item.ItemID]
+			resolved[refID] = item.Sources
+		}
+	}
+	return resolved, nil
 }

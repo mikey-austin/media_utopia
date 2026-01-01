@@ -1076,6 +1076,45 @@ Reply body:
 
 When resolving container items (albums/artists), `sources` may include multiple playable tracks.
 
+### 12.4 `library.resolveBatch`
+
+Bulk resolve multiple items with a single request to reduce round-trips.
+
+```json
+{
+  "id": "lrb1...",
+  "type": "library.resolveBatch",
+  "ts": 1735580820,
+  "from": "mikey@pixel",
+  "replyTo": "mu/v1/reply/mu-4242-a1b2c3",
+  "body": { "itemIds": ["track-123", "track-456"] }
+}
+```
+
+Optional request fields:
+
+- `metadataOnly` (bool): return only metadata, skip resolving sources (faster for list views).
+
+Reply body:
+
+```json
+{
+  "items": [
+    {
+      "itemId": "track-123",
+      "metadata": { "title": "So What", "artist": "Miles Davis" },
+      "sources": [
+        { "url": "http://library/track-123.flac", "mime": "audio/flac", "byteRange": true }
+      ]
+    },
+    {
+      "itemId": "track-456",
+      "err": { "code": "NOT_FOUND", "message": "item not found" }
+    }
+  ]
+}
+```
+
 ---
 
 ## 14. Renderer Events (watch/advisors/HA sensors)

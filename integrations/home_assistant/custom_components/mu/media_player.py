@@ -311,7 +311,6 @@ class MuRendererEntity(MediaPlayerEntity):
         slice_entries = entries[start:end]
         children = []
 
-        tasks = []
         item_ids = []
         for entry in slice_entries:
             ref = (entry or {}).get("ref") or {}
@@ -319,16 +318,15 @@ class MuRendererEntity(MediaPlayerEntity):
             item_id = ref.get("id") or resolved.get("url")
             if not item_id:
                 continue
-            if str(item_id).startswith("lib:"):
-                tasks.append(self._bridge.async_fetch_metadata(item_id))
-                item_ids.append(item_id)
-            else:
-                tasks.append(asyncio.sleep(0, result={}))
-                item_ids.append(item_id)
+            item_ids.append(item_id)
 
-        metadata_list = await asyncio.gather(*tasks)
+        lib_ids = [item_id for item_id in item_ids if str(item_id).startswith("lib:")]
+        meta_map = {}
+        if lib_ids:
+            meta_map = await self._bridge.async_fetch_metadata_batch(lib_ids)
 
-        for item_id, meta in zip(item_ids, metadata_list):
+        for item_id in item_ids:
+            meta = meta_map.get(item_id, {})
             title = meta.get("title") or item_id
             artist = meta.get("artist")
             album = meta.get("album")

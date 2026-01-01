@@ -97,6 +97,8 @@ base_url = "http://jellyfin.local:8096"
 api_key = "YOUR_KEY"
 user_id = "YOUR_USER_ID"
 timeout_ms = 5000
+cache_ttl_ms = 600000
+cache_size = 1000
 
 [modules.embedded_mqtt]
 enabled = true

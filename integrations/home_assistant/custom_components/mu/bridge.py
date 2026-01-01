@@ -359,6 +359,67 @@ class MudBridge:
             self._metadata_cache[item_id] = metadata
         return metadata
 
+    async def _fetch_metadata_batch(
+        self, item_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        results: dict[str, dict[str, Any]] = {}
+        if not item_ids:
+            return results
+        groups: dict[str, list[str]] = {}
+        ref_map: dict[str, dict[str, str]] = {}
+        for ref in item_ids:
+            cached = self._metadata_cache.get(ref)
+            if cached:
+                results[ref] = cached
+                continue
+            last_fail = self._metadata_failures.get(ref)
+            if last_fail and time.time()-last_fail < 60:
+                continue
+            library_id, raw_id = self._split_lib_ref(ref)
+            if not library_id or not raw_id:
+                continue
+            groups.setdefault(library_id, []).append(raw_id)
+            ref_map.setdefault(library_id, {})[raw_id] = ref
+
+        for library_id, raw_ids in groups.items():
+            async with self._metadata_sema:
+                reply = await self._request(
+                    library_id,
+                    "library.resolveBatch",
+                    {"itemIds": raw_ids, "metadataOnly": True},
+                    need_lease=False,
+                    timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
+                )
+            if reply is None or reply.get("type") != "ack":
+                err = (reply or {}).get("err") or {}
+                message = str(err.get("message") or "")
+                if "unsupported command" in message.lower():
+                    for raw_id in raw_ids:
+                        ref = ref_map[library_id].get(raw_id)
+                        if not ref:
+                            continue
+                        meta = await self._fetch_metadata(ref)
+                        if meta:
+                            results[ref] = meta
+                    continue
+                for raw_id in raw_ids:
+                    ref = ref_map[library_id].get(raw_id)
+                    if ref:
+                        self._metadata_failures[ref] = time.time()
+                continue
+            items = (reply.get("body") or {}).get("items") or []
+            for item in items:
+                raw_id = item.get("itemId")
+                metadata = item.get("metadata") or {}
+                if not raw_id or not metadata:
+                    continue
+                ref = ref_map[library_id].get(raw_id)
+                if not ref:
+                    continue
+                self._metadata_cache[ref] = metadata
+                results[ref] = metadata
+        return results
+
     async def _publish_renderer_state(self, node_id: str, state: dict[str, Any]) -> None:
         topics = self._renderer_topics.get(node_id)
         if not topics:
@@ -594,6 +655,11 @@ class MudBridge:
 
     async def async_fetch_metadata(self, item_id: str) -> dict[str, Any]:
         return await self._fetch_metadata(item_id)
+
+    async def async_fetch_metadata_batch(
+        self, item_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        return await self._fetch_metadata_batch(item_ids)
 
     async def async_load_playlist(
         self, renderer_id: str, playlist_id: str, mode: str = "replace", resolve: str = "auto"

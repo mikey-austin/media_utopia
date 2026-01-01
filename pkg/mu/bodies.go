@@ -273,6 +273,25 @@ type LibraryResolveReply struct {
 	Sources  []ResolvedSource `json:"sources"`
 }
 
+// LibraryResolveBatchBody is the payload for library.resolveBatch.
+type LibraryResolveBatchBody struct {
+	ItemIDs      []string `json:"itemIds"`
+	MetadataOnly bool     `json:"metadataOnly,omitempty"`
+}
+
+// LibraryResolveBatchItem is an item entry in library.resolveBatch reply.
+type LibraryResolveBatchItem struct {
+	ItemID   string           `json:"itemId"`
+	Metadata map[string]any   `json:"metadata,omitempty"`
+	Sources  []ResolvedSource `json:"sources,omitempty"`
+	Err      *ReplyError      `json:"err,omitempty"`
+}
+
+// LibraryResolveBatchReply describes the response for library.resolveBatch.
+type LibraryResolveBatchReply struct {
+	Items []LibraryResolveBatchItem `json:"items"`
+}
+
 // SuggestListBody is the payload for suggest.list.
 type SuggestListBody struct {
 	Owner string `json:"owner,omitempty"`

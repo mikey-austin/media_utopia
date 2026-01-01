@@ -6,7 +6,7 @@ BIN_DIR ?= $(CURDIR)/bin
 build:
 	mkdir -p $(BIN_DIR)
 	go build -o $(BIN_DIR)/mu ./cmd/mu
-	go build -o $(BIN_DIR)/mud ./cmd/mud
+	go build -tags gstreamer -o $(BIN_DIR)/mud ./cmd/mud
 
 test:
 	GOCACHE=$(GOCACHE) go test -count=1 -v ./...

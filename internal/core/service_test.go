@@ -245,6 +245,49 @@ func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
 	}
 }
 
+func TestResolveQueueEntriesUsesBatch(t *testing.T) {
+	library := mu.Presence{NodeID: "mu:library:jellyfin:test", Kind: "library", Name: "Jellyfin"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{library},
+		replyTopic: "mu/v1/reply/test",
+	}
+
+	batchBody, err := json.Marshal(mu.LibraryResolveBatchReply{
+		Items: []mu.LibraryResolveBatchItem{
+			{ItemID: "track-1", Metadata: map[string]any{"title": "A"}},
+			{ItemID: "track-2", Metadata: map[string]any{"title": "B"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+
+	broker.replies = map[string]mu.ReplyEnvelope{
+		"library.resolveBatch": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: batchBody},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{"lib": library.NodeID}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	entries := []mu.QueueItem{
+		{ItemID: "lib:lib:track-1"},
+		{ItemID: "lib:lib:track-2"},
+	}
+	resolved := service.resolveQueueEntries(context.Background(), entries)
+	if resolved[0].Metadata["title"] != "A" || resolved[1].Metadata["title"] != "B" {
+		t.Fatalf("expected resolved titles")
+	}
+	if len(broker.calls) != 1 || broker.calls[0].Type != "library.resolveBatch" {
+		t.Fatalf("expected batch resolve call")
+	}
+}
+
 func TestPlaylistGetResolvesName(t *testing.T) {
 	server := mu.Presence{NodeID: "mu:playlist:plsrv:default:main", Kind: "playlist", Name: "Main"}
 	broker := &stubBroker{

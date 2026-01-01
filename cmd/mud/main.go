@@ -234,6 +234,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 	if cfg.Modules.BridgeJellyfinLibrary.Enabled {
 		if moduleOnly == "" || moduleOnly == "bridge_jellyfin_library" {
 			timeout := time.Duration(cfg.Modules.BridgeJellyfinLibrary.TimeoutMS) * time.Millisecond
+			cacheTTL := time.Duration(cfg.Modules.BridgeJellyfinLibrary.CacheTTLMS) * time.Millisecond
 			nodeID, err := buildNodeID("library", cfg.Modules.BridgeJellyfinLibrary.Provider, cfg.Server.Namespace, cfg.Modules.BridgeJellyfinLibrary.Resource)
 			if err != nil {
 				return nil, err
@@ -246,6 +247,8 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				APIKey:    cfg.Modules.BridgeJellyfinLibrary.APIKey,
 				UserID:    cfg.Modules.BridgeJellyfinLibrary.UserID,
 				Timeout:   timeout,
+				CacheTTL:  cacheTTL,
+				CacheSize: cfg.Modules.BridgeJellyfinLibrary.CacheSize,
 			})
 			if err != nil {
 				return nil, err

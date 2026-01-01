@@ -614,9 +614,25 @@ func (s Service) PlaylistShow(ctx context.Context, playlistID string, serverSele
 		FullIDs:    full,
 	}
 	metaCache := map[string]map[string]any{}
+	if resolve {
+		refs := make([]string, 0, len(body.Entries))
+		for _, entry := range body.Entries {
+			if entry.Ref != nil && strings.HasPrefix(entry.Ref.ID, "lib:") {
+				refs = append(refs, entry.Ref.ID)
+			}
+		}
+		if len(refs) > 0 {
+			for ref, meta := range s.resolveLibraryMetadataBatch(ctx, refs) {
+				metaCache[ref] = meta
+			}
+		}
+	}
 	for _, entry := range body.Entries {
 		if resolve && entry.Ref != nil && strings.HasPrefix(entry.Ref.ID, "lib:") {
-			meta := s.resolveLibraryMetadataCached(ctx, entry.Ref.ID, metaCache)
+			meta := metaCache[entry.Ref.ID]
+			if meta == nil {
+				meta = s.resolveLibraryMetadataCached(ctx, entry.Ref.ID, metaCache)
+			}
 			if meta != nil {
 				if expanded, ok := s.expandPlaylistEntryWithMeta(ctx, entry, meta); ok {
 					result.Entries = append(result.Entries, expanded...)
@@ -1253,6 +1269,7 @@ func (s Service) parseQueueItem(ctx context.Context, item string, resolve bool) 
 
 func (s Service) resolveQueueEntries(ctx context.Context, entries []mu.QueueItem) []mu.QueueItem {
 	cache := map[string]map[string]any{}
+	refs := make([]string, 0, len(entries))
 	for idx, entry := range entries {
 		if !strings.HasPrefix(entry.ItemID, "lib:") {
 			continue
@@ -1262,8 +1279,26 @@ func (s Service) resolveQueueEntries(ctx context.Context, entries []mu.QueueItem
 				continue
 			}
 		}
-		meta, ok := cache[entry.ItemID]
-		if !ok {
+		refs = append(refs, entry.ItemID)
+		entries[idx] = entry
+	}
+	if len(refs) > 0 {
+		batch := s.resolveLibraryMetadataBatch(ctx, refs)
+		for ref, meta := range batch {
+			cache[ref] = meta
+		}
+	}
+	for idx, entry := range entries {
+		if !strings.HasPrefix(entry.ItemID, "lib:") {
+			continue
+		}
+		if entry.Metadata != nil {
+			if _, ok := entry.Metadata["title"]; ok {
+				continue
+			}
+		}
+		meta := cache[entry.ItemID]
+		if meta == nil {
 			meta = s.resolveLibraryMetadata(ctx, entry.ItemID)
 			cache[entry.ItemID] = meta
 		}
@@ -1481,6 +1516,79 @@ func (s Service) resolveLibraryMetadataByNodeID(ctx context.Context, nodeID stri
 		return nil
 	}
 	return body.Metadata
+}
+
+func (s Service) resolveLibraryMetadataBatch(ctx context.Context, refs []string) map[string]map[string]any {
+	result := make(map[string]map[string]any)
+	byNode := map[string]map[string]string{}
+	for _, ref := range refs {
+		selector, itemID, err := parseLibraryRef(ref)
+		if err != nil {
+			continue
+		}
+		nodeID, err := s.resolveLibraryNodeID(ctx, selector)
+		if err != nil {
+			continue
+		}
+		if byNode[nodeID] == nil {
+			byNode[nodeID] = make(map[string]string)
+		}
+		byNode[nodeID][itemID] = ref
+	}
+	for nodeID, itemMap := range byNode {
+		itemIDs := make([]string, 0, len(itemMap))
+		for itemID := range itemMap {
+			itemIDs = append(itemIDs, itemID)
+		}
+		metaByID, ok := s.resolveLibraryMetadataBatchByNodeID(ctx, nodeID, itemIDs)
+		if !ok {
+			for itemID, ref := range itemMap {
+				meta := s.resolveLibraryMetadataByNodeID(ctx, nodeID, itemID)
+				if meta != nil {
+					result[ref] = meta
+				}
+			}
+			continue
+		}
+		for itemID, meta := range metaByID {
+			ref := itemMap[itemID]
+			if ref == "" || meta == nil {
+				continue
+			}
+			result[ref] = meta
+		}
+	}
+	return result
+}
+
+func (s Service) resolveLibraryMetadataBatchByNodeID(ctx context.Context, nodeID string, itemIDs []string) (map[string]map[string]any, bool) {
+	cmd, err := mu.NewCommand("library.resolveBatch", mu.LibraryResolveBatchBody{ItemIDs: itemIDs, MetadataOnly: true})
+	if err != nil {
+		return nil, false
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, nodeID, cmd)
+	if err != nil || reply.Err != nil {
+		if reply.Err != nil && strings.Contains(strings.ToLower(reply.Err.Message), "unsupported command") {
+			return nil, false
+		}
+		return nil, false
+	}
+	var body mu.LibraryResolveBatchReply
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		return nil, false
+	}
+	result := make(map[string]map[string]any)
+	for _, item := range body.Items {
+		if item.ItemID == "" || item.Err != nil {
+			continue
+		}
+		if item.Metadata == nil {
+			continue
+		}
+		result[item.ItemID] = item.Metadata
+	}
+	return result, true
 }
 
 func (s Service) isContainerRef(ctx context.Context, nodeID string, itemID string) bool {

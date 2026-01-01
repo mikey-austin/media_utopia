@@ -84,14 +84,16 @@ type BridgeUPNPLibraryConfig struct {
 
 // JellyfinLibraryConfig configures the Jellyfin library bridge.
 type JellyfinLibraryConfig struct {
-	Enabled   bool   `toml:"enabled"`
-	Name      string `toml:"name"`
-	Provider  string `toml:"provider"`
-	Resource  string `toml:"resource"`
-	BaseURL   string `toml:"base_url"`
-	APIKey    string `toml:"api_key"`
-	UserID    string `toml:"user_id"`
-	TimeoutMS int64  `toml:"timeout_ms"`
+	Enabled    bool   `toml:"enabled"`
+	Name       string `toml:"name"`
+	Provider   string `toml:"provider"`
+	Resource   string `toml:"resource"`
+	BaseURL    string `toml:"base_url"`
+	APIKey     string `toml:"api_key"`
+	UserID     string `toml:"user_id"`
+	TimeoutMS  int64  `toml:"timeout_ms"`
+	CacheTTLMS int64  `toml:"cache_ttl_ms"`
+	CacheSize  int    `toml:"cache_size"`
 }
 
 // EmbeddedMQTTConfig configures the embedded MQTT broker.
