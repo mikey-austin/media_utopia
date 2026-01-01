@@ -18,6 +18,7 @@ import (
 	"github.com/mikey-austin/media_utopia/internal/modules/playlist"
 	podcastlibrary "github.com/mikey-austin/media_utopia/internal/modules/podcast_library"
 	renderergstreamer "github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
+	rendererkodi "github.com/mikey-austin/media_utopia/internal/modules/renderer_kodi"
 	"github.com/mikey-austin/media_utopia/internal/mud"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 	"go.uber.org/zap"
@@ -316,6 +317,34 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
+	if cfg.Modules.RendererKodi.Enabled {
+		if moduleOnly == "" || moduleOnly == "renderer_kodi" {
+			timeout := time.Duration(cfg.Modules.RendererKodi.TimeoutMS) * time.Millisecond
+			nodeID, err := buildNodeID("renderer", cfg.Modules.RendererKodi.Provider, cfg.Server.Namespace, cfg.Modules.RendererKodi.Resource)
+			if err != nil {
+				return nil, err
+			}
+			mod, err := rendererkodi.NewModule(logger.With(zap.String("module", "renderer_kodi")), client, rendererkodi.Config{
+				NodeID:       nodeID,
+				TopicBase:    cfg.Server.TopicBase,
+				Name:         cfg.Modules.RendererKodi.Name,
+				BaseURL:      cfg.Modules.RendererKodi.BaseURL,
+				Username:     cfg.Modules.RendererKodi.Username,
+				Password:     cfg.Modules.RendererKodi.Password,
+				Timeout:      timeout,
+				Volume:       1.0,
+				PublishState: true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "renderer_kodi",
+				Run:  mod.Run,
+			})
+		}
+	}
+
 	if moduleOnly != "" && len(modules) == 0 {
 		return nil, errors.New("no modules enabled")
 	}
@@ -338,6 +367,9 @@ func enabledModules(cfg mud.Config) []string {
 	}
 	if cfg.Modules.RendererGStreamer.Enabled {
 		out = append(out, "renderer_gstreamer")
+	}
+	if cfg.Modules.RendererKodi.Enabled {
+		out = append(out, "renderer_kodi")
 	}
 	if cfg.Modules.BridgeUPNPLibrary.Enabled {
 		out = append(out, "bridge_upnp_library")

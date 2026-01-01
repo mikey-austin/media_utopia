@@ -48,6 +48,7 @@ type AuthConfig struct {
 type ModulesConfig struct {
 	Playlist              PlaylistConfig          `toml:"playlist"`
 	RendererGStreamer     RendererGStreamerConfig `toml:"renderer_gstreamer"`
+	RendererKodi          RendererKodiConfig      `toml:"renderer_kodi"`
 	BridgeUPNPLibrary     BridgeUPNPLibraryConfig `toml:"bridge_upnp_library"`
 	BridgeJellyfinLibrary JellyfinLibraryConfig   `toml:"bridge_jellyfin_library"`
 	PodcastLibrary        PodcastLibraryConfig    `toml:"podcast"`
@@ -72,6 +73,18 @@ type RendererGStreamerConfig struct {
 	Pipeline    string `toml:"pipeline"`
 	Device      string `toml:"device"`
 	CrossfadeMS int64  `toml:"crossfade_ms"`
+}
+
+// RendererKodiConfig configures the Kodi renderer module.
+type RendererKodiConfig struct {
+	Enabled   bool   `toml:"enabled"`
+	Name      string `toml:"name"`
+	Provider  string `toml:"provider"`
+	Resource  string `toml:"resource"`
+	BaseURL   string `toml:"base_url"`
+	Username  string `toml:"username"`
+	Password  string `toml:"password"`
+	TimeoutMS int64  `toml:"timeout_ms"`
 }
 
 // BridgeUPNPLibraryConfig configures the UPnP library bridge.

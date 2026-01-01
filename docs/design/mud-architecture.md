@@ -36,6 +36,7 @@ Planned modules:
 
 - `playlist`: playlist server (required for v1)
 - `renderer_gstreamer`: native renderer using GStreamer pipelines
+- `renderer_kodi`: Kodi renderer via JSON-RPC
 - `bridge_upnp_library`: UPnP library bridge
 - `bridge_jellyfin_library`: Jellyfin library bridge
 - `podcast`: RSS/Podcast library module
@@ -81,6 +82,16 @@ resource = "default"
 pipeline = "playbin uri={url} volume={volume}"
 device = "default"
 crossfade_ms = 500
+
+[modules.renderer_kodi]
+enabled = true
+name = "Living Room Kodi"
+provider = "kodi"
+resource = "default"
+base_url = "http://kodi.local:8080"
+username = "kodi"
+password = "kodi"
+timeout_ms = 5000
 
 [modules.bridge_upnp_library]
 enabled = true

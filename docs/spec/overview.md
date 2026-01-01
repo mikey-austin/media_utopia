@@ -34,6 +34,7 @@ IDs are opaque outside the provider that minted them.
 ### Examples
 
 - `mu:renderer:gstreamer:mud@livingroom:default`
+- `mu:renderer:kodi:mud@livingroom:default`
 - `mu:library:jellyfin:mud@livingroom:default`
 - `mu:playlist:plsrv:mud@livingroom:default`
 - `mu:library:upnp:mud@lab:basement-nas`
