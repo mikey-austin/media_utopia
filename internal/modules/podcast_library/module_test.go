@@ -1,9 +1,10 @@
 package podcastlibrary
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -16,24 +17,23 @@ import (
 
 func TestLibraryBrowseAndResolve(t *testing.T) {
 	feedCalls := int32(0)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&feedCalls, 1)
-		w.Header().Set("Content-Type", "application/rss+xml")
-		_, _ = w.Write([]byte(testFeed))
-	}))
-	t.Cleanup(server.Close)
+	feedURL := "http://example.test/feed.xml"
 
 	cacheDir := t.TempDir()
 	module, err := NewModule(zap.NewNop(), nil, Config{
 		NodeID:          "mu:library:podcast:test",
 		TopicBase:       mu.BaseTopic,
-		Feeds:           []string{server.URL},
+		Feeds:           []string{feedURL},
 		CacheDir:        cacheDir,
 		RefreshInterval: 24 * time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("new module: %v", err)
 	}
+	module.http = &http.Client{Transport: testTransport(func(_ *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&feedCalls, 1)
+		return feedResponse(testFeed), nil
+	})}
 
 	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{})}
 	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
@@ -76,29 +76,28 @@ func TestLibraryBrowseAndResolve(t *testing.T) {
 		t.Fatalf("expected 1 feed fetch, got %d", atomic.LoadInt32(&feedCalls))
 	}
 
-	cachePath := filepath.Join(cacheDir, safeFilename("mu:library:podcast:test"), "podcast_"+hashID("feed", server.URL)+".json")
+	cachePath := filepath.Join(cacheDir, safeFilename("mu:library:podcast:test"), "podcast_"+hashID("feed", feedURL)+".json")
 	if !strings.Contains(cachePath, "podcast_feed_") {
 		t.Fatalf("unexpected cache path %s", cachePath)
 	}
 }
 
 func TestLibrarySearch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		_, _ = w.Write([]byte(testFeed))
-	}))
-	t.Cleanup(server.Close)
+	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
 		NodeID:          "mu:library:podcast:test",
 		TopicBase:       mu.BaseTopic,
-		Feeds:           []string{server.URL},
+		Feeds:           []string{feedURL},
 		CacheDir:        t.TempDir(),
 		RefreshInterval: 24 * time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("new module: %v", err)
 	}
+	module.http = &http.Client{Transport: testTransport(func(_ *http.Request) (*http.Response, error) {
+		return feedResponse(testFeed), nil
+	})}
 
 	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibrarySearchBody{Query: "episode one"})}
 	reply := module.librarySearch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
@@ -112,16 +111,12 @@ func TestLibrarySearch(t *testing.T) {
 }
 
 func TestReverseSortByDate(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/rss+xml")
-		_, _ = w.Write([]byte(testFeed))
-	}))
-	t.Cleanup(server.Close)
+	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
 		NodeID:            "mu:library:podcast:test",
 		TopicBase:         mu.BaseTopic,
-		Feeds:             []string{server.URL},
+		Feeds:             []string{feedURL},
 		CacheDir:          t.TempDir(),
 		RefreshInterval:   24 * time.Hour,
 		ReverseSortByDate: true,
@@ -129,8 +124,11 @@ func TestReverseSortByDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new module: %v", err)
 	}
+	module.http = &http.Client{Transport: testTransport(func(_ *http.Request) (*http.Response, error) {
+		return feedResponse(testFeed), nil
+	})}
 
-	feedID := hashID("feed", server.URL)
+	feedID := hashID("feed", feedURL)
 	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID})}
 	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 	var browse libraryItemsReply
@@ -151,6 +149,21 @@ func mustJSON(v any) json.RawMessage {
 		panic(err)
 	}
 	return data
+}
+
+type testTransport func(*http.Request) (*http.Response, error)
+
+func (t testTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return t(r)
+}
+
+func feedResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"application/rss+xml"}},
+		Body:       io.NopCloser(bytes.NewBufferString(body)),
+	}
 }
 
 const testFeed = `<?xml version="1.0" encoding="UTF-8"?>
