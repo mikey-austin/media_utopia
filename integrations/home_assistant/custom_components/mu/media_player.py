@@ -192,7 +192,12 @@ class MuRendererEntity(MediaPlayerEntity):
     @property
     def media_content_type(self) -> str | None:
         meta = self._metadata()
-        return meta.get("mediaType") or meta.get("type")
+        media_type = (meta.get("mediaType") or meta.get("type") or "").lower()
+        if media_type == "audio":
+            return MEDIA_TYPE_MUSIC
+        if media_type == "video":
+            return "video"
+        return media_type or None
 
     @property
     def shuffle(self) -> bool | None:

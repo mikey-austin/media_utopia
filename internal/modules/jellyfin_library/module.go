@@ -289,6 +289,7 @@ func (m *Module) buildMetadata(item jfItem) map[string]any {
 	}
 	if len(item.Artists) > 0 {
 		metadata["artist"] = strings.Join(item.Artists, ", ")
+		metadata["artists"] = item.Artists
 	} else if item.AlbumArtist != "" {
 		metadata["artist"] = item.AlbumArtist
 	}
@@ -607,6 +608,7 @@ func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, map[string]an
 		}
 		if len(child.Artists) > 0 {
 			meta["artist"] = strings.Join(child.Artists, ", ")
+			meta["artists"] = child.Artists
 		} else if child.AlbumArtist != "" {
 			meta["artist"] = child.AlbumArtist
 		}
