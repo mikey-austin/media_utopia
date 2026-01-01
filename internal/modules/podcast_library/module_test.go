@@ -76,7 +76,7 @@ func TestLibraryBrowseAndResolve(t *testing.T) {
 		t.Fatalf("expected 1 feed fetch, got %d", atomic.LoadInt32(&feedCalls))
 	}
 
-	cachePath := filepath.Join(cacheDir, "podcast_"+hashID("feed", server.URL)+".json")
+	cachePath := filepath.Join(cacheDir, safeFilename("mu:library:podcast:test"), "podcast_"+hashID("feed", server.URL)+".json")
 	if !strings.Contains(cachePath, "podcast_feed_") {
 		t.Fatalf("unexpected cache path %s", cachePath)
 	}

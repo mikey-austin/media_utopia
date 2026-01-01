@@ -118,6 +118,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	if strings.TrimSpace(cfg.CacheDir) == "" {
 		cfg.CacheDir = defaultCacheDir()
 	}
+	cfg.CacheDir = filepath.Join(cfg.CacheDir, safeFilename(cfg.NodeID))
 
 	if err := os.MkdirAll(cfg.CacheDir, 0o750); err != nil {
 		return nil, err
@@ -833,6 +834,11 @@ func defaultCacheDir() string {
 		return filepath.Join(os.TempDir(), "mu-podcasts")
 	}
 	return filepath.Join(dir, "mu", "podcasts")
+}
+
+func safeFilename(id string) string {
+	replacer := strings.NewReplacer(":", "_", "/", "_", "\\", "_", " ", "_")
+	return replacer.Replace(id)
 }
 
 func errorReply(cmd mu.CommandEnvelope, code string, message string) mu.ReplyEnvelope {

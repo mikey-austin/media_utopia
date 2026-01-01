@@ -112,7 +112,7 @@ feeds = [
 ]
 refresh_interval_ms = 86400000
 reverse_sort_by_date = true
-cache_dir = "/var/lib/mud/podcasts"
+cache_dir = "/var/lib/mud"
 timeout_ms = 10000
 
 [modules.embedded_mqtt]

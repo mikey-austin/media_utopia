@@ -148,6 +148,10 @@ func printQueue(result core.QueueResult) error {
 			}
 			length = formatDuration(entry.Metadata["durationMs"])
 		}
+		title = truncateCell(title, 64)
+		typ = truncateCell(typ, 16)
+		artist = truncateCell(artist, 32)
+		album = truncateCell(album, 40)
 		if result.FullIDs {
 			_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length, entry.QueueEntryID, entry.ItemID)
 			if err != nil {
@@ -219,6 +223,10 @@ func printPlaylistShow(result core.PlaylistShowResult) error {
 			}
 			length = formatDuration(entry.Metadata["durationMs"])
 		}
+		title = truncateCell(title, 64)
+		typ = truncateCell(typ, 16)
+		artist = truncateCell(artist, 32)
+		album = truncateCell(album, 40)
 		if result.FullIDs {
 			_, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", idx, title, typ, artist, album, length, entry.EntryID, entry.ItemID)
 			if err != nil {
@@ -306,7 +314,12 @@ func printLibraryItemsOutput(result LibraryItemsOutput) error {
 	for _, item := range payload.Items {
 		artist := strings.Join(item.Artists, ", ")
 		libRef := fmt.Sprintf("lib:%s:%s", result.LibraryID, item.ItemID)
-		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, item.Type, artist, item.Album, item.ContainerID, item.ItemID, libRef)
+		name := truncateCell(item.Name, 64)
+		typ := truncateCell(item.Type, 16)
+		artist = truncateCell(artist, 32)
+		album := truncateCell(item.Album, 40)
+		container := truncateCell(item.ContainerID, 36)
+		_, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, typ, artist, album, container, item.ItemID, libRef)
 		if err != nil {
 			return err
 		}
@@ -379,4 +392,21 @@ func formatDuration(value any) string {
 		}
 	}
 	return ""
+}
+
+func truncateCell(value string, max int) string {
+	value = strings.ReplaceAll(value, "\t", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\r", " ")
+	if max <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
 }
