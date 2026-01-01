@@ -3,6 +3,7 @@ package renderercore
 import (
 	"errors"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,12 +12,13 @@ import (
 
 // Queue holds the canonical renderer queue.
 type Queue struct {
-	mu       sync.Mutex
-	revision int64
-	index    int64
-	entries  []QueueEntry
-	repeat   bool
-	shuffle  bool
+	mu         sync.Mutex
+	revision   int64
+	index      int64
+	entries    []QueueEntry
+	repeat     bool
+	repeatMode string
+	shuffle    bool
 }
 
 // QueueEntry describes a queued item.
@@ -162,6 +164,30 @@ func (q *Queue) SetRepeat(repeat bool) {
 	defer q.mu.Unlock()
 
 	q.repeat = repeat
+	if repeat {
+		q.repeatMode = "all"
+	} else {
+		q.repeatMode = "off"
+	}
+	q.revision++
+}
+
+// SetRepeatMode sets repeat mode (off|all|one).
+func (q *Queue) SetRepeatMode(mode string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "one", "single":
+		q.repeatMode = "one"
+		q.repeat = true
+	case "all", "on", "true":
+		q.repeatMode = "all"
+		q.repeat = true
+	default:
+		q.repeatMode = "off"
+		q.repeat = false
+	}
 	q.revision++
 }
 
@@ -213,6 +239,9 @@ func (q *Queue) Next() (int64, bool) {
 	if len(q.entries) == 0 {
 		return 0, false
 	}
+	if q.repeatMode == "one" {
+		return q.index, true
+	}
 	next := q.index + 1
 	if next >= int64(len(q.entries)) {
 		if !q.repeat {
@@ -232,6 +261,9 @@ func (q *Queue) Prev() (int64, bool) {
 
 	if len(q.entries) == 0 {
 		return 0, false
+	}
+	if q.repeatMode == "one" {
+		return q.index, true
 	}
 	prev := q.index - 1
 	if prev < 0 {
@@ -262,11 +294,12 @@ func (q *Queue) Summary() mu.QueueState {
 	defer q.mu.Unlock()
 
 	return mu.QueueState{
-		Revision: q.revision,
-		Length:   int64(len(q.entries)),
-		Index:    q.index,
-		Repeat:   q.repeat,
-		Shuffle:  q.shuffle,
+		Revision:   q.revision,
+		Length:     int64(len(q.entries)),
+		Index:      q.index,
+		Repeat:     q.repeat,
+		RepeatMode: q.repeatMode,
+		Shuffle:    q.shuffle,
 	}
 }
 

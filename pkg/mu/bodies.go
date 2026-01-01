@@ -99,9 +99,15 @@ type QueueShuffleBody struct {
 	Seed int64 `json:"seed"`
 }
 
+// QueueSetShuffleBody toggles shuffle mode.
+type QueueSetShuffleBody struct {
+	Shuffle bool `json:"shuffle"`
+}
+
 // QueueRepeatBody sets repeat mode.
 type QueueRepeatBody struct {
-	Repeat bool `json:"repeat"`
+	Repeat bool   `json:"repeat"`
+	Mode   string `json:"mode,omitempty"`
 }
 
 // QueueLoadPlaylistBody loads a playlist into the queue.
@@ -202,11 +208,12 @@ type SnapshotSaveBody struct {
 
 // SnapshotCapture is the session queue capture.
 type SnapshotCapture struct {
-	QueueRevision int64 `json:"queueRevision"`
-	Index         int64 `json:"index"`
-	PositionMS    int64 `json:"positionMs"`
-	Repeat        bool  `json:"repeat"`
-	Shuffle       bool  `json:"shuffle"`
+	QueueRevision int64  `json:"queueRevision"`
+	Index         int64  `json:"index"`
+	PositionMS    int64  `json:"positionMs"`
+	Repeat        bool   `json:"repeat"`
+	RepeatMode    string `json:"repeatMode,omitempty"`
+	Shuffle       bool   `json:"shuffle"`
 }
 
 // SnapshotListBody is the payload for snapshot.list.

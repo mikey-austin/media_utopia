@@ -83,11 +83,12 @@ type PlaybackState struct {
 
 // QueueState describes the queue summary.
 type QueueState struct {
-	Revision int64 `json:"revision"`
-	Length   int64 `json:"length"`
-	Index    int64 `json:"index"`
-	Repeat   bool  `json:"repeat,omitempty"`
-	Shuffle  bool  `json:"shuffle,omitempty"`
+	Revision   int64  `json:"revision"`
+	Length     int64  `json:"length"`
+	Index      int64  `json:"index"`
+	Repeat     bool   `json:"repeat,omitempty"`
+	RepeatMode string `json:"repeatMode,omitempty"`
+	Shuffle    bool   `json:"shuffle,omitempty"`
 }
 
 // CurrentItemState describes the current queue entry.
@@ -153,7 +154,7 @@ func CommandRequiresLease(cmdType string) bool {
 		return true
 	case "playback.setVolume", "playback.setMute":
 		return true
-	case "queue.set", "queue.add", "queue.remove", "queue.move", "queue.clear", "queue.jump", "queue.shuffle", "queue.setRepeat":
+	case "queue.set", "queue.add", "queue.remove", "queue.move", "queue.clear", "queue.jump", "queue.shuffle", "queue.setShuffle", "queue.setRepeat":
 		return true
 	case "queue.loadPlaylist", "queue.loadSnapshot":
 		return true

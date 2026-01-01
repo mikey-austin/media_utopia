@@ -608,7 +608,7 @@ class MudBridge:
 
     async def _handle_repeat(self, node_id: str, payload: str) -> None:
         mode = payload.strip().lower()
-        repeat = mode in ["all", "one", "on", "true"]
+        repeat = mode in ["all", "on", "true"]
         await self._send_renderer_command(node_id, "queue.setRepeat", {"repeat": repeat})
 
     async def _handle_play_media(self, node_id: str, payload: str) -> None:
@@ -669,12 +669,23 @@ class MudBridge:
         )
 
     async def async_shuffle(self, node_id: str, shuffle: bool) -> None:
-        if not shuffle:
+        if shuffle:
+            await self._send_renderer_command(node_id, "queue.shuffle", {"seed": int(time.time())})
             return
-        await self._send_renderer_command(node_id, "queue.shuffle", {"seed": int(time.time())})
+        await self._send_renderer_command(node_id, "queue.setShuffle", {"shuffle": False})
 
     async def async_repeat(self, node_id: str, repeat: bool) -> None:
-        await self._send_renderer_command(node_id, "queue.setRepeat", {"repeat": repeat})
+        mode = "all" if repeat else "off"
+        await self._send_renderer_command(node_id, "queue.setRepeat", {"repeat": repeat, "mode": mode})
+
+    async def async_repeat_mode(self, node_id: str, mode: str) -> None:
+        mode = (mode or "").lower()
+        repeat = mode in {"all", "one", "single", "on", "true"}
+        await self._send_renderer_command(
+            node_id,
+            "queue.setRepeat",
+            {"repeat": repeat, "mode": mode},
+        )
 
     async def async_play_media(self, node_id: str, media_id: str) -> None:
         if str(media_id).startswith("playlist:"):

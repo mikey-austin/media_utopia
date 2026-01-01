@@ -366,6 +366,9 @@ func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyE
 	}
 
 	m.engine.Queue.SetRepeat(capture.Repeat)
+	if capture.RepeatMode != "" {
+		m.engine.Queue.SetRepeatMode(capture.RepeatMode)
+	}
 	m.engine.State.Playback.PositionMS = capture.PositionMS
 	m.engine.State.TS = time.Now().Unix()
 	return reply

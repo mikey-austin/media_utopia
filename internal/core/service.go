@@ -342,8 +342,10 @@ func (s Service) QueueShuffle(ctx context.Context, selector string, seed int64) 
 }
 
 // QueueRepeat sets repeat mode.
-func (s Service) QueueRepeat(ctx context.Context, selector string, repeat bool) error {
-	return s.simplePlayback(ctx, selector, "queue.setRepeat", mu.QueueRepeatBody{Repeat: repeat})
+func (s Service) QueueRepeat(ctx context.Context, selector string, mode string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	repeat := mode == "all" || mode == "one" || mode == "single" || mode == "on" || mode == "true"
+	return s.simplePlayback(ctx, selector, "queue.setRepeat", mu.QueueRepeatBody{Repeat: repeat, Mode: mode})
 }
 
 // QueueAdd adds entries to the queue.
@@ -766,7 +768,8 @@ func (s Service) SnapshotSave(ctx context.Context, selector string, name string,
 			QueueRevision: state.Queue.Revision,
 			Index:         state.Queue.Index,
 			PositionMS:    state.Playback.PositionMS,
-			Repeat:        false,
+			Repeat:        state.Queue.Repeat,
+			RepeatMode:    state.Queue.RepeatMode,
 			Shuffle:       false,
 		},
 		Items: items,

@@ -564,7 +564,23 @@ mu/v1/node/R/cmd
 }
 ```
 
-### 8.8 `queue.setRepeat`
+### 8.8 `queue.setShuffle`
+
+Toggle shuffle mode without reordering.
+
+```json
+{
+  "id": "qshufset...",
+  "type": "queue.setShuffle",
+  "ts": 1735580465,
+  "from": "mikey@pixel",
+  "replyTo": "mu/v1/reply/mu-4242-a1b2c3",
+  "lease": { "sessionId": "mu:session:renderer:upnp-550e8400:1735580000", "token": "lease-token-opaque" },
+  "body": { "shuffle": true }
+}
+```
+
+### 8.9 `queue.setRepeat`
 
 ```json
 {
@@ -574,7 +590,7 @@ mu/v1/node/R/cmd
   "from": "mikey@pixel",
   "replyTo": "mu/v1/reply/mu-4242-a1b2c3",
   "lease": { "sessionId": "mu:session:renderer:upnp-550e8400:1735580000", "token": "lease-token-opaque" },
-  "body": { "repeat": true }
+  "body": { "repeat": true, "mode": "all | one | off" }
 }
 ```
 

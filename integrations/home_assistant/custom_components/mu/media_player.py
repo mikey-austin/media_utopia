@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - older HA compatibility
 
 REPEAT_ALL = MediaPlayerRepeatMode.ALL if MediaPlayerRepeatMode else "all"
 REPEAT_OFF = MediaPlayerRepeatMode.OFF if MediaPlayerRepeatMode else "off"
+REPEAT_ONE = MediaPlayerRepeatMode.ONE if MediaPlayerRepeatMode else "one"
 
 try:
     from homeassistant.components.media_player.const import (
@@ -207,7 +208,10 @@ class MuRendererEntity(MediaPlayerEntity):
     @property
     def repeat(self) -> str | None:
         queue = self._queue()
-        if queue.get("repeat"):
+        mode = (queue.get("repeatMode") or "").lower()
+        if mode == "one":
+            return REPEAT_ONE
+        if mode == "all" or queue.get("repeat"):
             return REPEAT_ALL
         return REPEAT_OFF
 
@@ -266,7 +270,12 @@ class MuRendererEntity(MediaPlayerEntity):
 
     async def async_set_repeat(self, repeat: str) -> None:
         _LOGGER.debug("repeat %s %s", self._node_id, repeat)
-        await self._bridge.async_repeat(self._node_id, repeat.lower() != "off")
+        repeat_value = (repeat or "").lower()
+        if repeat_value in {"one", "single"}:
+            await self._bridge.async_repeat_mode(self._node_id, "one")
+            return
+        enabled = repeat_value in {"all", "on", "true"}
+        await self._bridge.async_repeat(self._node_id, enabled)
 
     async def async_play_media(
         self, media_type: str, media_id: str, **kwargs: Any

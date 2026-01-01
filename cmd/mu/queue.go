@@ -219,8 +219,8 @@ func queueShuffleCommand() *cobra.Command {
 
 func queueRepeatCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "repeat [renderer] on|off",
-		Short: "Toggle repeat",
+		Use:   "repeat [renderer] off|all|one",
+		Short: "Set repeat mode",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector := ""
@@ -231,20 +231,17 @@ func queueRepeatCommand() *cobra.Command {
 				selector = args[0]
 				arg = args[1]
 			}
-			repeat := false
-			switch arg {
-			case "on":
-				repeat = true
-			case "off":
-				repeat = false
+			mode := strings.ToLower(strings.TrimSpace(arg))
+			switch mode {
+			case "off", "all", "one":
 			default:
-				return fmt.Errorf("repeat must be on|off")
+				return fmt.Errorf("repeat must be off|all|one")
 			}
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 			return app.runWithLeaseRetry(ctx, selector, func() error {
-				return app.service.QueueRepeat(ctx, selector, repeat)
+				return app.service.QueueRepeat(ctx, selector, mode)
 			})
 		},
 	}

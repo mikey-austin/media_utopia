@@ -82,6 +82,8 @@ func (e *Engine) HandleCommand(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return e.handleQueueJump(cmd, reply)
 	case "queue.shuffle":
 		return e.handleQueueShuffle(cmd, reply)
+	case "queue.setShuffle":
+		return e.handleQueueSetShuffle(cmd, reply)
 	case "queue.setRepeat":
 		return e.handleQueueRepeat(cmd, reply)
 	case "playback.play":
@@ -261,6 +263,19 @@ func (e *Engine) handleQueueShuffle(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 	return reply
 }
 
+func (e *Engine) handleQueueSetShuffle(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	if err := e.requireLease(cmd); err != nil {
+		return errorReply(cmd, "LEASE_REQUIRED", err.Error())
+	}
+	var body mu.QueueSetShuffleBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	e.Queue.SetShuffle(body.Shuffle)
+	e.bumpQueue()
+	return reply
+}
+
 func (e *Engine) handleQueueRepeat(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
 	if err := e.requireLease(cmd); err != nil {
 		return errorReply(cmd, "LEASE_REQUIRED", err.Error())
@@ -269,7 +284,11 @@ func (e *Engine) handleQueueRepeat(cmd mu.CommandEnvelope, reply mu.ReplyEnvelop
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	e.Queue.SetRepeat(body.Repeat)
+	if body.Mode != "" {
+		e.Queue.SetRepeatMode(body.Mode)
+	} else {
+		e.Queue.SetRepeat(body.Repeat)
+	}
 	e.bumpQueue()
 	return reply
 }

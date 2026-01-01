@@ -192,7 +192,7 @@ mu queue jump  <renderer> <index>
 mu queue rm    <renderer> <index|queueEntryId>
 mu queue mv    <renderer> <from> <to>
 mu queue shuffle <renderer> [--seed <int>]
-mu queue repeat  <renderer> on|off
+mu queue repeat  <renderer> off|all|one
 ```
 
 ### 5.3 Add items
