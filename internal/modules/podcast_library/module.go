@@ -291,7 +291,14 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 
 func (m *Module) browseItems(containerID string, start int64, count int64) ([]libraryItem, int64, error) {
 	if containerID == "" {
-		items := make([]libraryItem, 0, len(m.config.Feeds))
+		items := make([]libraryItem, 0, len(m.config.Feeds)+1)
+		items = append(items, libraryItem{
+			ItemID:    latestContainerID,
+			Name:      "Latest",
+			Type:      "Folder",
+			MediaType: "Unknown",
+			Overview:  "Latest episode from each podcast",
+		})
 		for _, feedURL := range m.config.Feeds {
 			feed, err := m.loadFeed(feedURL)
 			if err != nil {
@@ -307,8 +314,12 @@ func (m *Module) browseItems(containerID string, start int64, count int64) ([]li
 				ImageURL:  feed.Feed.ImageURL,
 			})
 		}
-		sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+		sort.Slice(items[1:], func(i, j int) bool { return items[i+1].Name < items[j+1].Name })
 		return paginateItems(items, start, count)
+	}
+
+	if containerID == latestContainerID {
+		return m.browseLatest(start, count)
 	}
 
 	feed, err := m.loadFeedByID(containerID)
@@ -348,6 +359,56 @@ func (m *Module) browseItems(containerID string, start int64, count int64) ([]li
 		})
 	}
 	return paginateItems(items, start, count)
+}
+
+const latestContainerID = "latest"
+
+func (m *Module) browseLatest(start int64, count int64) ([]libraryItem, int64, error) {
+	items := []libraryItem{}
+	for _, feedURL := range m.config.Feeds {
+		feed, err := m.loadFeed(feedURL)
+		if err != nil {
+			m.log.Warn("load feed", zap.String("feed", feedURL), zap.Error(err))
+			continue
+		}
+		episode, ok := latestEpisode(feed.Feed.Episodes)
+		if !ok {
+			continue
+		}
+		items = append(items, libraryItem{
+			ItemID:      episode.ID,
+			Name:        episode.Title,
+			Type:        "PodcastEpisode",
+			MediaType:   "Audio",
+			Artists:     splitArtist(episode.Author),
+			Album:       feed.Feed.Title,
+			ContainerID: latestContainerID,
+			Overview:    episode.Description,
+			DurationMS:  episode.DurationMS,
+			ImageURL:    episode.ImageURL,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	return paginateItems(items, start, count)
+}
+
+func latestEpisode(episodes []cachedEpisode) (cachedEpisode, bool) {
+	var latest cachedEpisode
+	found := false
+	for _, episode := range episodes {
+		if episode.AudioURL == "" {
+			continue
+		}
+		if !found {
+			latest = episode
+			found = true
+			continue
+		}
+		if episode.Published > latest.Published {
+			latest = episode
+		}
+	}
+	return latest, found
 }
 
 func (m *Module) searchItems(query string, start int64, count int64, types []string) ([]libraryItem, int64, error) {

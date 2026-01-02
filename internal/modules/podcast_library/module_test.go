@@ -41,10 +41,13 @@ func TestLibraryBrowseAndResolve(t *testing.T) {
 	if err := json.Unmarshal(reply.Body, &browse); err != nil {
 		t.Fatalf("browse decode: %v", err)
 	}
-	if len(browse.Items) != 1 {
-		t.Fatalf("expected 1 feed, got %d", len(browse.Items))
+	if len(browse.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(browse.Items))
 	}
-	feedID := browse.Items[0].ItemID
+	if browse.Items[0].ItemID != "latest" {
+		t.Fatalf("expected latest folder first")
+	}
+	feedID := browse.Items[1].ItemID
 
 	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID})}
 	reply = module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
@@ -79,6 +82,37 @@ func TestLibraryBrowseAndResolve(t *testing.T) {
 	cachePath := filepath.Join(cacheDir, safeFilename("mu:library:podcast:test"), "podcast_"+hashID("feed", feedURL)+".json")
 	if !strings.Contains(cachePath, "podcast_feed_") {
 		t.Fatalf("unexpected cache path %s", cachePath)
+	}
+}
+
+func TestBrowseLatestFolder(t *testing.T) {
+	feedURL := "http://example.test/feed.xml"
+
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:          "mu:library:podcast:test",
+		TopicBase:       mu.BaseTopic,
+		Feeds:           []string{feedURL},
+		CacheDir:        t.TempDir(),
+		RefreshInterval: 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+	module.http = &http.Client{Transport: testTransport(func(_ *http.Request) (*http.Response, error) {
+		return feedResponse(testFeed), nil
+	})}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: "latest"})}
+	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var browse libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &browse); err != nil {
+		t.Fatalf("browse decode: %v", err)
+	}
+	if len(browse.Items) != 1 {
+		t.Fatalf("expected 1 latest item, got %d", len(browse.Items))
+	}
+	if browse.Items[0].Album == "" {
+		t.Fatalf("expected album name for latest item")
 	}
 }
 
