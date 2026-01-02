@@ -45,6 +45,72 @@ func TestPlaylistCreateAndList(t *testing.T) {
 	}
 }
 
+func TestPlaylistCreateFromSnapshot(t *testing.T) {
+	root := t.TempDir()
+	storage, err := NewStorage(root)
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+
+	now := time.Now().Unix()
+	snap := Snapshot{
+		SnapshotID: "mu:snapshot:plsrv:default:snap-1",
+		Name:       "Snap",
+		Owner:      "tester",
+		Revision:   1,
+		RendererID: "r",
+		SessionID:  "s",
+		Capture:    mu.SnapshotCapture{},
+		Items:      []string{"lib:mu:library:test:one", "http://example.com/a.mp3"},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := storage.SaveSnapshot(snap); err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+
+	module := Module{
+		storage: storage,
+		config:  Config{NodeID: "mu:playlist:plsrv:default:main"},
+	}
+
+	cmd := mu.CommandEnvelope{
+		ID:   "id-1",
+		Type: "playlist.create",
+		TS:   time.Now().Unix(),
+		From: "tester",
+		Body: mustJSON(mu.PlaylistCreateBody{Name: "FromSnap", SnapshotID: snap.SnapshotID}),
+	}
+	reply := module.playlistCreate(cmd, mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true})
+	if reply.Type != "ack" {
+		t.Fatalf("expected ack")
+	}
+
+	listReply := module.playlistList(cmd, mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true})
+	var out mu.PlaylistListReply
+	if err := json.Unmarshal(listReply.Body, &out); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if len(out.Playlists) != 1 {
+		t.Fatalf("expected 1 playlist")
+	}
+	getCmd := mu.CommandEnvelope{
+		ID:   "id-2",
+		Type: "playlist.get",
+		TS:   time.Now().Unix(),
+		From: "tester",
+		Body: mustJSON(mu.PlaylistGetBody{PlaylistID: out.Playlists[0].PlaylistID}),
+	}
+	getReply := module.playlistGet(getCmd, mu.ReplyEnvelope{ID: getCmd.ID, Type: "ack", OK: true})
+	var getOut Playlist
+	if err := json.Unmarshal(getReply.Body, &getOut); err != nil {
+		t.Fatalf("decode get reply: %v", err)
+	}
+	if len(getOut.Entries) != 2 {
+		t.Fatalf("expected 2 entries")
+	}
+}
+
 func TestSnapshotSaveAndList(t *testing.T) {
 	root := t.TempDir()
 	storage, err := NewStorage(root)
@@ -133,6 +199,47 @@ func TestStorageWritesFiles(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 file")
+	}
+}
+
+func TestPlaylistDelete(t *testing.T) {
+	root := t.TempDir()
+	storage, err := NewStorage(root)
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+
+	now := time.Now().Unix()
+	pl := Playlist{
+		PlaylistID: "mu:playlist:plsrv:default:one",
+		Name:       "Test",
+		Owner:      "tester",
+		Revision:   1,
+		Entries:    []PlaylistEntry{},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := storage.SavePlaylist(pl); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	module := Module{
+		storage: storage,
+		config:  Config{NodeID: "mu:playlist:plsrv:default:main"},
+	}
+	cmd := mu.CommandEnvelope{
+		ID:   "id-1",
+		Type: "playlist.delete",
+		TS:   time.Now().Unix(),
+		From: "tester",
+		Body: mustJSON(mu.PlaylistDeleteBody{PlaylistID: pl.PlaylistID}),
+	}
+	reply := module.playlistDelete(cmd, mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true})
+	if reply.Type != "ack" {
+		t.Fatalf("expected ack")
+	}
+	if _, err := storage.GetPlaylist(pl.PlaylistID); !os.IsNotExist(err) {
+		t.Fatalf("expected playlist deleted")
 	}
 }
 

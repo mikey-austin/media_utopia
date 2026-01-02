@@ -638,7 +638,7 @@ Reply body:
   "ts": 1735580510,
   "from": "mikey@pixel",
   "replyTo": "mu/v1/reply/mu-4242-a1b2c3",
-  "body": { "name": "Modal Miles" }
+  "body": { "name": "Modal Miles", "snapshotId": "mu:snapshot:plsrv:default:snap-1" }
 }
 ```
 
@@ -655,7 +655,20 @@ Reply body:
 }
 ```
 
-### 9.4 `playlist.addItems` (revisioned)
+### 9.4 `playlist.delete`
+
+```json
+{
+  "id": "pldel...",
+  "type": "playlist.delete",
+  "ts": 1735580530,
+  "from": "mikey@pixel",
+  "replyTo": "mu/v1/reply/mu-4242-a1b2c3",
+  "body": { "playlistId": "mu:playlist:plsrv:default:pl-42" }
+}
+```
+
+### 9.5 `playlist.addItems` (revisioned)
 
 ```json
 {

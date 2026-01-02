@@ -146,6 +146,8 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.playlistRemoveItems(cmd, reply)
 	case "playlist.rename":
 		return m.playlistRename(cmd, reply)
+	case "playlist.delete":
+		return m.playlistDelete(cmd, reply)
 	case "snapshot.save":
 		return m.snapshotSave(cmd, reply)
 	case "snapshot.list":
@@ -199,6 +201,26 @@ func (m *Module) playlistCreate(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 		Entries:    []PlaylistEntry{},
 		CreatedAt:  now,
 		UpdatedAt:  now,
+	}
+	if strings.TrimSpace(body.SnapshotID) != "" {
+		snap, err := m.storage.GetSnapshot(body.SnapshotID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return errorReply(cmd, "NOT_FOUND", "snapshot not found")
+			}
+			return errorReply(cmd, "INVALID", err.Error())
+		}
+		if len(snap.Items) > 0 {
+			entries := make([]PlaylistEntry, 0, len(snap.Items))
+			for _, item := range snap.Items {
+				entries = append(entries, PlaylistEntry{
+					EntryID: fmt.Sprintf("mu:playlistentry:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID()),
+					Ref:     &mu.ItemRef{ID: item},
+				})
+			}
+			pl.Entries = entries
+			pl.Revision = 1
+		}
 	}
 	if err := m.storage.SavePlaylist(pl); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
@@ -313,6 +335,23 @@ func (m *Module) playlistRename(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	pl.Revision++
 	pl.UpdatedAt = time.Now().Unix()
 	if err := m.storage.SavePlaylist(pl); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	return reply
+}
+
+func (m *Module) playlistDelete(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.PlaylistDeleteBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if strings.TrimSpace(body.PlaylistID) == "" {
+		return errorReply(cmd, "INVALID", "playlistId required")
+	}
+	if err := m.storage.DeletePlaylist(body.PlaylistID); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errorReply(cmd, "NOT_FOUND", "playlist not found")
+		}
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	return reply

@@ -171,7 +171,8 @@ type PlaylistSummary struct {
 
 // PlaylistCreateBody is the payload for playlist.create.
 type PlaylistCreateBody struct {
-	Name string `json:"name"`
+	Name       string `json:"name"`
+	SnapshotID string `json:"snapshotId,omitempty"`
 }
 
 // PlaylistGetBody is the payload for playlist.get.
@@ -195,6 +196,11 @@ type PlaylistRemoveItemsBody struct {
 type PlaylistRenameBody struct {
 	PlaylistID string `json:"playlistId"`
 	Name       string `json:"name"`
+}
+
+// PlaylistDeleteBody is the payload for playlist.delete.
+type PlaylistDeleteBody struct {
+	PlaylistID string `json:"playlistId"`
 }
 
 // SnapshotSaveBody is the payload for snapshot.save.

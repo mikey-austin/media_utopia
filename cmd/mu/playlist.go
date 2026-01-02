@@ -18,6 +18,7 @@ func playlistCommand() *cobra.Command {
 	cmd.AddCommand(playlistCreateCommand())
 	cmd.AddCommand(playlistAddCommand())
 	cmd.AddCommand(playlistRemoveCommand())
+	cmd.AddCommand(playlistDeleteCommand())
 	cmd.AddCommand(playlistLoadCommand())
 	cmd.AddCommand(playlistRenameCommand())
 
@@ -80,6 +81,7 @@ func playlistShowCommand() *cobra.Command {
 
 func playlistCreateCommand() *cobra.Command {
 	var server string
+	var fromSnapshot string
 
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -90,10 +92,11 @@ func playlistCreateCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			return app.service.PlaylistCreate(ctx, args[0], server)
+			return app.service.PlaylistCreate(ctx, args[0], fromSnapshot, server)
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	cmd.Flags().StringVar(&fromSnapshot, "from-snapshot", "", "create from snapshot id or name")
 	return cmd
 }
 
@@ -149,6 +152,26 @@ func playlistRemoveCommand() *cobra.Command {
 			defer cancel()
 
 			return app.service.PlaylistRemove(ctx, args[0], args[1:], server)
+		},
+	}
+	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
+	return cmd
+}
+
+func playlistDeleteCommand() *cobra.Command {
+	var server string
+
+	cmd := &cobra.Command{
+		Use:     "delete <playlistId|name>",
+		Aliases: []string{"del"},
+		Short:   "Delete playlist",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			return app.service.PlaylistDelete(ctx, args[0], server)
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")

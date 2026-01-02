@@ -565,12 +565,22 @@ func (s Service) resolveSnapshotID(ctx context.Context, snapshotRef string, serv
 }
 
 // PlaylistCreate creates a playlist.
-func (s Service) PlaylistCreate(ctx context.Context, name string, serverSelector string) error {
+func (s Service) PlaylistCreate(ctx context.Context, name string, snapshotID string, serverSelector string) error {
 	server, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
 	if err != nil {
 		return err
 	}
-	cmd, err := mu.NewCommand("playlist.create", mu.PlaylistCreateBody{Name: name})
+	var resolvedSnapshotID string
+	if strings.TrimSpace(snapshotID) != "" {
+		resolvedSnapshotID, err = s.resolveSnapshotID(ctx, snapshotID, server)
+		if err != nil {
+			return err
+		}
+	}
+	cmd, err := mu.NewCommand("playlist.create", mu.PlaylistCreateBody{
+		Name:       name,
+		SnapshotID: resolvedSnapshotID,
+	})
 	if err != nil {
 		return WrapError(ExitRuntime, "build command", err)
 	}
@@ -727,6 +737,24 @@ func (s Service) PlaylistRename(ctx context.Context, playlistID string, name str
 	}
 	body := mu.PlaylistRenameBody{PlaylistID: playlistID, Name: name}
 	cmd, err := mu.NewCommand("playlist.rename", body)
+	if err != nil {
+		return WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	return s.publishSimple(ctx, server.NodeID, cmd)
+}
+
+// PlaylistDelete deletes a playlist.
+func (s Service) PlaylistDelete(ctx context.Context, playlistID string, serverSelector string) error {
+	server, err := s.Resolver.ResolvePlaylistServer(ctx, serverSelector)
+	if err != nil {
+		return err
+	}
+	playlistID, err = s.resolvePlaylistID(ctx, playlistID, server)
+	if err != nil {
+		return err
+	}
+	cmd, err := mu.NewCommand("playlist.delete", mu.PlaylistDeleteBody{PlaylistID: playlistID})
 	if err != nil {
 		return WrapError(ExitRuntime, "build command", err)
 	}

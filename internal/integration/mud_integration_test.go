@@ -96,7 +96,7 @@ func TestMuMudIntegration(t *testing.T) {
 		t.Fatalf("expected playlist node %s, got %+v", h.playlistNode, nodes.Nodes)
 	}
 
-	if err := h.service.PlaylistCreate(ctx, "Road Trip", ""); err != nil {
+	if err := h.service.PlaylistCreate(ctx, "Road Trip", "", ""); err != nil {
 		t.Fatalf("playlist create: %v", err)
 	}
 	listResult, err := h.service.PlaylistList(ctx, "")
@@ -185,7 +185,7 @@ func TestPlaylistConflictReturnsError(t *testing.T) {
 	h := setupIntegration(t)
 	ctx := h.ctx
 
-	if err := h.service.PlaylistCreate(ctx, "Conflict", ""); err != nil {
+	if err := h.service.PlaylistCreate(ctx, "Conflict", "", ""); err != nil {
 		t.Fatalf("playlist create: %v", err)
 	}
 	listResult, err := h.service.PlaylistList(ctx, "")
@@ -251,7 +251,7 @@ func TestPlaylistRevisionGuardAcceptsMatch(t *testing.T) {
 	h := setupIntegration(t)
 	ctx := h.ctx
 
-	if err := h.service.PlaylistCreate(ctx, "Revisioned", ""); err != nil {
+	if err := h.service.PlaylistCreate(ctx, "Revisioned", "", ""); err != nil {
 		t.Fatalf("playlist create: %v", err)
 	}
 	listResult, err := h.service.PlaylistList(ctx, "")

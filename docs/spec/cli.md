@@ -243,9 +243,10 @@ mu playlist show <playlistId|name> [--server <playlistServer>] [--full] [--json]
 ### 6.2 Create / edit
 
 ```bash
-mu playlist create "<name>" [--server <playlistServer>] [--json]
+mu playlist create "<name>" [--from-snapshot <snapshotId|name>] [--server <playlistServer>] [--json]
 mu playlist add <playlistId|name> <item...> [--server <playlistServer>] [--json]
 mu playlist rm  <playlistId|name> <entryId|index...> [--server <playlistServer>] [--json]
+mu playlist delete <playlistId|name> [--server <playlistServer>] [--json]
 mu playlist rename <playlistId|name> "<name>" [--server <playlistServer>]
 ```
 
@@ -256,6 +257,7 @@ Notes:
 - Items can be URLs, mu URNs, or library refs (`lib:<selector>:<itemId>`).
 - `selector` may be a library alias, name, or full node id (URN).
 - Container items (albums/artists) expand into their playable tracks when added to a playlist.
+- `--from-snapshot` creates a new playlist seeded with snapshot items (by id or name).
 
 ### 6.3 Load playlist into renderer queue (lease required)
 
