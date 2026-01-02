@@ -600,7 +600,11 @@ class MuRendererEntity(MediaPlayerEntity):
             )
 
         items = payload.get("items") or []
-        total = payload.get("total") or 0
+        total_raw = payload.get("total")
+        try:
+            total = int(total_raw) if total_raw is not None else 0
+        except (TypeError, ValueError):
+            total = 0
         info = self._bridge.get_library(node_id) or {}
         title = info.get("name") or node_id
         if container_id:
@@ -662,7 +666,7 @@ class MuRendererEntity(MediaPlayerEntity):
                 )
             )
 
-        if isinstance(total, int) and total > start+len(items):
+        if container_id and total > start + len(items):
             next_id = f"library:{node_id}?container={container_id}&page={page+1}"
             children.append(
                 BrowseMedia(
