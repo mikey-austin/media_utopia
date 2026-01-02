@@ -472,6 +472,16 @@ func (m *Module) fetchItems(containerID string, start int64, count int64, search
 			}
 		}
 	}
+	if containerID == "" && search == "" && len(types) == 0 {
+		items, total, err := m.fetchItemsRaw(containerID, start, count, search, types, recursive)
+		if err != nil {
+			return nil, 0, err
+		}
+		if total <= int64(len(items)) {
+			total = int64(len(items))
+		}
+		return items, total, nil
+	}
 	return m.fetchItemsRaw(containerID, start, count, search, types, recursive)
 }
 
@@ -496,7 +506,7 @@ func (m *Module) fetchFilesItems(libraryID string, parentID string, start int64,
 			}
 		}
 	}
-	if forcePage && count > 0 && int64(len(items)) >= count {
+	if forcePage && int64(len(items)) > 0 && total <= start+int64(len(items)) {
 		total = start + int64(len(items)) + 1
 	}
 	return items, total, nil
@@ -539,8 +549,9 @@ func (m *Module) fetchItemsWithParams(endpoint string, params url.Values) ([]lib
 	}
 	start := parseIntParam(params.Get("StartIndex"))
 	limit := parseIntParam(params.Get("Limit"))
-	total := adjustTotalCount(params, resp.TotalRecordCount, int64(len(items)))
-	if total <= start+int64(len(items)) && int64(len(items)) > 0 {
+	rawTotal := resp.TotalRecordCount
+	total := adjustTotalCount(params, rawTotal, int64(len(items)))
+	if rawTotal == 0 && total <= start+int64(len(items)) && int64(len(items)) > 0 {
 		if m.hasMoreItems(endpoint, params, start+int64(len(items)), limit) {
 			total = start + int64(len(items)) + 1
 		}
