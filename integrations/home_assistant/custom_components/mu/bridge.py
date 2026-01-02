@@ -642,11 +642,7 @@ class MudBridge:
         if not media_id:
             return
         entries = await self._resolve_media_entries(media_id)
-        if not entries:
-            return
-        body = {"startIndex": 0, "entries": entries}
-        await self._send_renderer_command(node_id, "queue.set", body)
-        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        await self._queue_set_and_fill(node_id, entries)
 
     async def async_play(self, node_id: str) -> None:
         await self._send_renderer_command(node_id, "playback.play", {})
@@ -730,13 +726,7 @@ class MudBridge:
             await self.async_play_library_container(node_id, str(media_id))
             return
         entries = await self._resolve_media_entries(media_id)
-        if not entries:
-            return
-        body = {"startIndex": 0, "entries": entries}
-        reply = await self._request_with_lease(node_id, "queue.set", body)
-        if reply is None or reply.get("type") != "ack":
-            return
-        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        await self._queue_set_and_fill(node_id, entries)
 
     async def async_fetch_playlist(self, playlist_id: str) -> dict[str, Any] | None:
         if self._playlist_server is None:
@@ -892,7 +882,7 @@ class MudBridge:
         if not payload:
             return
         items = payload.get("items") or []
-        item_ids = []
+        item_ids: list[str] = []
         for item in items:
             item_id = item.get("itemId")
             if not item_id:
@@ -910,24 +900,7 @@ class MudBridge:
                 item_ids.append(item_id)
         if not item_ids:
             return
-        sources_map = await self._resolve_sources_batch(library_id, item_ids)
-        entries = []
-        for item_id in item_ids:
-            sources = sources_map.get(item_id)
-            if not sources:
-                continue
-            ref_id = f"lib:{library_id}:{item_id}"
-            ref = {"id": ref_id}
-            for source in sources:
-                entries.append({"ref": ref, "resolved": source})
-        if not entries:
-            return
-        reply = await self._request_with_lease(
-            node_id, "queue.set", {"startIndex": 0, "entries": entries}
-        )
-        if reply is None or reply.get("type") != "ack":
-            return
-        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        await self._queue_set_and_fill_from_library_items(node_id, library_id, item_ids)
 
     def _parse_library_media_id(self, media_id: str) -> tuple[str, str, int]:
         rest = media_id[len("library:") :]
@@ -957,21 +930,168 @@ class MudBridge:
     ) -> None:
         if self._playlist_server is None:
             return
-        body = {
-            "playlistServerId": self._playlist_server["nodeId"],
-            "playlistId": playlist_id,
-            "mode": mode,
-            "resolve": resolve,
-        }
+        if mode != "replace":
+            body = {
+                "playlistServerId": self._playlist_server["nodeId"],
+                "playlistId": playlist_id,
+                "mode": mode,
+                "resolve": resolve,
+            }
+            reply = await self._request_with_lease(
+                renderer_id,
+                "queue.loadPlaylist",
+                body,
+                timeout_seconds=RENDERER_LOAD_TIMEOUT_SECONDS,
+            )
+            if reply is None or reply.get("type") != "ack":
+                return
+            await self._send_renderer_command(renderer_id, "playback.play", {})
+            return
+        playlist = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.get",
+            {"playlistId": playlist_id},
+            need_lease=False,
+        )
+        if playlist is None or playlist.get("type") != "ack":
+            return
+        entries = (playlist.get("body") or {}).get("entries") or []
+        refs: list[str] = []
+        for entry in entries:
+            ref_id = ((entry.get("ref") or {}).get("id") or "").strip()
+            if ref_id:
+                refs.append(ref_id)
+        await self._queue_set_and_fill_from_refs(renderer_id, refs)
+
+    async def _queue_set_and_fill(self, node_id: str, entries: list[dict[str, Any]]) -> None:
+        if not entries:
+            return
+        first = entries[:1]
         reply = await self._request_with_lease(
-            renderer_id, "queue.loadPlaylist", body, timeout_seconds=RENDERER_LOAD_TIMEOUT_SECONDS
+            node_id, "queue.set", {"startIndex": 0, "entries": first}
         )
         if reply is None or reply.get("type") != "ack":
             return
-        if mode == "replace":
-            await self._send_renderer_command(renderer_id, "playback.play", {"index": 0})
-        else:
-            await self._send_renderer_command(renderer_id, "playback.play", {})
+        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        if len(entries) > 1:
+            self.hass.async_create_task(self._queue_add_entries(node_id, entries[1:]))
+
+    async def _queue_add_entries(self, node_id: str, entries: list[dict[str, Any]]) -> None:
+        chunk_size = 50
+        for start in range(0, len(entries), chunk_size):
+            chunk = entries[start : start + chunk_size]
+            reply = await self._request_with_lease(
+                node_id, "queue.add", {"position": "end", "entries": chunk}
+            )
+            if reply is None or reply.get("type") != "ack":
+                _LOGGER.warning("queue.add failed for %s", node_id)
+                return
+
+    async def _queue_set_and_fill_from_library_items(
+        self, node_id: str, library_id: str, item_ids: list[str]
+    ) -> None:
+        if not item_ids:
+            return
+        first_entries = await self._entries_for_library_items(library_id, item_ids[:1])
+        if not first_entries:
+            return
+        reply = await self._request_with_lease(
+            node_id, "queue.set", {"startIndex": 0, "entries": first_entries}
+        )
+        if reply is None or reply.get("type") != "ack":
+            return
+        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        if len(item_ids) > 1:
+            self.hass.async_create_task(
+                self._queue_add_library_items(node_id, library_id, item_ids[1:])
+            )
+
+    async def _queue_add_library_items(
+        self, node_id: str, library_id: str, item_ids: list[str]
+    ) -> None:
+        chunk_size = 50
+        for start in range(0, len(item_ids), chunk_size):
+            chunk = item_ids[start : start + chunk_size]
+            entries = await self._entries_for_library_items(library_id, chunk)
+            if not entries:
+                continue
+            reply = await self._request_with_lease(
+                node_id, "queue.add", {"position": "end", "entries": entries}
+            )
+            if reply is None or reply.get("type") != "ack":
+                _LOGGER.warning("queue.add failed for %s", node_id)
+                return
+
+    async def _queue_set_and_fill_from_refs(self, node_id: str, refs: list[str]) -> None:
+        if not refs:
+            return
+        first_entries = await self._entries_for_refs(refs[:1])
+        if not first_entries:
+            return
+        reply = await self._request_with_lease(
+            node_id, "queue.set", {"startIndex": 0, "entries": first_entries}
+        )
+        if reply is None or reply.get("type") != "ack":
+            return
+        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        if len(refs) > 1:
+            self.hass.async_create_task(self._queue_add_refs(node_id, refs[1:]))
+
+    async def _queue_add_refs(self, node_id: str, refs: list[str]) -> None:
+        chunk_size = 50
+        for start in range(0, len(refs), chunk_size):
+            chunk = refs[start : start + chunk_size]
+            entries = await self._entries_for_refs(chunk)
+            if not entries:
+                continue
+            reply = await self._request_with_lease(
+                node_id, "queue.add", {"position": "end", "entries": entries}
+            )
+            if reply is None or reply.get("type") != "ack":
+                _LOGGER.warning("queue.add failed for %s", node_id)
+                return
+
+    async def _entries_for_library_items(
+        self, library_id: str, item_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        if not item_ids:
+            return []
+        sources_map = await self._resolve_sources_batch(library_id, item_ids)
+        entries: list[dict[str, Any]] = []
+        for item_id in item_ids:
+            sources = sources_map.get(item_id)
+            if not sources:
+                continue
+            ref_id = f"lib:{library_id}:{item_id}"
+            entries.append({"ref": {"id": ref_id}, "resolved": sources[0]})
+        return entries
+
+    async def _entries_for_refs(self, refs: list[str]) -> list[dict[str, Any]]:
+        if not refs:
+            return []
+        order: list[tuple[str, str, str]] = []
+        grouped: dict[str, list[str]] = {}
+        for ref in refs:
+            selector, item_id = self._split_lib_ref(ref)
+            if selector is None:
+                continue
+            library_id = self._resolve_library(selector)
+            if library_id is None:
+                continue
+            order.append((ref, library_id, item_id))
+            grouped.setdefault(library_id, []).append(item_id)
+        sources_by_library: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for library_id, item_ids in grouped.items():
+            sources_by_library[library_id] = await self._resolve_sources_batch(
+                library_id, item_ids
+            )
+        entries: list[dict[str, Any]] = []
+        for ref, library_id, item_id in order:
+            sources = sources_by_library.get(library_id, {}).get(item_id)
+            if not sources:
+                continue
+            entries.append({"ref": {"id": ref}, "resolved": sources[0]})
+        return entries
 
     async def async_acquire_lease(self, node_id: str) -> bool:
         return await self._acquire_lease(node_id) is not None
