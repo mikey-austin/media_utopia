@@ -62,6 +62,11 @@ This starts three containers:
 
 The `mud` container mounts `/dev/snd` for audio output.
 
+If your media sources use a self-signed TLS certificate (for go2rtc/Jellyfin/etc),
+copy your CA cert to `integrations/home_assistant/ha_config/ca/ca.crt` (avoid symlinks),
+then restart the stack so Home Assistant trusts it. The compose file points
+`SSL_CERT_FILE` and `SSL_CERT_DIR` at that directory.
+
 Option B: Use host networking (Linux-only):
 
 ```bash

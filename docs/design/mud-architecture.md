@@ -40,6 +40,7 @@ Planned modules:
 - `bridge_upnp_library`: UPnP library bridge
 - `bridge_jellyfin_library`: Jellyfin library bridge
 - `podcast`: RSS/Podcast library module
+- `go2rtc`: go2rtc library module
 
 ## Configuration Model
 
@@ -125,6 +126,18 @@ refresh_interval_ms = 86400000
 reverse_sort_by_date = true
 cache_dir = "/var/lib/mud"
 timeout_ms = 10000
+
+[modules.go2rtc]
+enabled = true
+name = "Cameras"
+provider = "go2rtc"
+resource = "default"
+base_url = "http://go2rtc.local:1984"
+username = "admin"
+password = "secret"
+durations = ["30s", "60s"]
+refresh_interval_ms = 300000
+timeout_ms = 5000
 
 [modules.embedded_mqtt]
 enabled = true

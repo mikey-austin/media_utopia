@@ -14,6 +14,7 @@ import (
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
 	embeddedmqtt "github.com/mikey-austin/media_utopia/internal/modules/embedded_mqtt"
+	go2rtclibrary "github.com/mikey-austin/media_utopia/internal/modules/go2rtc_library"
 	jellyfinlibrary "github.com/mikey-austin/media_utopia/internal/modules/jellyfin_library"
 	"github.com/mikey-austin/media_utopia/internal/modules/playlist"
 	podcastlibrary "github.com/mikey-austin/media_utopia/internal/modules/podcast_library"
@@ -290,6 +291,39 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
+	if cfg.Modules.Go2RTCLibrary.Enabled {
+		if moduleOnly == "" || moduleOnly == "go2rtc" {
+			timeout := time.Duration(cfg.Modules.Go2RTCLibrary.TimeoutMS) * time.Millisecond
+			refresh := time.Duration(cfg.Modules.Go2RTCLibrary.RefreshIntervalMS) * time.Millisecond
+			durations, err := parseDurations(cfg.Modules.Go2RTCLibrary.Durations)
+			if err != nil {
+				return nil, err
+			}
+			nodeID, err := buildNodeID("library", cfg.Modules.Go2RTCLibrary.Provider, cfg.Server.Namespace, cfg.Modules.Go2RTCLibrary.Resource)
+			if err != nil {
+				return nil, err
+			}
+			mod, err := go2rtclibrary.NewModule(logger.With(zap.String("module", "go2rtc")), client, go2rtclibrary.Config{
+				NodeID:          nodeID,
+				TopicBase:       cfg.Server.TopicBase,
+				Name:            cfg.Modules.Go2RTCLibrary.Name,
+				BaseURL:         cfg.Modules.Go2RTCLibrary.BaseURL,
+				Username:        cfg.Modules.Go2RTCLibrary.Username,
+				Password:        cfg.Modules.Go2RTCLibrary.Password,
+				Durations:       durations,
+				RefreshInterval: refresh,
+				Timeout:         timeout,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "go2rtc",
+				Run:  mod.Run,
+			})
+		}
+	}
+
 	if cfg.Modules.RendererGStreamer.Enabled {
 		if moduleOnly == "" || moduleOnly == "renderer_gstreamer" {
 			crossfade := time.Duration(cfg.Modules.RendererGStreamer.CrossfadeMS) * time.Millisecond
@@ -365,6 +399,9 @@ func enabledModules(cfg mud.Config) []string {
 	if cfg.Modules.PodcastLibrary.Enabled {
 		out = append(out, "podcast")
 	}
+	if cfg.Modules.Go2RTCLibrary.Enabled {
+		out = append(out, "go2rtc")
+	}
 	if cfg.Modules.RendererGStreamer.Enabled {
 		out = append(out, "renderer_gstreamer")
 	}
@@ -388,6 +425,22 @@ func buildNodeID(kind string, provider string, namespace string, resource string
 		resource = "default"
 	}
 	return fmt.Sprintf("mu:%s:%s:%s:%s", kind, provider, namespace, resource), nil
+}
+
+func parseDurations(inputs []string) ([]time.Duration, error) {
+	out := []time.Duration{}
+	for _, raw := range inputs {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		parsed, err := time.ParseDuration(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("invalid duration %q", trimmed)
+		}
+		out = append(out, parsed)
+	}
+	return out, nil
 }
 
 func printResolvedConfig(cfg mud.Config) error {

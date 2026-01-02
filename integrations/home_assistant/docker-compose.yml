@@ -10,8 +10,11 @@ services:
     volumes:
       - ./ha_config:/config
       - ./custom_components/mu:/config/custom_components/mu
+      - ./ha_config/ca:/config/ca:ro
     environment:
       - TZ=UTC
+      - SSL_CERT_FILE=/config/ca/ca.crt
+      - SSL_CERT_DIR=/config/ca
     depends_on:
       - mqtt
 

@@ -37,7 +37,7 @@ This repository contains:
 - (Planned) reference implementations:
   - playlist server
   - renderer bridges (UPnP, Kodi)
-  - library bridges (UPnP, Jellyfin, Podcasts)
+  - library bridges (UPnP, Jellyfin, Podcasts, go2rtc)
   - `mu` CLI
   - Home Assistant MQTT Discovery mapping
 

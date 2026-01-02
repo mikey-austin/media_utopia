@@ -52,6 +52,7 @@ type ModulesConfig struct {
 	BridgeUPNPLibrary     BridgeUPNPLibraryConfig `toml:"bridge_upnp_library"`
 	BridgeJellyfinLibrary JellyfinLibraryConfig   `toml:"bridge_jellyfin_library"`
 	PodcastLibrary        PodcastLibraryConfig    `toml:"podcast"`
+	Go2RTCLibrary         Go2RTCLibraryConfig     `toml:"go2rtc"`
 	EmbeddedMQTT          EmbeddedMQTTConfig      `toml:"embedded_mqtt"`
 }
 
@@ -121,6 +122,20 @@ type PodcastLibraryConfig struct {
 	CacheDir          string   `toml:"cache_dir"`
 	TimeoutMS         int64    `toml:"timeout_ms"`
 	ReverseSortByDate bool     `toml:"reverse_sort_by_date"`
+}
+
+// Go2RTCLibraryConfig configures the go2rtc library module.
+type Go2RTCLibraryConfig struct {
+	Enabled           bool     `toml:"enabled"`
+	Name              string   `toml:"name"`
+	Provider          string   `toml:"provider"`
+	Resource          string   `toml:"resource"`
+	BaseURL           string   `toml:"base_url"`
+	Username          string   `toml:"username"`
+	Password          string   `toml:"password"`
+	Durations         []string `toml:"durations"`
+	RefreshIntervalMS int64    `toml:"refresh_interval_ms"`
+	TimeoutMS         int64    `toml:"timeout_ms"`
 }
 
 // EmbeddedMQTTConfig configures the embedded MQTT broker.
