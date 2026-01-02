@@ -8,9 +8,15 @@ import (
 
 func TestBuildModulesModuleOnlyFilter(t *testing.T) {
 	cfg := mud.Config{}
-	cfg.Modules.Playlist.Enabled = true
-	cfg.Modules.Playlist.Provider = "plsrv"
-	cfg.Modules.Playlist.StoragePath = "/tmp"
+	cfg.Modules.Playlist = mud.ModuleConfigSet[mud.PlaylistConfig]{
+		Items: map[string]mud.PlaylistConfig{
+			"default": {
+				Enabled:     true,
+				Provider:    "plsrv",
+				StoragePath: "/tmp",
+			},
+		},
+	}
 	cfg.Server.Identity = "test"
 	cfg.Server.Namespace = "test"
 

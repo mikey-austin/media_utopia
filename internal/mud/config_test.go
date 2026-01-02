@@ -29,7 +29,8 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Server.Broker != "mqtt://localhost" {
 		t.Fatalf("expected broker")
 	}
-	if !cfg.Modules.Playlist.Enabled {
+	items := cfg.Modules.Playlist.List()
+	if len(items) != 1 || !items[0].Config.Enabled {
 		t.Fatalf("expected playlist enabled")
 	}
 }

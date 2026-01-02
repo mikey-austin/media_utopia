@@ -161,6 +161,27 @@ tls_cert = ""
 tls_key = ""
 ```
 
+### Multiple Instances
+
+Most modules support multiple instances by using subtables. The instance key
+can be reused as the default `resource` when one is not provided.
+
+```toml
+[modules.renderer_gstreamer.office]
+enabled = true
+provider = "gstreamer"
+resource = "office"
+pipeline = "playbin uri={url} volume={volume}"
+
+[modules.renderer_gstreamer.lounge]
+enabled = true
+provider = "gstreamer"
+resource = "lounge"
+pipeline = "playbin uri={url} volume={volume}"
+```
+
+Embedded MQTT does not support multiple instances.
+
 ## GStreamer Pipeline Notes
 
 The renderer uses a template string for the `gst-launch-1.0` pipeline. The

@@ -212,18 +212,47 @@ func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase s
 
 func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger, moduleOnly string, skipEmbedded bool) ([]mud.ModuleRunner, error) {
 	modules := []mud.ModuleRunner{}
-	if cfg.Modules.Playlist.Enabled {
-		if moduleOnly == "" || moduleOnly == "playlist" {
-			nodeID, err := buildNodeID("playlist", cfg.Modules.Playlist.Provider, cfg.Server.Namespace, cfg.Modules.Playlist.Resource)
+	nodeIDs := map[string]string{}
+	ensureUnique := func(nodeID string, name string) error {
+		if nodeID == "" {
+			return nil
+		}
+		if existing, ok := nodeIDs[nodeID]; ok {
+			return fmt.Errorf("node_id %s used by %s and %s", nodeID, existing, name)
+		}
+		nodeIDs[nodeID] = name
+		return nil
+	}
+	resourceFor := func(key string, resource string) string {
+		if strings.TrimSpace(resource) != "" {
+			return resource
+		}
+		if key == "" || key == "default" {
+			return "default"
+		}
+		return key
+	}
+
+	if moduleOnly == "" || moduleOnly == "playlist" {
+		for _, item := range cfg.Modules.Playlist.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("playlist", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "playlist"); err != nil {
 				return nil, err
 			}
 			pl, err := playlist.NewModule(logger.With(zap.String("module", "playlist")), client, playlist.Config{
 				NodeID:      nodeID,
 				TopicBase:   cfg.Server.TopicBase,
-				StoragePath: cfg.Modules.Playlist.StoragePath,
+				StoragePath: cfgItem.StoragePath,
 				Identity:    cfg.Server.Identity,
-				Name:        cfg.Modules.Playlist.Name,
+				Name:        cfgItem.Name,
 			})
 			if err != nil {
 				return nil, err
@@ -235,24 +264,32 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
-	if cfg.Modules.BridgeJellyfinLibrary.Enabled {
-		if moduleOnly == "" || moduleOnly == "bridge_jellyfin_library" {
-			timeout := time.Duration(cfg.Modules.BridgeJellyfinLibrary.TimeoutMS) * time.Millisecond
-			cacheTTL := time.Duration(cfg.Modules.BridgeJellyfinLibrary.CacheTTLMS) * time.Millisecond
-			nodeID, err := buildNodeID("library", cfg.Modules.BridgeJellyfinLibrary.Provider, cfg.Server.Namespace, cfg.Modules.BridgeJellyfinLibrary.Resource)
+	if moduleOnly == "" || moduleOnly == "bridge_jellyfin_library" {
+		for _, item := range cfg.Modules.BridgeJellyfinLibrary.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
+			cacheTTL := time.Duration(cfgItem.CacheTTLMS) * time.Millisecond
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("library", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "bridge_jellyfin_library"); err != nil {
 				return nil, err
 			}
 			jf, err := jellyfinlibrary.NewModule(logger.With(zap.String("module", "bridge_jellyfin_library")), client, jellyfinlibrary.Config{
 				NodeID:    nodeID,
 				TopicBase: cfg.Server.TopicBase,
-				Name:      cfg.Modules.BridgeJellyfinLibrary.Name,
-				BaseURL:   cfg.Modules.BridgeJellyfinLibrary.BaseURL,
-				APIKey:    cfg.Modules.BridgeJellyfinLibrary.APIKey,
-				UserID:    cfg.Modules.BridgeJellyfinLibrary.UserID,
+				Name:      cfgItem.Name,
+				BaseURL:   cfgItem.BaseURL,
+				APIKey:    cfgItem.APIKey,
+				UserID:    cfgItem.UserID,
 				Timeout:   timeout,
 				CacheTTL:  cacheTTL,
-				CacheSize: cfg.Modules.BridgeJellyfinLibrary.CacheSize,
+				CacheSize: cfgItem.CacheSize,
 			})
 			if err != nil {
 				return nil, err
@@ -264,23 +301,31 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
-	if cfg.Modules.PodcastLibrary.Enabled {
-		if moduleOnly == "" || moduleOnly == "podcast" {
-			timeout := time.Duration(cfg.Modules.PodcastLibrary.TimeoutMS) * time.Millisecond
-			refresh := time.Duration(cfg.Modules.PodcastLibrary.RefreshIntervalMS) * time.Millisecond
-			nodeID, err := buildNodeID("library", cfg.Modules.PodcastLibrary.Provider, cfg.Server.Namespace, cfg.Modules.PodcastLibrary.Resource)
+	if moduleOnly == "" || moduleOnly == "podcast" {
+		for _, item := range cfg.Modules.PodcastLibrary.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
+			refresh := time.Duration(cfgItem.RefreshIntervalMS) * time.Millisecond
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("library", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "podcast"); err != nil {
 				return nil, err
 			}
 			mod, err := podcastlibrary.NewModule(logger.With(zap.String("module", "podcast")), client, podcastlibrary.Config{
 				NodeID:            nodeID,
 				TopicBase:         cfg.Server.TopicBase,
-				Name:              cfg.Modules.PodcastLibrary.Name,
-				Feeds:             cfg.Modules.PodcastLibrary.Feeds,
+				Name:              cfgItem.Name,
+				Feeds:             cfgItem.Feeds,
 				RefreshInterval:   refresh,
-				CacheDir:          cfg.Modules.PodcastLibrary.CacheDir,
+				CacheDir:          cfgItem.CacheDir,
 				Timeout:           timeout,
-				ReverseSortByDate: cfg.Modules.PodcastLibrary.ReverseSortByDate,
+				ReverseSortByDate: cfgItem.ReverseSortByDate,
 			})
 			if err != nil {
 				return nil, err
@@ -292,25 +337,33 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
-	if cfg.Modules.Go2RTCLibrary.Enabled {
-		if moduleOnly == "" || moduleOnly == "go2rtc" {
-			timeout := time.Duration(cfg.Modules.Go2RTCLibrary.TimeoutMS) * time.Millisecond
-			refresh := time.Duration(cfg.Modules.Go2RTCLibrary.RefreshIntervalMS) * time.Millisecond
-			durations, err := parseDurations(cfg.Modules.Go2RTCLibrary.Durations)
+	if moduleOnly == "" || moduleOnly == "go2rtc" {
+		for _, item := range cfg.Modules.Go2RTCLibrary.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
+			refresh := time.Duration(cfgItem.RefreshIntervalMS) * time.Millisecond
+			durations, err := parseDurations(cfgItem.Durations)
 			if err != nil {
 				return nil, err
 			}
-			nodeID, err := buildNodeID("library", cfg.Modules.Go2RTCLibrary.Provider, cfg.Server.Namespace, cfg.Modules.Go2RTCLibrary.Resource)
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("library", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "go2rtc"); err != nil {
 				return nil, err
 			}
 			mod, err := go2rtclibrary.NewModule(logger.With(zap.String("module", "go2rtc")), client, go2rtclibrary.Config{
 				NodeID:          nodeID,
 				TopicBase:       cfg.Server.TopicBase,
-				Name:            cfg.Modules.Go2RTCLibrary.Name,
-				BaseURL:         cfg.Modules.Go2RTCLibrary.BaseURL,
-				Username:        cfg.Modules.Go2RTCLibrary.Username,
-				Password:        cfg.Modules.Go2RTCLibrary.Password,
+				Name:            cfgItem.Name,
+				BaseURL:         cfgItem.BaseURL,
+				Username:        cfgItem.Username,
+				Password:        cfgItem.Password,
 				Durations:       durations,
 				RefreshInterval: refresh,
 				Timeout:         timeout,
@@ -325,19 +378,27 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
-	if cfg.Modules.RendererGStreamer.Enabled {
-		if moduleOnly == "" || moduleOnly == "renderer_gstreamer" {
-			crossfade := time.Duration(cfg.Modules.RendererGStreamer.CrossfadeMS) * time.Millisecond
-			nodeID, err := buildNodeID("renderer", cfg.Modules.RendererGStreamer.Provider, cfg.Server.Namespace, cfg.Modules.RendererGStreamer.Resource)
+	if moduleOnly == "" || moduleOnly == "renderer_gstreamer" {
+		for _, item := range cfg.Modules.RendererGStreamer.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			crossfade := time.Duration(cfgItem.CrossfadeMS) * time.Millisecond
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("renderer", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "renderer_gstreamer"); err != nil {
 				return nil, err
 			}
 			mod, err := renderergstreamer.NewModule(logger.With(zap.String("module", "renderer_gstreamer")), client, renderergstreamer.Config{
 				NodeID:       nodeID,
 				TopicBase:    cfg.Server.TopicBase,
-				Name:         cfg.Modules.RendererGStreamer.Name,
-				Pipeline:     cfg.Modules.RendererGStreamer.Pipeline,
-				Device:       cfg.Modules.RendererGStreamer.Device,
+				Name:         cfgItem.Name,
+				Pipeline:     cfgItem.Pipeline,
+				Device:       cfgItem.Device,
 				Crossfade:    crossfade,
 				Volume:       1.0,
 				PublishState: true,
@@ -352,20 +413,28 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
-	if cfg.Modules.RendererKodi.Enabled {
-		if moduleOnly == "" || moduleOnly == "renderer_kodi" {
-			timeout := time.Duration(cfg.Modules.RendererKodi.TimeoutMS) * time.Millisecond
-			nodeID, err := buildNodeID("renderer", cfg.Modules.RendererKodi.Provider, cfg.Server.Namespace, cfg.Modules.RendererKodi.Resource)
+	if moduleOnly == "" || moduleOnly == "renderer_kodi" {
+		for _, item := range cfg.Modules.RendererKodi.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("renderer", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "renderer_kodi"); err != nil {
 				return nil, err
 			}
 			mod, err := rendererkodi.NewModule(logger.With(zap.String("module", "renderer_kodi")), client, rendererkodi.Config{
 				NodeID:       nodeID,
 				TopicBase:    cfg.Server.TopicBase,
-				Name:         cfg.Modules.RendererKodi.Name,
-				BaseURL:      cfg.Modules.RendererKodi.BaseURL,
-				Username:     cfg.Modules.RendererKodi.Username,
-				Password:     cfg.Modules.RendererKodi.Password,
+				Name:         cfgItem.Name,
+				BaseURL:      cfgItem.BaseURL,
+				Username:     cfgItem.Username,
+				Password:     cfgItem.Password,
 				Timeout:      timeout,
 				Volume:       1.0,
 				PublishState: true,
@@ -380,20 +449,28 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
-	if cfg.Modules.RendererVLC.Enabled {
-		if moduleOnly == "" || moduleOnly == "renderer_vlc" {
-			timeout := time.Duration(cfg.Modules.RendererVLC.TimeoutMS) * time.Millisecond
-			nodeID, err := buildNodeID("renderer", cfg.Modules.RendererVLC.Provider, cfg.Server.Namespace, cfg.Modules.RendererVLC.Resource)
+	if moduleOnly == "" || moduleOnly == "renderer_vlc" {
+		for _, item := range cfg.Modules.RendererVLC.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("renderer", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "renderer_vlc"); err != nil {
 				return nil, err
 			}
 			mod, err := renderervlc.NewModule(logger.With(zap.String("module", "renderer_vlc")), client, renderervlc.Config{
 				NodeID:       nodeID,
 				TopicBase:    cfg.Server.TopicBase,
-				Name:         cfg.Modules.RendererVLC.Name,
-				BaseURL:      cfg.Modules.RendererVLC.BaseURL,
-				Username:     cfg.Modules.RendererVLC.Username,
-				Password:     cfg.Modules.RendererVLC.Password,
+				Name:         cfgItem.Name,
+				BaseURL:      cfgItem.BaseURL,
+				Username:     cfgItem.Username,
+				Password:     cfgItem.Password,
 				Timeout:      timeout,
 				Volume:       1.0,
 				PublishState: true,
@@ -419,29 +496,53 @@ func enabledModules(cfg mud.Config) []string {
 	if cfg.Modules.EmbeddedMQTT.Enabled {
 		out = append(out, "embedded_mqtt")
 	}
-	if cfg.Modules.Playlist.Enabled {
-		out = append(out, "playlist")
+	for _, item := range cfg.Modules.Playlist.List() {
+		if item.Config.Enabled {
+			out = append(out, "playlist")
+			break
+		}
 	}
-	if cfg.Modules.BridgeJellyfinLibrary.Enabled {
-		out = append(out, "bridge_jellyfin_library")
+	for _, item := range cfg.Modules.BridgeJellyfinLibrary.List() {
+		if item.Config.Enabled {
+			out = append(out, "bridge_jellyfin_library")
+			break
+		}
 	}
-	if cfg.Modules.PodcastLibrary.Enabled {
-		out = append(out, "podcast")
+	for _, item := range cfg.Modules.PodcastLibrary.List() {
+		if item.Config.Enabled {
+			out = append(out, "podcast")
+			break
+		}
 	}
-	if cfg.Modules.Go2RTCLibrary.Enabled {
-		out = append(out, "go2rtc")
+	for _, item := range cfg.Modules.Go2RTCLibrary.List() {
+		if item.Config.Enabled {
+			out = append(out, "go2rtc")
+			break
+		}
 	}
-	if cfg.Modules.RendererGStreamer.Enabled {
-		out = append(out, "renderer_gstreamer")
+	for _, item := range cfg.Modules.RendererGStreamer.List() {
+		if item.Config.Enabled {
+			out = append(out, "renderer_gstreamer")
+			break
+		}
 	}
-	if cfg.Modules.RendererKodi.Enabled {
-		out = append(out, "renderer_kodi")
+	for _, item := range cfg.Modules.RendererKodi.List() {
+		if item.Config.Enabled {
+			out = append(out, "renderer_kodi")
+			break
+		}
 	}
-	if cfg.Modules.RendererVLC.Enabled {
-		out = append(out, "renderer_vlc")
+	for _, item := range cfg.Modules.RendererVLC.List() {
+		if item.Config.Enabled {
+			out = append(out, "renderer_vlc")
+			break
+		}
 	}
-	if cfg.Modules.BridgeUPNPLibrary.Enabled {
-		out = append(out, "bridge_upnp_library")
+	for _, item := range cfg.Modules.BridgeUPNPLibrary.List() {
+		if item.Config.Enabled {
+			out = append(out, "bridge_upnp_library")
+			break
+		}
 	}
 	return out
 }
