@@ -479,6 +479,21 @@ class MudBridge:
             sources = item.get("sources") or []
             if item_id and sources:
                 results[item_id] = sources
+        if results:
+            return results
+        for item_id in item_ids:
+            reply = await self._request(
+                library_id,
+                "library.resolve",
+                {"itemId": item_id},
+                need_lease=False,
+                timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
+            )
+            if reply is None or reply.get("type") != "ack":
+                continue
+            sources = (reply.get("body") or {}).get("sources") or []
+            if sources:
+                results[item_id] = sources
         return results
 
     async def _publish_renderer_state(self, node_id: str, state: dict[str, Any]) -> None:
@@ -634,7 +649,7 @@ class MudBridge:
         await self._send_renderer_command(node_id, "playback.play", {"index": 0})
 
     async def async_play(self, node_id: str) -> None:
-        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        await self._send_renderer_command(node_id, "playback.play", {})
 
     async def async_pause(self, node_id: str) -> None:
         await self._send_renderer_command(node_id, "playback.pause", {})

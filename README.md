@@ -36,7 +36,7 @@ This repository contains:
 - Design rationale and decisions (`docs/design/`)
 - (Planned) reference implementations:
   - playlist server
-  - renderer bridges (UPnP, Kodi)
+  - renderer bridges (UPnP, Kodi, VLC)
   - library bridges (UPnP, Jellyfin, Podcasts, go2rtc)
   - `mu` CLI
   - Home Assistant MQTT Discovery mapping

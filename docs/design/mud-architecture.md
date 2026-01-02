@@ -37,6 +37,7 @@ Planned modules:
 - `playlist`: playlist server (required for v1)
 - `renderer_gstreamer`: native renderer using GStreamer pipelines
 - `renderer_kodi`: Kodi renderer via JSON-RPC
+- `renderer_vlc`: VLC renderer via HTTP RC
 - `bridge_upnp_library`: UPnP library bridge
 - `bridge_jellyfin_library`: Jellyfin library bridge
 - `podcast`: RSS/Podcast library module
@@ -92,6 +93,16 @@ resource = "default"
 base_url = "http://kodi.local:8080"
 username = "kodi"
 password = "kodi"
+timeout_ms = 5000
+
+[modules.renderer_vlc]
+enabled = true
+name = "Living Room VLC"
+provider = "vlc"
+resource = "default"
+base_url = "http://vlc.local:8080"
+username = ""
+password = "secret"
 timeout_ms = 5000
 
 [modules.bridge_upnp_library]
@@ -225,3 +236,12 @@ Authentication modes:
 - Health endpoints for module status.
 - Backoff/restart policy per module.
 - Metrics export (Prometheus).
+## VLC HTTP RC Notes
+
+Start VLC with the HTTP interface enabled:
+
+```bash
+vlc --intf dummy --extraintf http --http-host 0.0.0.0 --http-port 8080 --http-password "secret"
+```
+
+Then point `modules.renderer_vlc.base_url` at `http://<host>:8080`.

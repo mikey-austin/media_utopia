@@ -20,6 +20,7 @@ import (
 	podcastlibrary "github.com/mikey-austin/media_utopia/internal/modules/podcast_library"
 	renderergstreamer "github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
 	rendererkodi "github.com/mikey-austin/media_utopia/internal/modules/renderer_kodi"
+	renderervlc "github.com/mikey-austin/media_utopia/internal/modules/renderer_vlc"
 	"github.com/mikey-austin/media_utopia/internal/mud"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 	"go.uber.org/zap"
@@ -379,6 +380,34 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
+	if cfg.Modules.RendererVLC.Enabled {
+		if moduleOnly == "" || moduleOnly == "renderer_vlc" {
+			timeout := time.Duration(cfg.Modules.RendererVLC.TimeoutMS) * time.Millisecond
+			nodeID, err := buildNodeID("renderer", cfg.Modules.RendererVLC.Provider, cfg.Server.Namespace, cfg.Modules.RendererVLC.Resource)
+			if err != nil {
+				return nil, err
+			}
+			mod, err := renderervlc.NewModule(logger.With(zap.String("module", "renderer_vlc")), client, renderervlc.Config{
+				NodeID:       nodeID,
+				TopicBase:    cfg.Server.TopicBase,
+				Name:         cfg.Modules.RendererVLC.Name,
+				BaseURL:      cfg.Modules.RendererVLC.BaseURL,
+				Username:     cfg.Modules.RendererVLC.Username,
+				Password:     cfg.Modules.RendererVLC.Password,
+				Timeout:      timeout,
+				Volume:       1.0,
+				PublishState: true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "renderer_vlc",
+				Run:  mod.Run,
+			})
+		}
+	}
+
 	if moduleOnly != "" && len(modules) == 0 {
 		return nil, errors.New("no modules enabled")
 	}
@@ -407,6 +436,9 @@ func enabledModules(cfg mud.Config) []string {
 	}
 	if cfg.Modules.RendererKodi.Enabled {
 		out = append(out, "renderer_kodi")
+	}
+	if cfg.Modules.RendererVLC.Enabled {
+		out = append(out, "renderer_vlc")
 	}
 	if cfg.Modules.BridgeUPNPLibrary.Enabled {
 		out = append(out, "bridge_upnp_library")
