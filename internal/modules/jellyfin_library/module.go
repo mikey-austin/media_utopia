@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -403,6 +404,7 @@ type jfItem struct {
 	Name            string            `json:"Name"`
 	Type            string            `json:"Type"`
 	MediaType       string            `json:"MediaType"`
+	CollectionType  string            `json:"CollectionType"`
 	Overview        string            `json:"Overview"`
 	RunTimeTicks    int64             `json:"RunTimeTicks"`
 	Artists         []string          `json:"Artists"`
@@ -425,38 +427,82 @@ type jfMediaSource struct {
 
 func (m *Module) fetchItems(containerID string, start int64, count int64, search string, types []string, recursive bool) ([]libraryItem, int64, error) {
 	if containerID != "" {
+		if strings.HasPrefix(containerID, musicArtistPrefix) {
+			libraryID := strings.TrimPrefix(containerID, musicArtistPrefix)
+			return m.fetchMusicArtists(libraryID, start, count)
+		}
+		if strings.HasPrefix(containerID, musicGenrePrefix) {
+			libraryID := strings.TrimPrefix(containerID, musicGenrePrefix)
+			return m.fetchMusicGenres(libraryID, start, count)
+		}
+		if strings.HasPrefix(containerID, musicFilesPrefix) {
+			libraryID, parentID := parseFilesContainer(containerID)
+			if parentID == "" {
+				parentID = libraryID
+			}
+			return m.fetchFilesItems(libraryID, parentID, start, count, true)
+		}
 		item, err := m.fetchItem(containerID)
-		if err == nil && strings.EqualFold(item.Type, "Playlist") {
-			children, err := m.fetchPlaylistItems(containerID, start, count)
-			if err != nil {
-				return nil, 0, err
-			}
-			items := make([]libraryItem, 0, len(children))
-			for _, child := range children {
-				imageTag := ""
-				if child.ImageTags != nil {
-					imageTag = child.ImageTags["Primary"]
+		if err == nil {
+			if strings.EqualFold(item.Type, "Playlist") {
+				children, err := m.fetchPlaylistItems(containerID, start, count)
+				if err != nil {
+					return nil, 0, err
 				}
-				imageURL := ""
-				if imageTag != "" {
-					imageURL = m.imageURL(child.ID)
+				items := make([]libraryItem, 0, len(children))
+				for _, child := range children {
+					items = append(items, m.libraryItemFromJF(child))
 				}
-				items = append(items, libraryItem{
-					ItemID:      child.ID,
-					Name:        child.Name,
-					Type:        child.Type,
-					MediaType:   child.MediaType,
-					Artists:     child.Artists,
-					Album:       child.Album,
-					ContainerID: child.ParentID,
-					Overview:    child.Overview,
-					DurationMS:  ticksToMS(child.RunTimeTicks),
-					ImageURL:    imageURL,
-				})
+				return items, int64(len(items)), nil
 			}
-			return items, int64(len(items)), nil
+			if isMusicLibrary(item) {
+				return m.musicLibraryRootItems(item.ID), 3, nil
+			}
+			if strings.EqualFold(item.Type, "Folder") {
+				return m.fetchFilesItems("", item.ID, start, count, true)
+			}
+			if strings.EqualFold(item.Type, "MusicArtist") {
+				return m.fetchMusicAlbumsByArtist(item.ID, start, count)
+			}
+			if strings.EqualFold(item.Type, "MusicGenre") {
+				return m.fetchMusicAlbumsByGenre(item.ID, start, count)
+			}
+			if strings.EqualFold(item.Type, "MusicAlbum") {
+				return m.fetchAlbumTracks(item.ID, start, count)
+			}
 		}
 	}
+	return m.fetchItemsRaw(containerID, start, count, search, types, recursive)
+}
+
+func (m *Module) fetchFilesItems(libraryID string, parentID string, start int64, count int64, forcePage bool) ([]libraryItem, int64, error) {
+	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
+	params := url.Values{}
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("IncludeItemTypes", "Folder,Audio,MusicAlbum,MusicVideo,Movie,Series,Episode,Video")
+	if strings.TrimSpace(parentID) != "" {
+		params.Set("ParentId", parentID)
+	}
+	items, total, err := m.fetchItemsWithParams(endpoint, params)
+	if err != nil {
+		return nil, 0, err
+	}
+	if strings.TrimSpace(libraryID) != "" {
+		for i := range items {
+			if isFilesContainerType(items[i].Type) {
+				items[i].ItemID = musicFilesPrefix + libraryID + ":" + items[i].ItemID
+			}
+		}
+	}
+	if forcePage && count > 0 && int64(len(items)) >= count {
+		total = start + int64(len(items)) + 1
+	}
+	return items, total, nil
+}
+
+func (m *Module) fetchItemsRaw(containerID string, start int64, count int64, search string, types []string, recursive bool) ([]libraryItem, int64, error) {
 	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
 	params := url.Values{}
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
@@ -464,7 +510,7 @@ func (m *Module) fetchItems(containerID string, start int64, count int64, search
 	if recursive {
 		params.Set("Recursive", "true")
 	}
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags")
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
 	typesParam := "Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video"
 	if len(types) > 0 {
 		typesParam = strings.Join(types, ",")
@@ -476,36 +522,203 @@ func (m *Module) fetchItems(containerID string, start int64, count int64, search
 	if search != "" {
 		params.Set("SearchTerm", search)
 	}
+	return m.fetchItemsWithParams(endpoint, params)
+}
 
+func (m *Module) fetchItemsWithParams(endpoint string, params url.Values) ([]libraryItem, int64, error) {
+	if params.Get("EnableTotalRecordCount") == "" {
+		params.Set("EnableTotalRecordCount", "true")
+	}
 	var resp jfItemsResponse
 	if err := m.doJSON("GET", endpoint, params, nil, &resp); err != nil {
 		return nil, 0, err
 	}
-
 	items := make([]libraryItem, 0, len(resp.Items))
 	for _, item := range resp.Items {
-		imageTag := ""
-		if item.ImageTags != nil {
-			imageTag = item.ImageTags["Primary"]
-		}
-		imageURL := ""
-		if imageTag != "" {
-			imageURL = m.imageURL(item.ID)
-		}
-		items = append(items, libraryItem{
-			ItemID:      item.ID,
-			Name:        item.Name,
-			Type:        item.Type,
-			MediaType:   item.MediaType,
-			Artists:     item.Artists,
-			Album:       item.Album,
-			ContainerID: item.ParentID,
-			Overview:    item.Overview,
-			DurationMS:  ticksToMS(item.RunTimeTicks),
-			ImageURL:    imageURL,
-		})
+		items = append(items, m.libraryItemFromJF(item))
 	}
-	return items, resp.TotalRecordCount, nil
+	start := parseIntParam(params.Get("StartIndex"))
+	limit := parseIntParam(params.Get("Limit"))
+	total := adjustTotalCount(params, resp.TotalRecordCount, int64(len(items)))
+	if total <= start+int64(len(items)) && int64(len(items)) > 0 {
+		if m.hasMoreItems(endpoint, params, start+int64(len(items)), limit) {
+			total = start + int64(len(items)) + 1
+		}
+	}
+	return items, total, nil
+}
+
+func adjustTotalCount(params url.Values, total int64, count int64) int64 {
+	start := parseIntParam(params.Get("StartIndex"))
+	limit := parseIntParam(params.Get("Limit"))
+	if count == 0 {
+		return total
+	}
+	if limit > 0 && count >= limit && total <= start+count {
+		return start + count + 1
+	}
+	if total == 0 {
+		return start + count
+	}
+	return total
+}
+
+func parseIntParam(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	out, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return out
+}
+
+func (m *Module) hasMoreItems(endpoint string, params url.Values, start int64, limit int64) bool {
+	nextParams := cloneValues(params)
+	nextParams.Set("StartIndex", fmt.Sprintf("%d", start))
+	if limit > 0 {
+		nextParams.Set("Limit", "1")
+	}
+	var resp jfItemsResponse
+	if err := m.doJSON("GET", endpoint, nextParams, nil, &resp); err != nil {
+		return false
+	}
+	return len(resp.Items) > 0
+}
+
+func cloneValues(src url.Values) url.Values {
+	out := url.Values{}
+	for key, vals := range src {
+		copied := make([]string, len(vals))
+		copy(copied, vals)
+		out[key] = copied
+	}
+	return out
+}
+
+func (m *Module) libraryItemFromJF(item jfItem) libraryItem {
+	imageTag := ""
+	if item.ImageTags != nil {
+		imageTag = item.ImageTags["Primary"]
+	}
+	imageURL := ""
+	if imageTag != "" {
+		imageURL = m.imageURL(item.ID)
+	}
+	return libraryItem{
+		ItemID:      item.ID,
+		Name:        item.Name,
+		Type:        item.Type,
+		MediaType:   item.MediaType,
+		Artists:     item.Artists,
+		Album:       item.Album,
+		ContainerID: item.ParentID,
+		Overview:    item.Overview,
+		DurationMS:  ticksToMS(item.RunTimeTicks),
+		ImageURL:    imageURL,
+	}
+}
+
+const (
+	musicArtistPrefix = "music:artist:"
+	musicGenrePrefix  = "music:genre:"
+	musicFilesPrefix  = "music:files:"
+)
+
+func isMusicLibrary(item jfItem) bool {
+	return strings.EqualFold(item.Type, "CollectionFolder") && strings.EqualFold(item.CollectionType, "music")
+}
+
+func (m *Module) musicLibraryRootItems(libraryID string) []libraryItem {
+	return []libraryItem{
+		{ItemID: musicArtistPrefix + libraryID, Name: "Artist", Type: "Folder"},
+		{ItemID: musicGenrePrefix + libraryID, Name: "Genre", Type: "Folder"},
+		{ItemID: musicFilesPrefix + libraryID, Name: "Files", Type: "Folder"},
+	}
+}
+
+func parseFilesContainer(containerID string) (string, string) {
+	trimmed := strings.TrimPrefix(containerID, musicFilesPrefix)
+	parts := strings.SplitN(trimmed, ":", 2)
+	libraryID := parts[0]
+	if len(parts) == 2 {
+		return libraryID, parts[1]
+	}
+	return libraryID, ""
+}
+
+func isFilesContainerType(itemType string) bool {
+	switch strings.ToLower(itemType) {
+	case "folder", "musicalbum", "musicartist", "musicgenre", "collectionfolder":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Module) fetchMusicArtists(libraryID string, start int64, count int64) ([]libraryItem, int64, error) {
+	endpoint := "/Artists"
+	params := url.Values{}
+	params.Set("UserId", m.config.UserID)
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Recursive", "true")
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	if strings.TrimSpace(libraryID) != "" {
+		params.Set("ParentId", libraryID)
+	}
+	return m.fetchItemsWithParams(endpoint, params)
+}
+
+func (m *Module) fetchMusicGenres(libraryID string, start int64, count int64) ([]libraryItem, int64, error) {
+	endpoint := "/Genres"
+	params := url.Values{}
+	params.Set("UserId", m.config.UserID)
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Recursive", "true")
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	if strings.TrimSpace(libraryID) != "" {
+		params.Set("ParentId", libraryID)
+	}
+	return m.fetchItemsWithParams(endpoint, params)
+}
+
+func (m *Module) fetchMusicAlbumsByArtist(artistID string, start int64, count int64) ([]libraryItem, int64, error) {
+	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
+	params := url.Values{}
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Recursive", "true")
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("IncludeItemTypes", "MusicAlbum")
+	params.Set("ArtistIds", artistID)
+	return m.fetchItemsWithParams(endpoint, params)
+}
+
+func (m *Module) fetchMusicAlbumsByGenre(genreID string, start int64, count int64) ([]libraryItem, int64, error) {
+	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
+	params := url.Values{}
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Recursive", "true")
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("IncludeItemTypes", "MusicAlbum")
+	params.Set("GenreIds", genreID)
+	return m.fetchItemsWithParams(endpoint, params)
+}
+
+func (m *Module) fetchAlbumTracks(albumID string, start int64, count int64) ([]libraryItem, int64, error) {
+	children, err := m.fetchChildItems(albumID, start, count)
+	if err != nil {
+		return nil, 0, err
+	}
+	items := make([]libraryItem, 0, len(children))
+	for _, child := range children {
+		items = append(items, m.libraryItemFromJF(child))
+	}
+	return items, int64(len(items)), nil
 }
 
 func (m *Module) fetchChildItems(parentID string, start int64, count int64) ([]jfItem, error) {
@@ -529,7 +742,7 @@ func (m *Module) fetchItem(itemID string) (jfItem, error) {
 	endpoint := fmt.Sprintf("/Items/%s", url.PathEscape(itemID))
 	params := url.Values{}
 	params.Set("UserId", m.config.UserID)
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags")
+	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
 
 	var item jfItem
 	if err := m.doJSON("GET", endpoint, params, nil, &item); err != nil {
