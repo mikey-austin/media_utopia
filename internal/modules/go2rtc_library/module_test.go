@@ -58,7 +58,7 @@ func TestBrowseContainerEntries(t *testing.T) {
 		}
 	}
 
-	live := seen["live:stream_f"]
+	live := seen["live-stream_f"]
 	if live.ItemID == "" {
 		t.Fatal("expected live item")
 	}
