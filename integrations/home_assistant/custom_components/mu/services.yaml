@@ -34,3 +34,23 @@ load_playlist:
             - auto
             - "yes"
             - "no"
+clear_queue:
+  name: Clear Queue
+  description: Clear the renderer queue.
+  fields:
+    renderer:
+      name: Renderer
+      description: Renderer node id or name.
+      required: true
+      selector:
+        text:
+shuffle_queue:
+  name: Shuffle Queue
+  description: Shuffle the renderer queue.
+  fields:
+    renderer:
+      name: Renderer
+      description: Renderer node id or name.
+      required: true
+      selector:
+        text:

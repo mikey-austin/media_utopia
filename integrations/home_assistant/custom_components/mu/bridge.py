@@ -179,6 +179,26 @@ class MudBridge:
             }
             await self.async_load_playlist(renderer_id, playlist_id, mode, resolve)
 
+        async def _clear_queue(call):
+            renderer = call.data.get("renderer")
+            if not renderer:
+                return
+            renderer_id = self._resolve_renderer(renderer)
+            if renderer_id is None:
+                return
+            await self._send_renderer_command(renderer_id, "queue.clear", {})
+
+        async def _shuffle_queue(call):
+            renderer = call.data.get("renderer")
+            if not renderer:
+                return
+            renderer_id = self._resolve_renderer(renderer)
+            if renderer_id is None:
+                return
+            await self._send_renderer_command(
+                renderer_id, "queue.shuffle", {"seed": int(time.time())}
+            )
+
         schema = vol.Schema(
             {
                 vol.Required("renderer"): str,
@@ -193,6 +213,14 @@ class MudBridge:
         )
         self.hass.services.async_register(
             DOMAIN, "load_playlist", _load_playlist, schema=schema
+        )
+
+        renderer_schema = vol.Schema({vol.Required("renderer"): str})
+        self.hass.services.async_register(
+            DOMAIN, "clear_queue", _clear_queue, schema=renderer_schema
+        )
+        self.hass.services.async_register(
+            DOMAIN, "shuffle_queue", _shuffle_queue, schema=renderer_schema
         )
 
     async def _playlist_loop(self) -> None:
@@ -1244,6 +1272,11 @@ class MudBridge:
             playlist_id = pl.get("playlistId")
             if not playlist_id:
                 continue
+            if pl.get("size") is None:
+                playlist = await self.async_fetch_playlist(playlist_id)
+                if playlist:
+                    entries = playlist.get("entries") or []
+                    pl["size"] = len(entries)
             self._playlists[playlist_id] = pl
             await self._ensure_playlist_discovery(playlist_id, pl)
 
@@ -1265,7 +1298,7 @@ class MudBridge:
             "payload_not_available": "offline",
             "enabled_by_default": True,
             "suggested_area": "Media Utopia",
-            "value_template": "{{ value_json.name }}",
+            "value_template": "{{ value_json.size }}",
             "json_attributes_topic": state_topic,
             "icon": "mdi:playlist-music",
         }
@@ -1274,6 +1307,7 @@ class MudBridge:
             "name": playlist.get("name"),
             "playlistId": playlist_id,
             "revision": playlist.get("revision"),
+            "size": playlist.get("size"),
         }
         await self._publish(state_topic, state_payload, retain=True)
         self._notify_playlist_listeners(playlist_id)

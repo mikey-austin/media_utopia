@@ -23,8 +23,11 @@ MQTT is configured by Home Assistant. The integration assumes the HA MQTT integr
   - Album art, title, artist, album, duration, position
 
 - **Playlist sensors**
-  - One sensor per playlist with name, id, revision
+  - One sensor per playlist with size, id, revision
+- **Queue sensors**
+  - Renderer queue length sensor
 - Load playlists via `mu.load_playlist` service (suitable for automations)
+- Clear and shuffle queues via `mu.clear_queue` and `mu.shuffle_queue`
 - **Snapshots**
   - Snapshot name text input per renderer
   - Save snapshot button per renderer
@@ -66,6 +69,11 @@ If your media sources use a self-signed TLS certificate (for go2rtc/Jellyfin/etc
 copy your CA cert to `integrations/home_assistant/ha_config/ca/ca.crt` (avoid symlinks),
 then restart the stack so Home Assistant trusts it. The compose file points
 `SSL_CERT_FILE` and `SSL_CERT_DIR` at that directory.
+
+Custom integration branding (optional):
+- The compose setup mounts `integrations/home_assistant/ha_config` as `/config`.
+- We include `integrations/home_assistant/ha_config/brands/mu/` with `icon.png` and
+  `dark_icon.png` so the integration card uses the custom logo.
 
 Option B: Use host networking (Linux-only):
 

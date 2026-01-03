@@ -53,6 +53,7 @@ class LeaseSensorManager:
             LeaseOwnerSensor(self._bridge, node_id),
             LeaseIDSensor(self._bridge, node_id),
             LeaseTTLSecondsSensor(self._bridge, node_id),
+            QueueLengthSensor(self._bridge, node_id),
         ]
         self._sensors[node_id] = sensors
         self._async_add_entities(sensors)
@@ -93,6 +94,10 @@ class LeaseSensorBase(SensorEntity):
     def _session(self) -> dict[str, Any]:
         state = self._bridge.get_renderer_state(self._node_id)
         return state.get("session") or {}
+
+    def _queue(self) -> dict[str, Any]:
+        state = self._bridge.get_renderer_state(self._node_id)
+        return state.get("queue") or {}
 
 
 class LeaseOwnerSensor(LeaseSensorBase):
@@ -167,3 +172,25 @@ class LeaseTTLSecondsSensor(LeaseSensorBase):
         if not isinstance(expires_at, (int, float)):
             return {}
         return {"lease_expires_at": datetime.fromtimestamp(float(expires_at), tz=timezone.utc).isoformat()}
+
+
+class QueueLengthSensor(LeaseSensorBase):
+    """Sensor for the current renderer queue length."""
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_renderer_queue_length_{safe}"
+
+    @property
+    def name(self) -> str | None:
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        base = renderer.get("name", self._node_id)
+        return f"{base} Queue Length"
+
+    @property
+    def native_value(self) -> int | None:
+        length = self._queue().get("length")
+        if isinstance(length, int):
+            return length
+        return None
