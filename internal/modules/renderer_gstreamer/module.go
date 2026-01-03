@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
@@ -38,13 +39,14 @@ type Config struct {
 
 // Module implements a GStreamer renderer.
 type Module struct {
-	log      *zap.Logger
-	client   mqttClient
-	engine   *renderercore.Engine
-	config   Config
-	cmdTopic string
-	mu       sync.Mutex
-	eosSeen  string
+	log                 *zap.Logger
+	client              mqttClient
+	engine              *renderercore.Engine
+	config              Config
+	cmdTopic            string
+	mu                  sync.Mutex
+	eosSeen             string
+	publishTimeoutUntil int64
 }
 
 // NewModule creates a renderer module.
@@ -82,9 +84,11 @@ func (m *Module) Run(ctx context.Context) error {
 		return err
 	}
 	if m.config.PublishState {
-		if err := m.publishState(); err != nil {
+		payload, err := m.buildStatePayload()
+		if err != nil {
 			return err
 		}
+		_ = m.publishStatePayload(payload)
 	}
 
 	go m.runPositionUpdates(ctx)
@@ -121,11 +125,11 @@ func (m *Module) publishPresence() error {
 }
 
 func (m *Module) publishState() error {
-	payload, err := json.Marshal(m.engine.State)
+	payload, err := m.buildStatePayload()
 	if err != nil {
 		return err
 	}
-	return m.client.Publish(mu.TopicState(m.config.TopicBase, m.config.NodeID), 1, true, payload)
+	return m.publishStatePayload(payload)
 }
 
 func (m *Module) handleMessage(msg paho.Message) {
@@ -157,11 +161,16 @@ func (m *Module) publishReply(replyTo string, reply mu.ReplyEnvelope) {
 	if replyTo != "" {
 		payload, err := json.Marshal(reply)
 		if err == nil {
-			_ = m.client.Publish(replyTo, 1, false, payload)
+			if err := m.client.Publish(replyTo, 1, false, payload); err != nil {
+				m.markPublishTimeout(err)
+			}
 		}
 	}
-	if m.config.PublishState {
-		_ = m.publishState()
+	if m.config.PublishState && !m.shouldShedState() {
+		payload, err := m.buildStatePayload()
+		if err == nil {
+			_ = m.publishStatePayload(payload)
+		}
 	}
 }
 
@@ -180,14 +189,15 @@ func (m *Module) runPositionUpdates(ctx context.Context) {
 
 func (m *Module) updatePlaybackState() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if m.engine.State.Playback == nil || m.engine.State.Playback.Status != "playing" {
 		m.eosSeen = ""
+		m.mu.Unlock()
 		return
 	}
 	posMS, durMS, ok := m.engine.Driver.Position()
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
 	m.engine.State.Playback.PositionMS = posMS
@@ -196,8 +206,51 @@ func (m *Module) updatePlaybackState() {
 	}
 	m.engine.State.TS = time.Now().Unix()
 	m.advanceOnEndLocked(posMS, durMS)
+	payload, err := m.buildStatePayloadLocked()
+	m.mu.Unlock()
 	if m.config.PublishState {
-		_ = m.publishState()
+		if err == nil && !m.shouldShedState() {
+			_ = m.publishStatePayload(payload)
+		}
+	}
+}
+
+func (m *Module) buildStatePayload() ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.buildStatePayloadLocked()
+}
+
+func (m *Module) buildStatePayloadLocked() ([]byte, error) {
+	return json.Marshal(m.engine.State)
+}
+
+func (m *Module) publishStatePayload(payload []byte) error {
+	if payload == nil {
+		return nil
+	}
+	if m.shouldShedState() {
+		return nil
+	}
+	err := m.client.Publish(mu.TopicState(m.config.TopicBase, m.config.NodeID), 1, true, payload)
+	m.markPublishTimeout(err)
+	return err
+}
+
+func (m *Module) shouldShedState() bool {
+	until := atomic.LoadInt64(&m.publishTimeoutUntil)
+	if until == 0 {
+		return false
+	}
+	return time.Now().UnixNano() < until
+}
+
+func (m *Module) markPublishTimeout(err error) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, mqttserver.ErrPublishTimeout) {
+		atomic.StoreInt64(&m.publishTimeoutUntil, time.Now().Add(2*time.Second).UnixNano())
 	}
 }
 

@@ -2,6 +2,7 @@ package jellyfinlibrary
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -114,6 +115,7 @@ func TestLibraryResolveBatch(t *testing.T) {
 			CacheTTL: time.Minute,
 		},
 	}
+	module.cache = newCache(module.config.CacheSize)
 
 	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBatchBody{ItemIDs: []string{"item-1", "item-2"}})}
 	reply := module.libraryResolveBatch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
@@ -165,9 +167,21 @@ func TestLibraryResolveUsesCache(t *testing.T) {
 			CacheTTL: time.Minute,
 		},
 	}
+	module.cache = newCache(module.config.CacheSize)
 
 	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "item-1"})}
 	_ = module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	value, err := module.cache.Get(context.Background(), "item-1")
+	if err != nil {
+		t.Fatalf("expected cached entry: %v", err)
+	}
+	var entry resolveCacheEntry
+	if err := json.Unmarshal(value, &entry); err != nil {
+		t.Fatalf("decode cache entry: %v", err)
+	}
+	if !entry.SourcesReady {
+		t.Fatalf("expected sourcesReady=true in cache entry")
+	}
 	_ = module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 
 	if itemHits != 1 || playbackHits != 1 {

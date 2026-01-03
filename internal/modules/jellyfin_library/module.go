@@ -11,10 +11,15 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
+	freecache "github.com/coocood/freecache"
 	paho "github.com/eclipse/paho.mqtt.golang"
+	gocache "github.com/eko/gocache/lib/v4/cache"
+	libstore "github.com/eko/gocache/lib/v4/store"
+	gocachefreecache "github.com/eko/gocache/store/freecache/v4"
+	"github.com/golang/snappy"
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
@@ -23,26 +28,35 @@ import (
 
 // Config configures the Jellyfin library bridge.
 type Config struct {
-	NodeID    string
-	TopicBase string
-	Name      string
-	BaseURL   string
-	APIKey    string
-	UserID    string
-	Timeout   time.Duration
-	CacheTTL  time.Duration
-	CacheSize int
+	NodeID                 string
+	TopicBase              string
+	Name                   string
+	BaseURL                string
+	APIKey                 string
+	UserID                 string
+	Timeout                time.Duration
+	CacheTTL               time.Duration
+	CacheSize              int
+	CacheCompress          bool
+	BrowseCacheTTL         time.Duration
+	BrowseCacheSize        int
+	MaxConcurrentRequests  int
+	PublishTimeoutCooldown time.Duration
 }
 
 // Module handles library commands via Jellyfin.
 type Module struct {
-	log      *zap.Logger
-	client   *mqttserver.Client
-	http     *http.Client
-	config   Config
-	cmdTopic string
-	cacheMu  sync.Mutex
-	cache    map[string]resolveCacheEntry
+	log                 *zap.Logger
+	client              *mqttserver.Client
+	http                *http.Client
+	config              Config
+	cmdTopic            string
+	cache               gocache.CacheInterface[[]byte]
+	cacheCtx            context.Context
+	browseCache         gocache.CacheInterface[[]byte]
+	browseCacheCtx      context.Context
+	reqSem              chan struct{}
+	publishTimeoutUntil int64
 }
 
 // NewModule creates a Jellyfin library module.
@@ -71,9 +85,17 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	if cfg.CacheTTL == 0 {
 		cfg.CacheTTL = 10 * time.Minute
 	}
-	if cfg.CacheSize == 0 {
-		cfg.CacheSize = 1000
+	if cfg.MaxConcurrentRequests <= 0 {
+		cfg.MaxConcurrentRequests = 4
 	}
+	if cfg.PublishTimeoutCooldown <= 0 {
+		cfg.PublishTimeoutCooldown = 2 * time.Second
+	}
+	if cfg.BrowseCacheSize == 0 {
+		cfg.BrowseCacheSize = 16 * 1024 * 1024
+	}
+	cfg.CacheSize = cacheSizeBytes(cfg.CacheSize)
+	cfg.BrowseCacheSize = cacheSizeBytes(cfg.BrowseCacheSize)
 
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	cfg.BaseURL = baseURL
@@ -81,12 +103,16 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
 
 	return &Module{
-		log:      log,
-		client:   client,
-		http:     &http.Client{Timeout: cfg.Timeout},
-		config:   cfg,
-		cmdTopic: cmdTopic,
-		cache:    make(map[string]resolveCacheEntry),
+		log:            log,
+		client:         client,
+		http:           &http.Client{Timeout: cfg.Timeout},
+		config:         cfg,
+		cmdTopic:       cmdTopic,
+		cache:          newCache(cfg.CacheSize),
+		cacheCtx:       context.Background(),
+		browseCache:    newCache(cfg.BrowseCacheSize),
+		browseCacheCtx: context.Background(),
+		reqSem:         make(chan struct{}, cfg.MaxConcurrentRequests),
 	}, nil
 }
 
@@ -136,6 +162,7 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
+	started := time.Now()
 	reply := m.dispatch(cmd)
 	if cmd.ReplyTo == "" {
 		return
@@ -145,8 +172,25 @@ func (m *Module) handleMessage(msg paho.Message) {
 		m.log.Error("marshal reply", zap.Error(err))
 		return
 	}
+	if len(payload) > 512*1024 {
+		m.log.Warn("large reply payload", zap.String("type", cmd.Type), zap.Int("bytes", len(payload)))
+	}
 	if err := m.client.Publish(cmd.ReplyTo, 1, false, payload); err != nil {
 		m.log.Error("publish reply", zap.Error(err))
+		if errors.Is(err, mqttserver.ErrPublishTimeout) {
+			m.markPublishTimeout()
+		}
+	} else {
+		logFields := []zap.Field{
+			zap.String("type", cmd.Type),
+			zap.Duration("duration", time.Since(started)),
+			zap.Int("bytes", len(payload)),
+			zap.Bool("ok", reply.OK),
+		}
+		if reply.Err != nil {
+			logFields = append(logFields, zap.String("err", reply.Err.Code))
+		}
+		m.log.Debug("command handled", logFields...)
 	}
 }
 
@@ -177,11 +221,48 @@ func (m *Module) libraryBrowse(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
+	if m.shouldShedLoad() {
+		m.log.Warn("load shed browse", zap.String("container", body.ContainerID))
+		return errorReply(cmd, "OVERLOADED", "module overloaded, try again")
+	}
+	started := time.Now()
+	cacheKey := browseCacheKey("browse", body.ContainerID, body.Start, body.Count, "")
+	if cached, ok := m.browseCacheGet(cacheKey); ok {
+		reply.Body = cached
+		m.log.Debug(
+			"library browse cache hit",
+			zap.String("container", body.ContainerID),
+			zap.Int64("start", body.Start),
+			zap.Int64("count", body.Count),
+			zap.Int("bytes", len(cached)),
+			zap.Duration("duration", time.Since(started)),
+		)
+		return reply
+	}
 	items, total, err := m.fetchItems(body.ContainerID, body.Start, body.Count, "", nil, false)
 	if err != nil {
+		m.log.Debug(
+			"library browse failed",
+			zap.String("container", body.ContainerID),
+			zap.Int64("start", body.Start),
+			zap.Int64("count", body.Count),
+			zap.Duration("duration", time.Since(started)),
+			zap.Error(err),
+		)
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	payload, _ := json.Marshal(libraryItemsReply{Items: items, Start: body.Start, Count: int64(len(items)), Total: total})
+	m.log.Debug(
+		"library browse ok",
+		zap.String("container", body.ContainerID),
+		zap.Int64("start", body.Start),
+		zap.Int64("count", body.Count),
+		zap.Int("items", len(items)),
+		zap.Int64("total", total),
+		zap.Int("bytes", len(payload)),
+		zap.Duration("duration", time.Since(started)),
+	)
+	m.browseCachePut(cacheKey, payload)
 	reply.Body = payload
 	return reply
 }
@@ -191,15 +272,52 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
+	if m.shouldShedLoad() {
+		m.log.Warn("load shed search", zap.String("query", body.Query))
+		return errorReply(cmd, "OVERLOADED", "module overloaded, try again")
+	}
+	started := time.Now()
 	types, err := mapLibraryTypes(body.Types)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
+	cacheKey := browseCacheKey("search", "", body.Start, body.Count, body.Query)
+	if cached, ok := m.browseCacheGet(cacheKey); ok {
+		reply.Body = cached
+		m.log.Debug(
+			"library search cache hit",
+			zap.String("query", body.Query),
+			zap.Int64("start", body.Start),
+			zap.Int64("count", body.Count),
+			zap.Int("bytes", len(cached)),
+			zap.Duration("duration", time.Since(started)),
+		)
+		return reply
+	}
 	items, total, err := m.fetchItems("", body.Start, body.Count, body.Query, types, true)
 	if err != nil {
+		m.log.Debug(
+			"library search failed",
+			zap.String("query", body.Query),
+			zap.Int64("start", body.Start),
+			zap.Int64("count", body.Count),
+			zap.Duration("duration", time.Since(started)),
+			zap.Error(err),
+		)
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	payload, _ := json.Marshal(libraryItemsReply{Items: items, Start: body.Start, Count: int64(len(items)), Total: total})
+	m.log.Debug(
+		"library search ok",
+		zap.String("query", body.Query),
+		zap.Int64("start", body.Start),
+		zap.Int64("count", body.Count),
+		zap.Int("items", len(items)),
+		zap.Int64("total", total),
+		zap.Int("bytes", len(payload)),
+		zap.Duration("duration", time.Since(started)),
+	)
+	m.browseCachePut(cacheKey, payload)
 	reply.Body = payload
 	return reply
 }
@@ -209,11 +327,27 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
+	started := time.Now()
 	metadata, sources, err := m.resolveItem(body.ItemID, body.MetadataOnly)
 	if err != nil {
+		m.log.Debug(
+			"library resolve failed",
+			zap.String("item", body.ItemID),
+			zap.Bool("metadata_only", body.MetadataOnly),
+			zap.Duration("duration", time.Since(started)),
+			zap.Error(err),
+		)
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
+	m.log.Debug(
+		"library resolve ok",
+		zap.String("item", body.ItemID),
+		zap.Bool("metadata_only", body.MetadataOnly),
+		zap.Int("sources", len(sources)),
+		zap.Int("bytes", len(payload)),
+		zap.Duration("duration", time.Since(started)),
+	)
 	reply.Body = payload
 	return reply
 }
@@ -245,16 +379,17 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 }
 
 type resolveCacheEntry struct {
-	metadata  map[string]any
-	sources   []mu.ResolvedSource
-	expiresAt time.Time
-	addedAt   time.Time
+	Metadata     map[string]any      `json:"metadata"`
+	Sources      []mu.ResolvedSource `json:"sources"`
+	SourcesReady bool                `json:"sourcesReady"`
 }
 
 func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, error) {
 	if metadata, sources, ok := m.cacheGet(itemID, metadataOnly); ok {
+		m.log.Debug("jellyfin cache hit", zap.String("item", itemID), zap.Bool("metadata_only", metadataOnly))
 		return metadata, sources, nil
 	}
+	m.log.Debug("jellyfin cache miss", zap.String("item", itemID), zap.Bool("metadata_only", metadataOnly))
 	item, err := m.fetchItem(itemID)
 	if err != nil {
 		return nil, nil, err
@@ -273,7 +408,7 @@ func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, 
 			}
 		}
 	}
-	m.cachePut(itemID, metadata, sources)
+	m.cachePut(itemID, metadata, sources, !metadataOnly)
 	return metadata, sources, nil
 }
 
@@ -301,65 +436,57 @@ func (m *Module) buildMetadata(item jfItem) map[string]any {
 }
 
 func (m *Module) cacheGet(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, bool) {
-	m.cacheMu.Lock()
-	defer m.cacheMu.Unlock()
+	m.ensureCache()
 	if m.cache == nil {
 		return nil, nil, false
 	}
-	entry, ok := m.cache[itemID]
+	value, err := m.cache.Get(m.cacheCtx, itemID)
+	if err != nil {
+		return nil, nil, false
+	}
+	value, ok := m.cacheDecode(value)
 	if !ok {
 		return nil, nil, false
 	}
-	if time.Now().After(entry.expiresAt) {
-		delete(m.cache, itemID)
+	var entry resolveCacheEntry
+	if err := json.Unmarshal(value, &entry); err != nil {
 		return nil, nil, false
 	}
 	if metadataOnly {
-		if entry.metadata == nil {
+		if entry.Metadata == nil {
 			return nil, nil, false
 		}
-		return copyMetadata(entry.metadata), nil, true
+		return copyMetadata(entry.Metadata), nil, true
 	}
-	if entry.metadata == nil || len(entry.sources) == 0 {
+	if entry.Metadata == nil || !entry.SourcesReady {
 		return nil, nil, false
 	}
-	return copyMetadata(entry.metadata), append([]mu.ResolvedSource(nil), entry.sources...), true
+	return copyMetadata(entry.Metadata), append([]mu.ResolvedSource(nil), entry.Sources...), true
 }
 
-func (m *Module) cachePut(itemID string, metadata map[string]any, sources []mu.ResolvedSource) {
+func (m *Module) cachePut(itemID string, metadata map[string]any, sources []mu.ResolvedSource, sourcesReady bool) {
 	if metadata == nil {
 		return
 	}
-	m.cacheMu.Lock()
-	defer m.cacheMu.Unlock()
+	m.ensureCache()
 	if m.cache == nil {
-		m.cache = make(map[string]resolveCacheEntry)
-	}
-	now := time.Now()
-	m.cache[itemID] = resolveCacheEntry{
-		metadata:  copyMetadata(metadata),
-		sources:   append([]mu.ResolvedSource(nil), sources...),
-		expiresAt: now.Add(m.config.CacheTTL),
-		addedAt:   now,
-	}
-	m.evictCache()
-}
-
-func (m *Module) evictCache() {
-	if m.config.CacheSize <= 0 || len(m.cache) <= m.config.CacheSize {
 		return
 	}
-	oldestID := ""
-	var oldest time.Time
-	for id, entry := range m.cache {
-		if oldestID == "" || entry.addedAt.Before(oldest) {
-			oldestID = id
-			oldest = entry.addedAt
-		}
+	if len(sources) > 0 {
+		sourcesReady = true
 	}
-	if oldestID != "" {
-		delete(m.cache, oldestID)
+	entry := resolveCacheEntry{
+		Metadata:     copyMetadata(metadata),
+		Sources:      append([]mu.ResolvedSource(nil), sources...),
+		SourcesReady: sourcesReady,
 	}
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	payload = m.cacheEncode(payload)
+	ttl := m.cacheTTL()
+	_ = m.cache.Set(m.cacheCtx, itemID, payload, libstore.WithExpiration(ttl))
 }
 
 func copyMetadata(metadata map[string]any) map[string]any {
@@ -371,6 +498,101 @@ func copyMetadata(metadata map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func (m *Module) cacheDecode(value []byte) ([]byte, bool) {
+	if !m.config.CacheCompress {
+		return value, true
+	}
+	decoded, err := snappy.Decode(nil, value)
+	if err != nil {
+		m.log.Debug("jellyfin cache decode failed", zap.Error(err))
+		return nil, false
+	}
+	return decoded, true
+}
+
+func (m *Module) cacheEncode(value []byte) []byte {
+	if !m.config.CacheCompress {
+		return value
+	}
+	return snappy.Encode(nil, value)
+}
+
+func (m *Module) browseCacheGet(key string) ([]byte, bool) {
+	m.ensureBrowseCache()
+	if m.browseCache == nil {
+		return nil, false
+	}
+	value, err := m.browseCache.Get(m.browseCacheCtx, key)
+	if err != nil {
+		return nil, false
+	}
+	value, ok := m.cacheDecode(value)
+	if !ok {
+		return nil, false
+	}
+	return value, true
+}
+
+func (m *Module) browseCachePut(key string, payload []byte) {
+	if payload == nil {
+		return
+	}
+	m.ensureBrowseCache()
+	if m.browseCache == nil {
+		return
+	}
+	value := m.cacheEncode(payload)
+	ttl := m.browseCacheTTL()
+	_ = m.browseCache.Set(m.browseCacheCtx, key, value, libstore.WithExpiration(ttl))
+}
+
+func (m *Module) ensureCache() {
+	if m.cache != nil {
+		return
+	}
+	m.cache = newCache(m.config.CacheSize)
+}
+
+func (m *Module) ensureBrowseCache() {
+	if m.browseCache != nil {
+		return
+	}
+	m.browseCache = newCache(m.config.BrowseCacheSize)
+}
+
+func (m *Module) cacheTTL() time.Duration {
+	if m.config.CacheTTL <= 0 {
+		return 10 * time.Minute
+	}
+	return m.config.CacheTTL
+}
+
+func (m *Module) browseCacheTTL() time.Duration {
+	if m.config.BrowseCacheTTL <= 0 {
+		return 5 * time.Minute
+	}
+	return m.config.BrowseCacheTTL
+}
+
+func cacheSizeBytes(size int) int {
+	if size == 0 {
+		return 64 * 1024 * 1024
+	}
+	if size > 0 && size < 1024*1024 {
+		return size * 64 * 1024
+	}
+	return size
+}
+
+func newCache(size int) gocache.CacheInterface[[]byte] {
+	size = cacheSizeBytes(size)
+	if size <= 0 {
+		return nil
+	}
+	store := gocachefreecache.NewFreecache(freecache.NewCache(size))
+	return gocache.New[[]byte](store)
 }
 
 type libraryItemsReply struct {
@@ -490,7 +712,7 @@ func (m *Module) fetchFilesItems(libraryID string, parentID string, start int64,
 	params := url.Values{}
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	params.Set("Limit", fmt.Sprintf("%d", count))
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("Fields", browseFieldsWithCollection())
 	params.Set("IncludeItemTypes", "Folder,Audio,MusicAlbum,MusicVideo,Movie,Series,Episode,Video")
 	if strings.TrimSpace(parentID) != "" {
 		params.Set("ParentId", parentID)
@@ -520,7 +742,7 @@ func (m *Module) fetchItemsRaw(containerID string, start int64, count int64, sea
 	if recursive {
 		params.Set("Recursive", "true")
 	}
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("Fields", browseFieldsWithCollection())
 	typesParam := "Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video"
 	if len(types) > 0 {
 		typesParam = strings.Join(types, ",")
@@ -675,7 +897,7 @@ func (m *Module) fetchMusicArtists(libraryID string, start int64, count int64) (
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	params.Set("Limit", fmt.Sprintf("%d", count))
 	params.Set("Recursive", "true")
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("Fields", browseFieldsWithCollection())
 	if strings.TrimSpace(libraryID) != "" {
 		params.Set("ParentId", libraryID)
 	}
@@ -689,7 +911,7 @@ func (m *Module) fetchMusicGenres(libraryID string, start int64, count int64) ([
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	params.Set("Limit", fmt.Sprintf("%d", count))
 	params.Set("Recursive", "true")
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("Fields", browseFieldsWithCollection())
 	if strings.TrimSpace(libraryID) != "" {
 		params.Set("ParentId", libraryID)
 	}
@@ -702,7 +924,7 @@ func (m *Module) fetchMusicAlbumsByArtist(artistID string, start int64, count in
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	params.Set("Limit", fmt.Sprintf("%d", count))
 	params.Set("Recursive", "true")
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("Fields", browseFieldsWithCollection())
 	params.Set("IncludeItemTypes", "MusicAlbum")
 	params.Set("ArtistIds", artistID)
 	return m.fetchItemsWithParams(endpoint, params)
@@ -714,7 +936,7 @@ func (m *Module) fetchMusicAlbumsByGenre(genreID string, start int64, count int6
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	params.Set("Limit", fmt.Sprintf("%d", count))
 	params.Set("Recursive", "true")
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("Fields", browseFieldsWithCollection())
 	params.Set("IncludeItemTypes", "MusicAlbum")
 	params.Set("GenreIds", genreID)
 	return m.fetchItemsWithParams(endpoint, params)
@@ -738,7 +960,7 @@ func (m *Module) fetchChildItems(parentID string, start int64, count int64) ([]j
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	params.Set("Limit", fmt.Sprintf("%d", count))
 	params.Set("Recursive", "true")
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags")
+	params.Set("Fields", browseFieldsNoCollection())
 	params.Set("IncludeItemTypes", "Audio,Video")
 	params.Set("ParentId", parentID)
 
@@ -753,7 +975,7 @@ func (m *Module) fetchItem(itemID string) (jfItem, error) {
 	endpoint := fmt.Sprintf("/Items/%s", url.PathEscape(itemID))
 	params := url.Values{}
 	params.Set("UserId", m.config.UserID)
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType")
+	params.Set("Fields", resolveFields())
 
 	var item jfItem
 	if err := m.doJSON("GET", endpoint, params, nil, &item); err != nil {
@@ -860,7 +1082,7 @@ func (m *Module) fetchPlaylistItems(playlistID string, start int64, count int64)
 	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	params.Set("Limit", fmt.Sprintf("%d", count))
 	params.Set("UserId", m.config.UserID)
-	params.Set("Fields", "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags")
+	params.Set("Fields", browseFieldsNoCollection())
 
 	var resp jfItemsResponse
 	if err := m.doJSON("GET", endpoint, params, nil, &resp); err != nil {
@@ -869,7 +1091,47 @@ func (m *Module) fetchPlaylistItems(playlistID string, start int64, count int64)
 	return resp.Items, nil
 }
 
+func browseFieldsWithCollection() string {
+	return "PrimaryImageAspectRatio,RunTimeTicks,Artists,Album,AlbumArtist,ImageTags,CollectionType"
+}
+
+func browseFieldsNoCollection() string {
+	return "PrimaryImageAspectRatio,RunTimeTicks,Artists,Album,AlbumArtist,ImageTags"
+}
+
+func resolveFields() string {
+	return "PrimaryImageAspectRatio,RunTimeTicks,Overview,Artists,Album,AlbumArtist,ImageTags,CollectionType"
+}
+
+func browseCacheKey(kind string, containerID string, start int64, count int64, query string) string {
+	return fmt.Sprintf("browse:%s:%s:%d:%d:%s", kind, containerID, start, count, query)
+}
+
+func (m *Module) shouldShedLoad() bool {
+	until := atomic.LoadInt64(&m.publishTimeoutUntil)
+	if until == 0 {
+		return false
+	}
+	return time.Now().UnixNano() < until
+}
+
+func (m *Module) markPublishTimeout() {
+	until := time.Now().Add(m.config.PublishTimeoutCooldown).UnixNano()
+	atomic.StoreInt64(&m.publishTimeoutUntil, until)
+}
+
 func (m *Module) doJSON(method string, endpoint string, params url.Values, body any, out any) error {
+	m.acquireRequest()
+	defer m.releaseRequest()
+
+	started := time.Now()
+	m.log.Debug(
+		"jellyfin request",
+		zap.String("method", method),
+		zap.String("endpoint", endpoint),
+		zap.String("params", formatQueryParams(params)),
+		zap.Int("inflight", m.inflightRequests()),
+	)
 	endpointURL := m.config.BaseURL + endpoint
 	if len(params) > 0 {
 		endpointURL += "?" + params.Encode()
@@ -893,14 +1155,90 @@ func (m *Module) doJSON(method string, endpoint string, params url.Values, body 
 
 	resp, err := m.http.Do(req)
 	if err != nil {
+		m.log.Debug(
+			"jellyfin request failed",
+			zap.String("method", method),
+			zap.String("endpoint", endpoint),
+			zap.Duration("duration", time.Since(started)),
+			zap.Error(err),
+		)
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
+		m.log.Debug(
+			"jellyfin request error",
+			zap.String("method", method),
+			zap.String("endpoint", endpoint),
+			zap.Duration("duration", time.Since(started)),
+			zap.Int("status", resp.StatusCode),
+		)
 		return fmt.Errorf("jellyfin error: %s", resp.Status)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		m.log.Debug(
+			"jellyfin decode error",
+			zap.String("method", method),
+			zap.String("endpoint", endpoint),
+			zap.Duration("duration", time.Since(started)),
+			zap.Error(err),
+		)
+		return err
+	}
+	m.log.Debug(
+		"jellyfin request ok",
+		zap.String("method", method),
+		zap.String("endpoint", endpoint),
+		zap.Duration("duration", time.Since(started)),
+		zap.Int("status", resp.StatusCode),
+	)
+	return nil
+}
+
+func (m *Module) acquireRequest() {
+	if m.reqSem == nil {
+		return
+	}
+	m.reqSem <- struct{}{}
+}
+
+func (m *Module) releaseRequest() {
+	if m.reqSem == nil {
+		return
+	}
+	select {
+	case <-m.reqSem:
+	default:
+	}
+}
+
+func (m *Module) inflightRequests() int {
+	if m.reqSem == nil {
+		return 0
+	}
+	return len(m.reqSem)
+}
+
+func formatQueryParams(params url.Values) string {
+	if len(params) == 0 {
+		return ""
+	}
+	keys := []string{
+		"StartIndex",
+		"Limit",
+		"ParentId",
+		"SearchTerm",
+		"IncludeItemTypes",
+		"Fields",
+	}
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value := params.Get(key); value != "" {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func (m *Module) imageURL(itemID string) string {

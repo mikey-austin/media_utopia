@@ -63,6 +63,12 @@ log_source = false
 log_utc = true
 log_color = false
 daemonize = false
+continue_on_error = false
+rpc_breaker_enabled = false
+rpc_breaker_timeout_ms = 2000
+rpc_breaker_interval_ms = 0
+rpc_breaker_max_requests = 0
+rpc_breaker_failure_threshold = 5
 
 [server.tls]
 ca = "/etc/mud/ca.pem"
@@ -122,7 +128,12 @@ api_key = "YOUR_KEY"
 user_id = "YOUR_USER_ID"
 timeout_ms = 5000
 cache_ttl_ms = 600000
-cache_size = 1000
+cache_size = 67108864 # bytes; values < 1 MiB are treated as entry-count hints
+cache_compress = false
+browse_cache_ttl_ms = 300000
+browse_cache_size = 16777216 # bytes; values < 1 MiB are treated as entry-count hints
+publish_timeout_cooldown_ms = 2000
+max_concurrent_requests = 4
 
 [modules.podcast]
 enabled = true

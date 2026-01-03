@@ -3,6 +3,7 @@ package mud
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 
 	"go.uber.org/zap"
@@ -16,7 +17,8 @@ type ModuleRunner struct {
 
 // Supervisor manages module lifecycles.
 type Supervisor struct {
-	Logger *zap.Logger
+	Logger          *zap.Logger
+	ContinueOnError bool
 }
 
 // Run starts all module runners and waits for termination.
@@ -35,9 +37,19 @@ func (s Supervisor) Run(ctx context.Context, modules []ModuleRunner) error {
 			defer wg.Done()
 			logger := s.Logger.With(zap.String("module", m.Name))
 			logger.Info("starting module")
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("module panicked", zap.Any("panic", r), zap.ByteString("stack", debug.Stack()))
+					if !s.ContinueOnError {
+						errCh <- fmt.Errorf("%s: panic: %v", m.Name, r)
+					}
+				}
+			}()
 			if err := m.Run(ctx); err != nil {
 				logger.Error("module exited", zap.Error(err))
-				errCh <- fmt.Errorf("%s: %w", m.Name, err)
+				if !s.ContinueOnError {
+					errCh <- fmt.Errorf("%s: %w", m.Name, err)
+				}
 				return
 			}
 			logger.Info("module stopped")

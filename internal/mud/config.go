@@ -20,19 +20,25 @@ type Config struct {
 
 // ServerConfig defines shared server settings.
 type ServerConfig struct {
-	Broker    string     `toml:"broker"`
-	Identity  string     `toml:"identity"`
-	TopicBase string     `toml:"topic_base"`
-	Namespace string     `toml:"namespace"`
-	LogLevel  string     `toml:"log_level"`
-	LogFormat string     `toml:"log_format"`
-	LogOutput string     `toml:"log_output"`
-	LogSource bool       `toml:"log_source"`
-	LogUTC    bool       `toml:"log_utc"`
-	LogColor  bool       `toml:"log_color"`
-	Daemonize bool       `toml:"daemonize"`
-	TLS       TLSConfig  `toml:"tls"`
-	Auth      AuthConfig `toml:"auth"`
+	Broker                     string     `toml:"broker"`
+	Identity                   string     `toml:"identity"`
+	TopicBase                  string     `toml:"topic_base"`
+	Namespace                  string     `toml:"namespace"`
+	LogLevel                   string     `toml:"log_level"`
+	LogFormat                  string     `toml:"log_format"`
+	LogOutput                  string     `toml:"log_output"`
+	LogSource                  bool       `toml:"log_source"`
+	LogUTC                     bool       `toml:"log_utc"`
+	LogColor                   bool       `toml:"log_color"`
+	Daemonize                  bool       `toml:"daemonize"`
+	ContinueOnError            bool       `toml:"continue_on_error"`
+	RPCBreakerEnabled          bool       `toml:"rpc_breaker_enabled"`
+	RPCBreakerTimeoutMS        int64      `toml:"rpc_breaker_timeout_ms"`
+	RPCBreakerIntervalMS       int64      `toml:"rpc_breaker_interval_ms"`
+	RPCBreakerMaxRequests      uint32     `toml:"rpc_breaker_max_requests"`
+	RPCBreakerFailureThreshold uint32     `toml:"rpc_breaker_failure_threshold"`
+	TLS                        TLSConfig  `toml:"tls"`
+	Auth                       AuthConfig `toml:"auth"`
 }
 
 // TLSConfig holds TLS paths for MQTT.
@@ -116,16 +122,21 @@ type BridgeUPNPLibraryConfig struct {
 
 // JellyfinLibraryConfig configures the Jellyfin library bridge.
 type JellyfinLibraryConfig struct {
-	Enabled    bool   `toml:"enabled"`
-	Name       string `toml:"name"`
-	Provider   string `toml:"provider"`
-	Resource   string `toml:"resource"`
-	BaseURL    string `toml:"base_url"`
-	APIKey     string `toml:"api_key"`
-	UserID     string `toml:"user_id"`
-	TimeoutMS  int64  `toml:"timeout_ms"`
-	CacheTTLMS int64  `toml:"cache_ttl_ms"`
-	CacheSize  int    `toml:"cache_size"`
+	Enabled                  bool   `toml:"enabled"`
+	Name                     string `toml:"name"`
+	Provider                 string `toml:"provider"`
+	Resource                 string `toml:"resource"`
+	BaseURL                  string `toml:"base_url"`
+	APIKey                   string `toml:"api_key"`
+	UserID                   string `toml:"user_id"`
+	TimeoutMS                int64  `toml:"timeout_ms"`
+	CacheTTLMS               int64  `toml:"cache_ttl_ms"`
+	CacheSize                int    `toml:"cache_size"`
+	CacheCompress            bool   `toml:"cache_compress"`
+	BrowseCacheTTLMS         int64  `toml:"browse_cache_ttl_ms"`
+	BrowseCacheSize          int    `toml:"browse_cache_size"`
+	PublishTimeoutCooldownMS int64  `toml:"publish_timeout_cooldown_ms"`
+	MaxConcurrentRequests    int    `toml:"max_concurrent_requests"`
 }
 
 // PodcastLibraryConfig configures the podcast library module.

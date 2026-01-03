@@ -5,32 +5,58 @@ import (
 	"crypto/x509"
 	"errors"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
+	"github.com/sony/gobreaker"
 	"go.uber.org/zap"
 )
 
 // Options configures the MQTT server client.
 type Options struct {
-	BrokerURL string
-	ClientID  string
-	Username  string
-	Password  string
-	TLSCA     string
-	TLSCert   string
-	TLSKey    string
-	Timeout   time.Duration
-	Logger    *zap.Logger
-	Debug     bool
+	BrokerURL               string
+	ClientID                string
+	Username                string
+	Password                string
+	TLSCA                   string
+	TLSCert                 string
+	TLSKey                  string
+	Timeout                 time.Duration
+	Logger                  *zap.Logger
+	Debug                   bool
+	BreakerEnabled          bool
+	BreakerName             string
+	BreakerTimeout          time.Duration
+	BreakerInterval         time.Duration
+	BreakerMaxRequests      uint32
+	BreakerFailureThreshold uint32
 }
 
 // Client wraps an MQTT connection for server modules.
 type Client struct {
-	client paho.Client
-	log    *zap.Logger
-	debug  bool
+	client          paho.Client
+	log             *zap.Logger
+	debug           bool
+	timeout         time.Duration
+	breakerEnabled  bool
+	breakerSettings gobreaker.Settings
+	breakers        map[string]*gobreaker.CircuitBreaker
+	breakerMu       sync.Mutex
 }
+
+// ErrPublishTimeout indicates the publish operation timed out.
+var ErrPublishTimeout = errors.New("mqtt publish timeout")
+
+// ErrPublishBlocked indicates publish was skipped due to an open breaker.
+var ErrPublishBlocked = errors.New("mqtt publish blocked by breaker")
+
+// ErrSubscribeTimeout indicates the subscribe operation timed out.
+var ErrSubscribeTimeout = errors.New("mqtt subscribe timeout")
+
+// ErrUnsubscribeTimeout indicates the unsubscribe operation timed out.
+var ErrUnsubscribeTimeout = errors.New("mqtt unsubscribe timeout")
 
 // NewClient connects to MQTT.
 func NewClient(opts Options) (*Client, error) {
@@ -64,7 +90,15 @@ func NewClient(opts Options) (*Client, error) {
 		return nil, token.Error()
 	}
 
-	return &Client{client: client, log: opts.Logger, debug: opts.Debug}, nil
+	mqttClient := &Client{
+		client:   client,
+		log:      opts.Logger,
+		debug:    opts.Debug,
+		timeout:  opts.Timeout,
+		breakers: map[string]*gobreaker.CircuitBreaker{},
+	}
+	mqttClient.configureBreaker(opts)
+	return mqttClient, nil
 }
 
 // Publish publishes a message.
@@ -72,9 +106,22 @@ func (c *Client) Publish(topic string, qos byte, retained bool, payload []byte) 
 	if c.debug {
 		c.log.Debug("mqtt publish", zap.String("topic", topic), zap.Int("bytes", len(payload)), zap.String("payload", truncatePayload(payload)))
 	}
-	token := c.client.Publish(topic, qos, retained, payload)
-	token.Wait()
-	return token.Error()
+	breaker := c.breakerForTopic(topic)
+	if breaker == nil {
+		return c.publishWithTimeout(topic, qos, retained, payload)
+	}
+	if breaker.State() == gobreaker.StateOpen {
+		c.log.Warn("mqtt breaker open", zap.String("topic", topic))
+		return ErrPublishBlocked
+	}
+	_, err := breaker.Execute(func() (any, error) {
+		return nil, c.publishWithTimeout(topic, qos, retained, payload)
+	})
+	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
+		c.log.Warn("mqtt breaker open", zap.String("topic", topic))
+		return ErrPublishBlocked
+	}
+	return err
 }
 
 // Subscribe subscribes to a topic.
@@ -89,8 +136,24 @@ func (c *Client) Subscribe(topic string, qos byte, handler paho.MessageHandler) 
 			handler(client, msg)
 		}
 	}
+	if breaker := c.breakerForTopic(topic); breaker != nil {
+		original := wrapped
+		wrapped = func(client paho.Client, msg paho.Message) {
+			if breaker.State() == gobreaker.StateOpen {
+				c.log.Warn("mqtt breaker open, dropping message", zap.String("topic", msg.Topic()))
+				return
+			}
+			original(client, msg)
+		}
+	}
 	token := c.client.Subscribe(topic, qos, wrapped)
-	token.Wait()
+	if c.timeout > 0 && !token.WaitTimeout(c.timeout) {
+		c.log.Warn("mqtt subscribe timeout", zap.String("topic", topic))
+		return ErrSubscribeTimeout
+	}
+	if c.timeout <= 0 {
+		token.Wait()
+	}
 	return token.Error()
 }
 
@@ -100,7 +163,13 @@ func (c *Client) Unsubscribe(topic string) error {
 		c.log.Debug("mqtt unsubscribe", zap.String("topic", topic))
 	}
 	token := c.client.Unsubscribe(topic)
-	token.Wait()
+	if c.timeout > 0 && !token.WaitTimeout(c.timeout) {
+		c.log.Warn("mqtt unsubscribe timeout", zap.String("topic", topic))
+		return ErrUnsubscribeTimeout
+	}
+	if c.timeout <= 0 {
+		token.Wait()
+	}
 	return token.Error()
 }
 
@@ -142,4 +211,83 @@ func buildTLSConfig(caPath, certPath, keyPath string) (*tls.Config, error) {
 	}
 
 	return config, nil
+}
+
+func (c *Client) publishWithTimeout(topic string, qos byte, retained bool, payload []byte) error {
+	token := c.client.Publish(topic, qos, retained, payload)
+	if c.timeout > 0 && !token.WaitTimeout(c.timeout) {
+		c.log.Warn("mqtt publish timeout", zap.String("topic", topic))
+		return ErrPublishTimeout
+	}
+	if c.timeout <= 0 {
+		token.Wait()
+	}
+	return token.Error()
+}
+
+func (c *Client) configureBreaker(opts Options) {
+	if !opts.BreakerEnabled {
+		return
+	}
+	if opts.BreakerFailureThreshold == 0 {
+		opts.BreakerFailureThreshold = 5
+	}
+	if opts.BreakerTimeout == 0 {
+		opts.BreakerTimeout = 2 * time.Second
+	}
+	name := opts.BreakerName
+	if name == "" {
+		name = "mqtt"
+	}
+	c.breakerEnabled = true
+	c.breakerSettings = gobreaker.Settings{
+		Name:        name,
+		MaxRequests: opts.BreakerMaxRequests,
+		Interval:    opts.BreakerInterval,
+		Timeout:     opts.BreakerTimeout,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			return counts.ConsecutiveFailures >= opts.BreakerFailureThreshold
+		},
+		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
+			c.log.Warn("mqtt breaker state", zap.String("name", name), zap.String("from", from.String()), zap.String("to", to.String()))
+		},
+	}
+}
+
+func (c *Client) breakerForTopic(topic string) *gobreaker.CircuitBreaker {
+	if !c.breakerEnabled {
+		return nil
+	}
+	key := breakerKeyForTopic(topic)
+	if key == "" {
+		return nil
+	}
+	c.breakerMu.Lock()
+	defer c.breakerMu.Unlock()
+	if existing, ok := c.breakers[key]; ok {
+		return existing
+	}
+	settings := c.breakerSettings
+	settings.Name = key
+	cb := gobreaker.NewCircuitBreaker(settings)
+	c.breakers[key] = cb
+	return cb
+}
+
+func breakerKeyForTopic(topic string) string {
+	if topic == "" {
+		return ""
+	}
+	if strings.Contains(topic, "/node/") {
+		parts := strings.Split(topic, "/")
+		for i := 0; i < len(parts)-1; i++ {
+			if parts[i] == "node" {
+				return "node:" + parts[i+1]
+			}
+		}
+	}
+	if strings.Contains(topic, "/reply/") {
+		return "reply"
+	}
+	return ""
 }

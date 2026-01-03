@@ -133,16 +133,22 @@ func main() {
 	if moduleOnly != "embedded_mqtt" {
 		var err error
 		client, err = mqttserver.NewClient(mqttserver.Options{
-			BrokerURL: cfg.Server.Broker,
-			ClientID:  fmt.Sprintf("mud-%d", time.Now().UnixNano()),
-			Username:  cfg.Server.Auth.User,
-			Password:  cfg.Server.Auth.Pass,
-			TLSCA:     cfg.Server.TLS.CA,
-			TLSCert:   cfg.Server.TLS.Cert,
-			TLSKey:    cfg.Server.TLS.Key,
-			Timeout:   2 * time.Second,
-			Logger:    logger,
-			Debug:     logger.Core().Enabled(zap.DebugLevel),
+			BrokerURL:               cfg.Server.Broker,
+			ClientID:                fmt.Sprintf("mud-%d", time.Now().UnixNano()),
+			Username:                cfg.Server.Auth.User,
+			Password:                cfg.Server.Auth.Pass,
+			TLSCA:                   cfg.Server.TLS.CA,
+			TLSCert:                 cfg.Server.TLS.Cert,
+			TLSKey:                  cfg.Server.TLS.Key,
+			Timeout:                 2 * time.Second,
+			Logger:                  logger,
+			Debug:                   logger.Core().Enabled(zap.DebugLevel),
+			BreakerEnabled:          cfg.Server.RPCBreakerEnabled,
+			BreakerName:             "rpc",
+			BreakerTimeout:          durationFromMS(cfg.Server.RPCBreakerTimeoutMS),
+			BreakerInterval:         durationFromMS(cfg.Server.RPCBreakerIntervalMS),
+			BreakerMaxRequests:      cfg.Server.RPCBreakerMaxRequests,
+			BreakerFailureThreshold: cfg.Server.RPCBreakerFailureThreshold,
 		})
 		if err != nil {
 			logger.Error("mqtt connection failed", zap.Error(err))
@@ -156,7 +162,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	supervisor := mud.Supervisor{Logger: logger}
+	supervisor := mud.Supervisor{
+		Logger:          logger,
+		ContinueOnError: cfg.Server.ContinueOnError,
+	}
 	if err := supervisor.Run(ctx, modules); err != nil {
 		logger.Error("supervisor error", zap.Error(err))
 		os.Exit(1)
@@ -272,6 +281,8 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			}
 			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
 			cacheTTL := time.Duration(cfgItem.CacheTTLMS) * time.Millisecond
+			browseCacheTTL := time.Duration(cfgItem.BrowseCacheTTLMS) * time.Millisecond
+			publishCooldown := time.Duration(cfgItem.PublishTimeoutCooldownMS) * time.Millisecond
 			resource := resourceFor(item.Name, cfgItem.Resource)
 			nodeID, err := buildNodeID("library", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
@@ -281,15 +292,20 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				return nil, err
 			}
 			jf, err := jellyfinlibrary.NewModule(logger.With(zap.String("module", "bridge_jellyfin_library")), client, jellyfinlibrary.Config{
-				NodeID:    nodeID,
-				TopicBase: cfg.Server.TopicBase,
-				Name:      cfgItem.Name,
-				BaseURL:   cfgItem.BaseURL,
-				APIKey:    cfgItem.APIKey,
-				UserID:    cfgItem.UserID,
-				Timeout:   timeout,
-				CacheTTL:  cacheTTL,
-				CacheSize: cfgItem.CacheSize,
+				NodeID:                 nodeID,
+				TopicBase:              cfg.Server.TopicBase,
+				Name:                   cfgItem.Name,
+				BaseURL:                cfgItem.BaseURL,
+				APIKey:                 cfgItem.APIKey,
+				UserID:                 cfgItem.UserID,
+				Timeout:                timeout,
+				CacheTTL:               cacheTTL,
+				CacheSize:              cfgItem.CacheSize,
+				CacheCompress:          cfgItem.CacheCompress,
+				BrowseCacheTTL:         browseCacheTTL,
+				BrowseCacheSize:        cfgItem.BrowseCacheSize,
+				PublishTimeoutCooldown: publishCooldown,
+				MaxConcurrentRequests:  cfgItem.MaxConcurrentRequests,
 			})
 			if err != nil {
 				return nil, err
@@ -574,6 +590,13 @@ func parseDurations(inputs []string) ([]time.Duration, error) {
 		out = append(out, parsed)
 	}
 	return out, nil
+}
+
+func durationFromMS(value int64) time.Duration {
+	if value <= 0 {
+		return 0
+	}
+	return time.Duration(value) * time.Millisecond
 }
 
 func printResolvedConfig(cfg mud.Config) error {
