@@ -18,6 +18,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/mu ./cmd/mu
 FROM debian:bookworm-slim AS mud
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    glib-networking \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad \

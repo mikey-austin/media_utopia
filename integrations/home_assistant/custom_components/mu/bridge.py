@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
@@ -21,11 +22,13 @@ from .const import (
     CONF_DISCOVERY_PREFIX,
     CONF_ENTITY_PREFIX,
     CONF_IDENTITY,
+    CONF_ARTWORK_BASE_URL,
     CONF_PLAYLIST_REFRESH,
     CONF_TOPIC_BASE,
     DEFAULT_DISCOVERY_PREFIX,
     DEFAULT_ENTITY_PREFIX,
     DEFAULT_IDENTITY,
+    DEFAULT_ARTWORK_BASE_URL,
     DEFAULT_PLAYLIST_REFRESH,
     DEFAULT_TOPIC_BASE,
     DOMAIN,
@@ -36,6 +39,16 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+try:
+    from homeassistant.components.image_proxy import async_image_proxy_url as _image_proxy_url
+except Exception:  # pragma: no cover - fallback for older HA
+    try:
+        from homeassistant.helpers.image_proxy import (  # type: ignore[no-redef]
+            async_image_proxy_url as _image_proxy_url,
+        )
+    except Exception:  # pragma: no cover - fallback if helper missing
+        _image_proxy_url = None
 
 
 @dataclass
@@ -56,6 +69,9 @@ class MudBridge:
         self.discovery_prefix = data.get(CONF_DISCOVERY_PREFIX, DEFAULT_DISCOVERY_PREFIX)
         self.entity_prefix = data.get(CONF_ENTITY_PREFIX, DEFAULT_ENTITY_PREFIX)
         self.identity = data.get(CONF_IDENTITY, DEFAULT_IDENTITY)
+        self.artwork_base_url = data.get(
+            CONF_ARTWORK_BASE_URL, DEFAULT_ARTWORK_BASE_URL
+        ).strip()
         self.playlist_refresh = int(
             data.get(CONF_PLAYLIST_REFRESH, DEFAULT_PLAYLIST_REFRESH)
         )
@@ -82,6 +98,7 @@ class MudBridge:
         self._leases: dict[str, Lease] = {}
         self._snapshot_names: dict[str, str] = {}
         self._playlist_listeners: list[callable] = []
+        self._image_proxy_url = _image_proxy_url
 
     async def async_start(self) -> None:
         """Start the bridge."""
@@ -511,7 +528,7 @@ class MudBridge:
         title = metadata.get("title")
         artist = metadata.get("artist")
         album = metadata.get("album")
-        artwork = metadata.get("artworkUrl")
+        artwork = self.rewrite_artwork_url(metadata.get("artworkUrl"))
 
         payload = {
             "state": status,
@@ -547,6 +564,33 @@ class MudBridge:
         topics = self._renderer_topics_for(node_id, unique)
         self._renderer_topics[node_id] = topics
         _ = renderer
+
+    def rewrite_artwork_url(self, url: str | None) -> str | None:
+        if not url:
+            return url
+        if url.startswith("/api/image_proxy"):
+            return url
+        try:
+            rewritten = url
+            if self.artwork_base_url:
+                parsed = urlparse(url)
+                base = urlparse(self.artwork_base_url)
+                if not parsed.scheme:
+                    rewritten = urljoin(self.artwork_base_url, url)
+                else:
+                    rebuilt = parsed._replace(
+                        scheme=base.scheme or parsed.scheme,
+                        netloc=base.netloc or parsed.netloc,
+                    )
+                    rewritten = urlunparse(rebuilt)
+            if self._image_proxy_url:
+                try:
+                    return self._image_proxy_url(self.hass, rewritten)
+                except Exception:
+                    return url
+            return url
+        except Exception:
+            return url
 
     async def _handle_renderer_command(self, msg) -> None:
         node_id = self._node_id_from_topic(msg.topic)

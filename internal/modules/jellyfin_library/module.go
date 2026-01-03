@@ -32,6 +32,8 @@ type Config struct {
 	TopicBase              string
 	Name                   string
 	BaseURL                string
+	StreamBaseURL          string
+	ArtworkBaseURL         string
 	APIKey                 string
 	UserID                 string
 	Timeout                time.Duration
@@ -61,6 +63,9 @@ type Module struct {
 
 // NewModule creates a Jellyfin library module.
 func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
+	if log == nil {
+		log = zap.NewNop()
+	}
 	if strings.TrimSpace(cfg.NodeID) == "" {
 		return nil, errors.New("node_id required")
 	}
@@ -99,6 +104,8 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	cfg.BaseURL = baseURL
+	cfg.StreamBaseURL = strings.TrimRight(cfg.StreamBaseURL, "/")
+	cfg.ArtworkBaseURL = strings.TrimRight(cfg.ArtworkBaseURL, "/")
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
 
@@ -657,12 +664,20 @@ func (m *Module) fetchItems(containerID string, start int64, count int64, search
 			libraryID := strings.TrimPrefix(containerID, musicGenrePrefix)
 			return m.fetchMusicGenres(libraryID, start, count)
 		}
+		if strings.HasPrefix(containerID, musicRecentPrefix) {
+			libraryID := strings.TrimPrefix(containerID, musicRecentPrefix)
+			return m.fetchRecentMusic(libraryID, start, count)
+		}
 		if strings.HasPrefix(containerID, musicFilesPrefix) {
 			libraryID, parentID := parseFilesContainer(containerID)
 			if parentID == "" {
 				parentID = libraryID
 			}
 			return m.fetchFilesItems(libraryID, parentID, start, count, true)
+		}
+		if strings.HasPrefix(containerID, moviesRecentPrefix) {
+			libraryID := strings.TrimPrefix(containerID, moviesRecentPrefix)
+			return m.fetchRecentMovies(libraryID, start, count)
 		}
 		item, err := m.fetchItem(containerID)
 		if err == nil {
@@ -678,7 +693,10 @@ func (m *Module) fetchItems(containerID string, start int64, count int64, search
 				return items, int64(len(items)), nil
 			}
 			if isMusicLibrary(item) {
-				return m.musicLibraryRootItems(item.ID), 3, nil
+				return m.musicLibraryRootItems(item.ID), 4, nil
+			}
+			if isMovieLibrary(item) {
+				return m.fetchMoviesLibrary(item.ID, start, count)
 			}
 			if strings.EqualFold(item.Type, "Folder") {
 				return m.fetchFilesItems("", item.ID, start, count, true)
@@ -732,6 +750,79 @@ func (m *Module) fetchFilesItems(libraryID string, parentID string, start int64,
 		total = start + int64(len(items)) + 1
 	}
 	return items, total, nil
+}
+
+func (m *Module) fetchMoviesLibrary(libraryID string, start int64, count int64) ([]libraryItem, int64, error) {
+	includeRecent := start == 0
+	movieStart := start
+	movieCount := count
+	if includeRecent && movieCount > 0 {
+		movieCount = movieCount - 1
+	} else if start > 0 {
+		movieStart = start - 1
+	}
+	items, total, err := m.fetchMovies(libraryID, movieStart, movieCount)
+	if err != nil {
+		return nil, 0, err
+	}
+	if includeRecent {
+		items = append([]libraryItem{{ItemID: moviesRecentPrefix + libraryID, Name: "Recently Added", Type: "Folder"}}, items...)
+	}
+	if total > 0 {
+		total++
+	} else if len(items) > 0 {
+		total = movieStart + int64(len(items))
+		if includeRecent {
+			total++
+		}
+	}
+	return items, total, nil
+}
+
+func (m *Module) fetchMovies(libraryID string, start int64, count int64) ([]libraryItem, int64, error) {
+	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
+	params := url.Values{}
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Recursive", "true")
+	params.Set("Fields", browseFieldsWithCollection())
+	params.Set("IncludeItemTypes", "Movie")
+	if strings.TrimSpace(libraryID) != "" {
+		params.Set("ParentId", libraryID)
+	}
+	return m.fetchItemsWithParams(endpoint, params)
+}
+
+func (m *Module) fetchRecentMovies(libraryID string, start int64, count int64) ([]libraryItem, int64, error) {
+	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
+	params := url.Values{}
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Recursive", "true")
+	params.Set("SortBy", "DateCreated")
+	params.Set("SortOrder", "Descending")
+	params.Set("Fields", browseFieldsWithCollection())
+	params.Set("IncludeItemTypes", "Movie")
+	if strings.TrimSpace(libraryID) != "" {
+		params.Set("ParentId", libraryID)
+	}
+	return m.fetchItemsWithParams(endpoint, params)
+}
+
+func (m *Module) fetchRecentMusic(libraryID string, start int64, count int64) ([]libraryItem, int64, error) {
+	endpoint := fmt.Sprintf("/Users/%s/Items", url.PathEscape(m.config.UserID))
+	params := url.Values{}
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Limit", fmt.Sprintf("%d", count))
+	params.Set("Recursive", "true")
+	params.Set("SortBy", "DateCreated")
+	params.Set("SortOrder", "Descending")
+	params.Set("Fields", browseFieldsWithCollection())
+	params.Set("IncludeItemTypes", "Audio,MusicAlbum")
+	if strings.TrimSpace(libraryID) != "" {
+		params.Set("ParentId", libraryID)
+	}
+	return m.fetchItemsWithParams(endpoint, params)
 }
 
 func (m *Module) fetchItemsRaw(containerID string, start int64, count int64, search string, types []string, recursive bool) ([]libraryItem, int64, error) {
@@ -854,19 +945,26 @@ func (m *Module) libraryItemFromJF(item jfItem) libraryItem {
 }
 
 const (
-	musicArtistPrefix = "music:artist:"
-	musicGenrePrefix  = "music:genre:"
-	musicFilesPrefix  = "music:files:"
+	musicArtistPrefix  = "music:artist:"
+	musicGenrePrefix   = "music:genre:"
+	musicRecentPrefix  = "music:recent:"
+	musicFilesPrefix   = "music:files:"
+	moviesRecentPrefix = "movies:recent:"
 )
 
 func isMusicLibrary(item jfItem) bool {
 	return strings.EqualFold(item.Type, "CollectionFolder") && strings.EqualFold(item.CollectionType, "music")
 }
 
+func isMovieLibrary(item jfItem) bool {
+	return strings.EqualFold(item.Type, "CollectionFolder") && strings.EqualFold(item.CollectionType, "movies")
+}
+
 func (m *Module) musicLibraryRootItems(libraryID string) []libraryItem {
 	return []libraryItem{
 		{ItemID: musicArtistPrefix + libraryID, Name: "Artist", Type: "Folder"},
 		{ItemID: musicGenrePrefix + libraryID, Name: "Genre", Type: "Folder"},
+		{ItemID: musicRecentPrefix + libraryID, Name: "Recently Added", Type: "Folder"},
 		{ItemID: musicFilesPrefix + libraryID, Name: "Files", Type: "Folder"},
 	}
 }
@@ -1125,7 +1223,11 @@ func (m *Module) doJSON(method string, endpoint string, params url.Values, body 
 	defer m.releaseRequest()
 
 	started := time.Now()
-	m.log.Debug(
+	log := m.log
+	if log == nil {
+		log = zap.NewNop()
+	}
+	log.Debug(
 		"jellyfin request",
 		zap.String("method", method),
 		zap.String("endpoint", endpoint),
@@ -1155,7 +1257,7 @@ func (m *Module) doJSON(method string, endpoint string, params url.Values, body 
 
 	resp, err := m.http.Do(req)
 	if err != nil {
-		m.log.Debug(
+		log.Debug(
 			"jellyfin request failed",
 			zap.String("method", method),
 			zap.String("endpoint", endpoint),
@@ -1167,7 +1269,7 @@ func (m *Module) doJSON(method string, endpoint string, params url.Values, body 
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		m.log.Debug(
+		log.Debug(
 			"jellyfin request error",
 			zap.String("method", method),
 			zap.String("endpoint", endpoint),
@@ -1177,7 +1279,7 @@ func (m *Module) doJSON(method string, endpoint string, params url.Values, body 
 		return fmt.Errorf("jellyfin error: %s", resp.Status)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		m.log.Debug(
+		log.Debug(
 			"jellyfin decode error",
 			zap.String("method", method),
 			zap.String("endpoint", endpoint),
@@ -1186,7 +1288,7 @@ func (m *Module) doJSON(method string, endpoint string, params url.Values, body 
 		)
 		return err
 	}
-	m.log.Debug(
+	log.Debug(
 		"jellyfin request ok",
 		zap.String("method", method),
 		zap.String("endpoint", endpoint),
@@ -1242,7 +1344,7 @@ func formatQueryParams(params url.Values) string {
 }
 
 func (m *Module) imageURL(itemID string) string {
-	u, _ := url.Parse(m.config.BaseURL)
+	u, _ := url.Parse(m.artworkBaseURL())
 	u.Path = path.Join(u.Path, "/Items/", itemID, "/Images/Primary")
 	q := u.Query()
 	q.Set("maxHeight", "500")
@@ -1254,7 +1356,7 @@ func (m *Module) imageURL(itemID string) string {
 }
 
 func (m *Module) downloadURL(itemID string) string {
-	u, _ := url.Parse(m.config.BaseURL)
+	u, _ := url.Parse(m.streamBaseURL())
 	u.Path = path.Join(u.Path, "/Items/", itemID, "/Download")
 	q := u.Query()
 	q.Set("api_key", m.config.APIKey)
@@ -1263,7 +1365,7 @@ func (m *Module) downloadURL(itemID string) string {
 }
 
 func (m *Module) streamURL(itemID string, item jfItem) string {
-	u, _ := url.Parse(m.config.BaseURL)
+	u, _ := url.Parse(m.streamBaseURL())
 	prefix := "Videos"
 	if strings.EqualFold(item.MediaType, "Audio") {
 		prefix = "Audio"
@@ -1280,7 +1382,21 @@ func (m *Module) absoluteURL(streamURL string) string {
 	if strings.HasPrefix(streamURL, "http://") || strings.HasPrefix(streamURL, "https://") {
 		return streamURL
 	}
-	return m.config.BaseURL + streamURL
+	return m.streamBaseURL() + streamURL
+}
+
+func (m *Module) streamBaseURL() string {
+	if strings.TrimSpace(m.config.StreamBaseURL) != "" {
+		return m.config.StreamBaseURL
+	}
+	return m.config.BaseURL
+}
+
+func (m *Module) artworkBaseURL() string {
+	if strings.TrimSpace(m.config.ArtworkBaseURL) != "" {
+		return m.config.ArtworkBaseURL
+	}
+	return m.config.BaseURL
 }
 
 func ticksToMS(ticks int64) int64 {

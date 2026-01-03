@@ -11,10 +11,13 @@ services:
       - ./ha_config:/config
       - ./custom_components/mu:/config/custom_components/mu
       - ./ha_config/ca:/config/ca:ro
+      - /etc/ssl/certs:/etc/ssl/certs:ro
     environment:
       - TZ=UTC
       - SSL_CERT_FILE=/config/ca/ca.crt
       - SSL_CERT_DIR=/config/ca
+      - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     depends_on:
       - mqtt
 

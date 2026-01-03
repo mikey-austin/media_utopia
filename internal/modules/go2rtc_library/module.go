@@ -14,7 +14,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coocood/freecache"
 	paho "github.com/eclipse/paho.mqtt.golang"
+	gocache "github.com/eko/gocache/lib/v4/cache"
+	"github.com/eko/gocache/lib/v4/store"
+	gocachefreecache "github.com/eko/gocache/store/freecache/v4"
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
@@ -32,6 +36,8 @@ type Config struct {
 	Durations       []time.Duration
 	RefreshInterval time.Duration
 	Timeout         time.Duration
+	CacheTTL        time.Duration
+	CacheSize       int
 }
 
 // Module provides go2rtc library behavior.
@@ -41,6 +47,9 @@ type Module struct {
 	http     *http.Client
 	config   Config
 	cmdTopic string
+
+	cache    gocache.CacheInterface[[]byte]
+	cacheCtx context.Context
 
 	mu          sync.Mutex
 	streams     map[string]streamInfo
@@ -95,6 +104,9 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Second
 	}
+	if cfg.CacheSize == 0 {
+		cfg.CacheSize = 4 * 1024 * 1024
+	}
 
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
@@ -105,6 +117,8 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		http:     &http.Client{Timeout: cfg.Timeout},
 		config:   cfg,
 		cmdTopic: cmdTopic,
+		cache:    newCache(cfg.CacheSize),
+		cacheCtx: context.Background(),
 		streams:  make(map[string]streamInfo),
 	}, nil
 }
@@ -196,11 +210,17 @@ func (m *Module) libraryBrowse(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
+	cacheKey := browseCacheKey("browse", body.ContainerID, body.Start, body.Count, "")
+	if cached, ok := m.cacheGet(cacheKey); ok {
+		reply.Body = cached
+		return reply
+	}
 	items, total, err := m.browseItems(body.ContainerID, body.Start, body.Count)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	payload, _ := json.Marshal(libraryItemsReply{Items: items, Start: body.Start, Count: int64(len(items)), Total: total})
+	m.cachePut(cacheKey, payload)
 	reply.Body = payload
 	return reply
 }
@@ -210,11 +230,17 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
+	cacheKey := browseCacheKey("search", "", body.Start, body.Count, body.Query)
+	if cached, ok := m.cacheGet(cacheKey); ok {
+		reply.Body = cached
+		return reply
+	}
 	items, total, err := m.searchItems(body.Query, body.Start, body.Count)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	payload, _ := json.Marshal(libraryItemsReply{Items: items, Start: body.Start, Count: int64(len(items)), Total: total})
+	m.cachePut(cacheKey, payload)
 	reply.Body = payload
 	return reply
 }
@@ -285,6 +311,55 @@ func (m *Module) browseItems(containerID string, start int64, count int64) ([]li
 	}
 	items := m.streamEntries(stream)
 	return paginateItems(items, start, count)
+}
+
+func (m *Module) cacheGet(key string) ([]byte, bool) {
+	if m.cache == nil {
+		return nil, false
+	}
+	value, err := m.cache.Get(m.cacheCtx, key)
+	if err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func (m *Module) cachePut(key string, payload []byte) {
+	if m.cache == nil || payload == nil {
+		return
+	}
+	ttl := m.cacheTTL()
+	_ = m.cache.Set(m.cacheCtx, key, payload, store.WithExpiration(ttl))
+}
+
+func (m *Module) cacheTTL() time.Duration {
+	if m.config.CacheTTL <= 0 {
+		return 5 * time.Minute
+	}
+	return m.config.CacheTTL
+}
+
+func browseCacheKey(kind string, containerID string, start int64, count int64, query string) string {
+	return fmt.Sprintf("browse:%s:%s:%d:%d:%s", kind, containerID, start, count, query)
+}
+
+func newCache(size int) gocache.CacheInterface[[]byte] {
+	size = cacheSizeBytes(size)
+	if size <= 0 {
+		return nil
+	}
+	store := gocachefreecache.NewFreecache(freecache.NewCache(size))
+	return gocache.New[[]byte](store)
+}
+
+func cacheSizeBytes(size int) int {
+	if size == 0 {
+		return 8 * 1024 * 1024
+	}
+	if size > 0 && size < 1024*1024 {
+		return size * 64 * 1024
+	}
+	return size
 }
 
 func (m *Module) searchItems(query string, start int64, count int64) ([]libraryItem, int64, error) {

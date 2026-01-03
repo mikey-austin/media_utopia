@@ -127,6 +127,8 @@ type JellyfinLibraryConfig struct {
 	Provider                 string `toml:"provider"`
 	Resource                 string `toml:"resource"`
 	BaseURL                  string `toml:"base_url"`
+	StreamBaseURL            string `toml:"stream_base_url"`
+	ArtworkBaseURL           string `toml:"artwork_base_url"`
 	APIKey                   string `toml:"api_key"`
 	UserID                   string `toml:"user_id"`
 	TimeoutMS                int64  `toml:"timeout_ms"`
@@ -164,6 +166,8 @@ type Go2RTCLibraryConfig struct {
 	Durations         []string `toml:"durations"`
 	RefreshIntervalMS int64    `toml:"refresh_interval_ms"`
 	TimeoutMS         int64    `toml:"timeout_ms"`
+	CacheTTLMS        int64    `toml:"cache_ttl_ms"`
+	CacheSize         int      `toml:"cache_size"`
 }
 
 // ModuleInstance holds a named config instance.

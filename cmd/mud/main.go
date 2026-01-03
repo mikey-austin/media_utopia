@@ -296,6 +296,8 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				TopicBase:              cfg.Server.TopicBase,
 				Name:                   cfgItem.Name,
 				BaseURL:                cfgItem.BaseURL,
+				StreamBaseURL:          cfgItem.StreamBaseURL,
+				ArtworkBaseURL:         cfgItem.ArtworkBaseURL,
 				APIKey:                 cfgItem.APIKey,
 				UserID:                 cfgItem.UserID,
 				Timeout:                timeout,
@@ -383,6 +385,8 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				Durations:       durations,
 				RefreshInterval: refresh,
 				Timeout:         timeout,
+				CacheTTL:        durationFromMS(cfgItem.CacheTTLMS),
+				CacheSize:       cfgItem.CacheSize,
 			})
 			if err != nil {
 				return nil, err
