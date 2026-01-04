@@ -23,6 +23,12 @@ import (
 	"unsafe"
 )
 
+var (
+	initMu     sync.Mutex
+	initCount  int
+	upnpInited bool
+)
+
 // DiscoveryResult holds a single SSDP discovery entry.
 type DiscoveryResult struct {
 	DeviceID    string
@@ -71,13 +77,8 @@ func NewClient(listenAddr string) (*Client, error) {
 		cHost = C.CString(host)
 		defer C.free(unsafe.Pointer(cHost))
 	}
-	status := C.UpnpInit2(cHost, C.ushort(port))
-	if status != C.UPNP_E_SUCCESS {
-		// Fallback: let libupnp pick interface/port.
-		status = C.UpnpInit2(nil, C.ushort(port))
-		if status != C.UPNP_E_SUCCESS {
-			return nil, fmt.Errorf("pupnp init failed: %d", int(status))
-		}
+	if err := initUPnP(cHost, port); err != nil {
+		return nil, err
 	}
 	var clientHandle C.UpnpClient_Handle
 	client := &Client{
@@ -107,7 +108,7 @@ func (c *Client) Close() {
 	}
 	C.UpnpUnRegisterClient(c.handle)
 	c.token.Delete()
-	C.UpnpFinish()
+	finishUPnP()
 }
 
 // Discover searches for the provided search target (ST).
@@ -227,4 +228,38 @@ func goCString(str *C.char) string {
 		return ""
 	}
 	return C.GoString(str)
+}
+
+func initUPnP(host *C.char, port uint16) error {
+	initMu.Lock()
+	defer initMu.Unlock()
+	if upnpInited {
+		initCount++
+		return nil
+	}
+	status := C.UpnpInit2(host, C.ushort(port))
+	if status != C.UPNP_E_SUCCESS {
+		// Fallback: let libupnp pick interface/port.
+		status = C.UpnpInit2(nil, C.ushort(port))
+		if status != C.UPNP_E_SUCCESS {
+			return fmt.Errorf("pupnp init failed: %d", int(status))
+		}
+	}
+	upnpInited = true
+	initCount = 1
+	return nil
+}
+
+func finishUPnP() {
+	initMu.Lock()
+	defer initMu.Unlock()
+	if !upnpInited {
+		return
+	}
+	initCount--
+	if initCount <= 0 {
+		C.UpnpFinish()
+		upnpInited = false
+		initCount = 0
+	}
 }

@@ -111,6 +111,19 @@ username = ""
 password = "secret"
 timeout_ms = 5000
 
+[modules.renderer_upnp]
+enabled = true
+# provider: the provider name that will prefix the renderer nodeId (mu:renderer:<provider>:<namespace>:<resource>)
+provider = "upnp"
+# name_prefix: optional string prepended to discovered renderer friendlyName, useful to namespace hosts
+name_prefix = "UPnP"
+# listen: bind address for SSDP/UPnP (host:port). Use 0.0.0.0:0 to let libupnp choose.
+listen = "0.0.0.0:0"
+# discovery_interval_ms: how often to rescan for UPnP renderers (default 300000 = 5m)
+discovery_interval_ms = 300000
+# timeout_ms: HTTP/SOAP timeout for UPnP calls
+timeout_ms = 5000
+
 [modules.bridge_upnp_library]
 enabled = true
 name = "UPnP Library"

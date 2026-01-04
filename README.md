@@ -49,6 +49,16 @@ go build -o ./bin/mu ./cmd/mu
 go build -o ./bin/mud ./cmd/mud
 ```
 
+Optional build tags:
+
+- `upnp`: enable UPnP library + renderer bridges (requires `libupnp` dev headers). Example:
+
+  ```bash
+  go build -tags "upnp gstreamer" -o ./bin/mud ./cmd/mud
+  ```
+
+- `gstreamer`: enable the GStreamer renderer bridge.
+
 Test:
 
 ```bash

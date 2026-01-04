@@ -200,7 +200,7 @@ func TestResolveBuildsSources(t *testing.T) {
 
 	itemID := makeContainerID(server.ID, "track-1")
 	cmd := mu.CommandEnvelope{Body: mustJSON(t, mu.LibraryResolveBody{ItemID: itemID})}
-	reply := mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	reply := mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true}, server.ID)
 
 	if !reply.OK {
 		t.Fatalf("expected ok")
@@ -222,7 +222,7 @@ func TestResolveBuildsSources(t *testing.T) {
 
 	// cached path should not call browse again
 	reqCount = 0
-	reply = mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	reply = mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true}, server.ID)
 	if reqCount != 0 {
 		t.Fatalf("expected cache hit without extra request")
 	}

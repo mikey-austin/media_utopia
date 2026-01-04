@@ -20,6 +20,7 @@ import (
 	podcastlibrary "github.com/mikey-austin/media_utopia/internal/modules/podcast_library"
 	renderergstreamer "github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
 	rendererkodi "github.com/mikey-austin/media_utopia/internal/modules/renderer_kodi"
+	rendererupnp "github.com/mikey-austin/media_utopia/internal/modules/renderer_upnp"
 	renderervlc "github.com/mikey-austin/media_utopia/internal/modules/renderer_vlc"
 	upnplibrary "github.com/mikey-austin/media_utopia/internal/modules/upnp_library"
 	"github.com/mikey-austin/media_utopia/internal/mud"
@@ -554,6 +555,36 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 		}
 	}
 
+	if moduleOnly == "" || moduleOnly == "renderer_upnp" {
+		for _, item := range cfg.Modules.RendererUPNP.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			discovery := time.Duration(cfgItem.DiscoveryIntervalMS) * time.Millisecond
+			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
+			if err := ensureUnique(cfgItem.Provider, "renderer_upnp"); err != nil {
+				return nil, err
+			}
+			mod, err := rendererupnp.NewModule(logger.With(zap.String("module", "renderer_upnp")), client, rendererupnp.Config{
+				TopicBase:         cfg.Server.TopicBase,
+				Provider:          cfgItem.Provider,
+				Namespace:         cfg.Server.Namespace,
+				Listen:            cfgItem.Listen,
+				DiscoveryInterval: discovery,
+				Timeout:           timeout,
+				NamePrefix:        cfgItem.NamePrefix,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "renderer_upnp",
+				Run:  mod.Run,
+			})
+		}
+	}
+
 	if moduleOnly != "" && len(modules) == 0 {
 		return nil, errors.New("no modules enabled")
 	}
@@ -604,6 +635,12 @@ func enabledModules(cfg mud.Config) []string {
 	for _, item := range cfg.Modules.RendererVLC.List() {
 		if item.Config.Enabled {
 			out = append(out, "renderer_vlc")
+			break
+		}
+	}
+	for _, item := range cfg.Modules.RendererUPNP.List() {
+		if item.Config.Enabled {
+			out = append(out, "renderer_upnp")
 			break
 		}
 	}

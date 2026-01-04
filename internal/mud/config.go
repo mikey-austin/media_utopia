@@ -60,6 +60,7 @@ type ModulesConfig struct {
 	RendererGStreamer     ModuleConfigSet[RendererGStreamerConfig] `toml:"renderer_gstreamer"`
 	RendererKodi          ModuleConfigSet[RendererKodiConfig]      `toml:"renderer_kodi"`
 	RendererVLC           ModuleConfigSet[RendererVLCConfig]       `toml:"renderer_vlc"`
+	RendererUPNP          ModuleConfigSet[RendererUPNPConfig]      `toml:"renderer_upnp"`
 	BridgeUPNPLibrary     ModuleConfigSet[BridgeUPNPLibraryConfig] `toml:"bridge_upnp_library"`
 	BridgeJellyfinLibrary ModuleConfigSet[JellyfinLibraryConfig]   `toml:"bridge_jellyfin_library"`
 	PodcastLibrary        ModuleConfigSet[PodcastLibraryConfig]    `toml:"podcast"`
@@ -109,6 +110,16 @@ type RendererVLCConfig struct {
 	Username  string `toml:"username"`
 	Password  string `toml:"password"`
 	TimeoutMS int64  `toml:"timeout_ms"`
+}
+
+// RendererUPNPConfig configures the UPnP renderer bridge.
+type RendererUPNPConfig struct {
+	Enabled             bool   `toml:"enabled"`
+	Provider            string `toml:"provider"`
+	NamePrefix          string `toml:"name_prefix"`
+	Listen              string `toml:"listen"`
+	DiscoveryIntervalMS int64  `toml:"discovery_interval_ms"`
+	TimeoutMS           int64  `toml:"timeout_ms"`
 }
 
 // BridgeUPNPLibraryConfig configures the UPnP library bridge.
