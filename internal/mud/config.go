@@ -113,11 +113,20 @@ type RendererVLCConfig struct {
 
 // BridgeUPNPLibraryConfig configures the UPnP library bridge.
 type BridgeUPNPLibraryConfig struct {
-	Enabled  bool   `toml:"enabled"`
-	Name     string `toml:"name"`
-	Provider string `toml:"provider"`
-	Resource string `toml:"resource"`
-	Listen   string `toml:"listen"`
+	Enabled                  bool   `toml:"enabled"`
+	Name                     string `toml:"name"`
+	Provider                 string `toml:"provider"`
+	Resource                 string `toml:"resource"`
+	Listen                   string `toml:"listen"`
+	TimeoutMS                int64  `toml:"timeout_ms"`
+	CacheTTLMS               int64  `toml:"cache_ttl_ms"`
+	CacheSize                int    `toml:"cache_size"`
+	CacheCompress            bool   `toml:"cache_compress"`
+	BrowseCacheTTLMS         int64  `toml:"browse_cache_ttl_ms"`
+	BrowseCacheSize          int    `toml:"browse_cache_size"`
+	MaxConcurrentRequests    int    `toml:"max_concurrent_requests"`
+	PublishTimeoutCooldownMS int64  `toml:"publish_timeout_cooldown_ms"`
+	DiscoveryIntervalMS      int64  `toml:"discovery_interval_ms"`
 }
 
 // JellyfinLibraryConfig configures the Jellyfin library bridge.

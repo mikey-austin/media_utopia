@@ -21,6 +21,7 @@ import (
 	renderergstreamer "github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
 	rendererkodi "github.com/mikey-austin/media_utopia/internal/modules/renderer_kodi"
 	renderervlc "github.com/mikey-austin/media_utopia/internal/modules/renderer_vlc"
+	upnplibrary "github.com/mikey-austin/media_utopia/internal/modules/upnp_library"
 	"github.com/mikey-austin/media_utopia/internal/mud"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 	"go.uber.org/zap"
@@ -315,6 +316,54 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			modules = append(modules, mud.ModuleRunner{
 				Name: "bridge_jellyfin_library",
 				Run:  jf.Run,
+			})
+		}
+	}
+
+	if moduleOnly == "" || moduleOnly == "bridge_upnp_library" {
+		for _, item := range cfg.Modules.BridgeUPNPLibrary.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			if !upnplibrary.Enabled {
+				logger.Warn("bridge_upnp_library disabled at build time (missing upnp tag)")
+				continue
+			}
+			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
+			cacheTTL := time.Duration(cfgItem.CacheTTLMS) * time.Millisecond
+			browseCacheTTL := time.Duration(cfgItem.BrowseCacheTTLMS) * time.Millisecond
+			publishCooldown := time.Duration(cfgItem.PublishTimeoutCooldownMS) * time.Millisecond
+			discoveryInterval := time.Duration(cfgItem.DiscoveryIntervalMS) * time.Millisecond
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("library", cfgItem.Provider, cfg.Server.Namespace, resource)
+			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "bridge_upnp_library"); err != nil {
+				return nil, err
+			}
+			mod, err := upnplibrary.NewModule(logger.With(zap.String("module", "bridge_upnp_library")), client, upnplibrary.Config{
+				NodeID:                 nodeID,
+				TopicBase:              cfg.Server.TopicBase,
+				Name:                   cfgItem.Name,
+				Listen:                 cfgItem.Listen,
+				Timeout:                timeout,
+				CacheTTL:               cacheTTL,
+				CacheSize:              cfgItem.CacheSize,
+				CacheCompress:          cfgItem.CacheCompress,
+				BrowseCacheTTL:         browseCacheTTL,
+				BrowseCacheSize:        cfgItem.BrowseCacheSize,
+				MaxConcurrentRequests:  cfgItem.MaxConcurrentRequests,
+				PublishTimeoutCooldown: publishCooldown,
+				DiscoveryInterval:      discoveryInterval,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "bridge_upnp_library",
+				Run:  mod.Run,
 			})
 		}
 	}
