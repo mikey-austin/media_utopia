@@ -182,7 +182,9 @@ class MuRendererEntity(MediaPlayerEntity):
 
     @property
     def media_image_url(self) -> str | None:
-        return self._bridge.rewrite_artwork_url(self._metadata().get("artworkUrl"))
+        # Use for_internal=True so HA fetches directly from upstream
+        # (avoids SSL issues when fetching via external proxy URL)
+        return self._bridge.rewrite_artwork_url(self._metadata().get("artworkUrl"), for_internal=True)
 
     @property
     def media_content_id(self) -> str | None:

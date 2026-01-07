@@ -607,13 +607,30 @@ class MudBridge:
         self._renderer_topics[node_id] = topics
         _ = renderer
 
-    def rewrite_artwork_url(self, url: str | None) -> str | None:
+    def rewrite_artwork_url(self, url: str | None, for_internal: bool = False) -> str | None:
+        """Rewrite artwork URL for proxying.
+
+        Args:
+            url: The original artwork URL.
+            for_internal: If True, return a URL that HA can fetch internally
+                          (direct upstream URL). If False, return a proxied URL
+                          for browser access.
+        """
         if not url:
             return url
         if url.startswith("/api/image_proxy") or url.startswith(ARTWORK_PROXY_PATH):
             return url
         try:
+            parsed = urlparse(url)
+            if parsed.path == ARTWORK_PROXY_PATH or parsed.path.startswith("/api/image_proxy"):
+                return url
+        except Exception:
+            pass
+        try:
             rewritten = self._rewrite_artwork_base(url)
+            # For internal HA fetching, return the direct URL (no proxy)
+            if for_internal:
+                return rewritten
             proxied = self._proxy_artwork_url(rewritten)
             if proxied:
                 return proxied
@@ -642,14 +659,22 @@ class MudBridge:
     def _proxy_artwork_url(self, url: str) -> str | None:
         if not url:
             return None
+        base_url = ""
+        # Try to get external URL first (for reverse proxy setups)
         try:
-            base_url = get_url(self.hass, prefer_external=True)
+            base_url = get_url(self.hass, prefer_external=True, allow_internal=False)
         except Exception:
-            base_url = self.hass.config.external_url or ""
+            pass
+        # Fall back to internal URL if external not available
+        if not base_url:
+            try:
+                base_url = get_url(self.hass, prefer_external=True, allow_internal=True)
+            except Exception:
+                base_url = self.hass.config.external_url or ""
         encoded = quote(url, safe="")
-        if base_url:
-            return f"{base_url}{ARTWORK_PROXY_PATH}?url={encoded}"
-        return f"{ARTWORK_PROXY_PATH}?url={encoded}"
+        if not base_url:
+            return f"{ARTWORK_PROXY_PATH}?url={encoded}"
+        return f"{base_url.rstrip('/')}{ARTWORK_PROXY_PATH}?url={encoded}"
 
     async def _handle_renderer_command(self, msg) -> None:
         node_id = self._node_id_from_topic(msg.topic)
