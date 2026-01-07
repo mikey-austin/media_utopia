@@ -643,9 +643,9 @@ class MudBridge:
         if not url:
             return None
         try:
-            base_url = get_url(self.hass)
+            base_url = get_url(self.hass, prefer_external=True)
         except Exception:
-            base_url = ""
+            base_url = self.hass.config.external_url or ""
         encoded = quote(url, safe="")
         if base_url:
             return f"{base_url}{ARTWORK_PROXY_PATH}?url={encoded}"
