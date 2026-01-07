@@ -1,10 +1,15 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.25-bookworm AS build
+FROM ubuntu:24.04 AS build
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    build-essential \
+    golang \
     pkg-config \
     libglib2.0-dev \
     libgstreamer1.0-dev \
+    libupnp-dev \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
  && rm -rf /var/lib/apt/lists/*
@@ -12,10 +17,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -tags "gstreamer" -o /out/mud ./cmd/mud
+RUN CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -tags "gstreamer upnp" -o /out/mud ./cmd/mud
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/mu ./cmd/mu
 
-FROM debian:bookworm-slim AS mud
+FROM ubuntu:24.04 AS mud
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     glib-networking \
@@ -27,9 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-alsa \
     gstreamer1.0-tools \
     alsa-utils \
-    libasound2 \
+    libupnp17t64 \
+    libasound2t64 \
     libgstreamer1.0-0 \
-    libglib2.0-0 \
+    libglib2.0-0t64 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/mud /usr/local/bin/mud
 USER 65532:65532

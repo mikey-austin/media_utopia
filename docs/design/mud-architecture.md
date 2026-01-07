@@ -123,13 +123,15 @@ listen = "0.0.0.0:0"
 discovery_interval_ms = 300000
 # timeout_ms: HTTP/SOAP timeout for UPnP calls
 timeout_ms = 5000
+# Note: libupnp is shared across modules; set the same explicit listen IP:port
+# for renderer_upnp and bridge_upnp_library if you need a specific interface.
 
 [modules.bridge_upnp_library]
 enabled = true
 name = "UPnP Library"
 provider = "upnp"
 resource = "default"
-listen = "0.0.0.0:9000"
+listen = "0.0.0.0:9000" # set to a specific LAN IP to force SSDP out one NIC
 
 [modules.bridge_jellyfin_library]
 enabled = true

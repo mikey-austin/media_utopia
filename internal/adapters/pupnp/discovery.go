@@ -3,8 +3,9 @@
 package pupnp
 
 // #cgo pkg-config: libupnp
-// #include <upnp/upnp.h>
-// #include <upnp/UpnpDiscovery.h>
+// #cgo CFLAGS: -I/usr/include/upnp
+// #include <upnp.h>
+// #include <UpnpDiscovery.h>
 // #include <stdlib.h>
 //
 // extern int goUPnPClientCallback(Upnp_EventType eventType, void *event, void *cookie);
@@ -27,6 +28,7 @@ var (
 	initMu     sync.Mutex
 	initCount  int
 	upnpInited bool
+	initHost   string
 )
 
 // DiscoveryResult holds a single SSDP discovery entry.
@@ -234,6 +236,13 @@ func initUPnP(host *C.char, port uint16) error {
 	initMu.Lock()
 	defer initMu.Unlock()
 	if upnpInited {
+		reqHost := ""
+		if host != nil {
+			reqHost = C.GoString(host)
+		}
+		if initHost != "" && reqHost != "" && initHost != reqHost {
+			return fmt.Errorf("pupnp already initialized on %s, requested %s; ensure all upnp modules share the same listen address", initHost, reqHost)
+		}
 		initCount++
 		return nil
 	}
@@ -247,6 +256,11 @@ func initUPnP(host *C.char, port uint16) error {
 	}
 	upnpInited = true
 	initCount = 1
+	if host != nil {
+		initHost = C.GoString(host)
+	} else {
+		initHost = ""
+	}
 	return nil
 }
 

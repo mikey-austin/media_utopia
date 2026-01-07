@@ -15,6 +15,7 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
 import voluptuous as vol
 
@@ -37,6 +38,7 @@ from .const import (
     RENDERER_LOAD_TIMEOUT_SECONDS,
     REPLY_TIMEOUT_SECONDS,
 )
+from .views import ARTWORK_PROXY_PATH
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -401,7 +403,7 @@ class MudBridge:
     async def _fetch_metadata(self, item_id: str) -> dict[str, Any]:
         cached = self._metadata_cache.get(item_id)
         if cached:
-            return cached
+            return self._normalize_metadata(cached)
         last_fail = self._metadata_failures.get(item_id)
         if last_fail and time.time()-last_fail < 60:
             return {}
@@ -423,6 +425,7 @@ class MudBridge:
             return {}
         metadata = (reply.get("body") or {}).get("metadata") or {}
         if metadata:
+            metadata = self._normalize_metadata(metadata)
             self._metadata_cache[item_id] = metadata
         return metadata
 
@@ -437,7 +440,7 @@ class MudBridge:
         for ref in item_ids:
             cached = self._metadata_cache.get(ref)
             if cached:
-                results[ref] = cached
+                results[ref] = self._normalize_metadata(cached)
                 continue
             last_fail = self._metadata_failures.get(ref)
             if last_fail and time.time()-last_fail < 60:
@@ -483,9 +486,20 @@ class MudBridge:
                 ref = ref_map[library_id].get(raw_id)
                 if not ref:
                     continue
+                metadata = self._normalize_metadata(metadata)
                 self._metadata_cache[ref] = metadata
                 results[ref] = metadata
         return results
+
+    def _normalize_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Ensure metadata artwork is proxied before caching/returning."""
+        if not metadata:
+            return metadata
+        art = metadata.get("artworkUrl")
+        if art:
+            metadata = dict(metadata)
+            metadata["artworkUrl"] = self.rewrite_artwork_url(art)
+        return metadata
 
     async def _resolve_sources_batch(
         self, library_id: str, item_ids: list[str]
@@ -596,29 +610,46 @@ class MudBridge:
     def rewrite_artwork_url(self, url: str | None) -> str | None:
         if not url:
             return url
-        if url.startswith("/api/image_proxy"):
+        if url.startswith("/api/image_proxy") or url.startswith(ARTWORK_PROXY_PATH):
             return url
         try:
-            rewritten = url
-            if self.artwork_base_url:
-                parsed = urlparse(url)
-                base = urlparse(self.artwork_base_url)
-                if not parsed.scheme:
-                    rewritten = urljoin(self.artwork_base_url, url)
-                else:
-                    rebuilt = parsed._replace(
-                        scheme=base.scheme or parsed.scheme,
-                        netloc=base.netloc or parsed.netloc,
-                    )
-                    rewritten = urlunparse(rebuilt)
+            rewritten = self._rewrite_artwork_base(url)
+            proxied = self._proxy_artwork_url(rewritten)
+            if proxied:
+                return proxied
             if self._image_proxy_url:
                 try:
                     return self._image_proxy_url(self.hass, rewritten)
                 except Exception:
-                    return url
-            return url
+                    return rewritten
+            return rewritten
         except Exception:
             return url
+
+    def _rewrite_artwork_base(self, url: str) -> str:
+        if not self.artwork_base_url:
+            return url
+        parsed = urlparse(url)
+        base = urlparse(self.artwork_base_url)
+        if not parsed.scheme:
+            return urljoin(self.artwork_base_url, url)
+        rebuilt = parsed._replace(
+            scheme=base.scheme or parsed.scheme,
+            netloc=base.netloc or parsed.netloc,
+        )
+        return urlunparse(rebuilt)
+
+    def _proxy_artwork_url(self, url: str) -> str | None:
+        if not url:
+            return None
+        try:
+            base_url = get_url(self.hass)
+        except Exception:
+            base_url = ""
+        encoded = quote(url, safe="")
+        if base_url:
+            return f"{base_url}{ARTWORK_PROXY_PATH}?url={encoded}"
+        return f"{ARTWORK_PROXY_PATH}?url={encoded}"
 
     async def _handle_renderer_command(self, msg) -> None:
         node_id = self._node_id_from_topic(msg.topic)

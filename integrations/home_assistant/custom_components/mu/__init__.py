@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover - fallback for older HA
 
 from .bridge import MudBridge
 from .const import DOMAIN
+from .views import ArtworkProxyView
 
 PLATFORMS: list[str] = ["media_player", "button", "select", "sensor", "text"]
 
@@ -24,9 +25,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(
             "MQTT integration is not configured. Add mqtt: to configuration.yaml."
         )
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if not domain_data.get("artwork_proxy_registered"):
+        hass.http.register_view(ArtworkProxyView(hass))
+        domain_data["artwork_proxy_registered"] = True
     bridge = MudBridge(hass, entry)
     await bridge.async_start()
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"bridge": bridge}
+    domain_data[entry.entry_id] = {"bridge": bridge}
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

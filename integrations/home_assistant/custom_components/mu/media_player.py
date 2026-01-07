@@ -182,7 +182,7 @@ class MuRendererEntity(MediaPlayerEntity):
 
     @property
     def media_image_url(self) -> str | None:
-        return self._metadata().get("artworkUrl")
+        return self._bridge.rewrite_artwork_url(self._metadata().get("artworkUrl"))
 
     @property
     def media_content_id(self) -> str | None:
@@ -424,7 +424,7 @@ class MuRendererEntity(MediaPlayerEntity):
             title = meta.get("title") or item_id
             artist = meta.get("artist")
             album = meta.get("album")
-            artwork = meta.get("artworkUrl")
+            artwork = self._bridge.rewrite_artwork_url(meta.get("artworkUrl"))
             if artist and album:
                 display = f"{title} — {artist} ({album})"
             elif artist:
@@ -517,7 +517,7 @@ class MuRendererEntity(MediaPlayerEntity):
             title = meta.get("title") or item_id
             artist = meta.get("artist")
             album = meta.get("album")
-            artwork = meta.get("artworkUrl")
+            artwork = self._bridge.rewrite_artwork_url(meta.get("artworkUrl"))
             if artist and album:
                 display = f"{title} — {artist} ({album})"
             elif artist:
@@ -628,7 +628,7 @@ class MuRendererEntity(MediaPlayerEntity):
                 display = f"{title_text} — {artist}"
             else:
                 display = title_text
-            artwork = item.get("imageUrl")
+            artwork = self._bridge.rewrite_artwork_url(item.get("imageUrl"))
 
             if item_type == "playlist":
                 playable = False

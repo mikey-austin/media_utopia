@@ -515,9 +515,17 @@ func (m *Module) refreshServers(ctx context.Context) {
 		m.log.Debug("pupnp discover failed", zap.Error(err))
 		return
 	}
+	if len(results) == 0 {
+		m.log.Debug("pupnp discovery returned zero results; ensure SSDP replies are reaching this host")
+	}
 	now := time.Now()
 	seen := map[string]bool{}
 	for _, res := range results {
+		m.log.Debug("pupnp discovery result",
+			zap.String("device", res.DeviceType),
+			zap.String("service", res.ServiceType),
+			zap.String("location", res.Location),
+			zap.String("os", res.OS))
 		server, derr := m.describeServer(ctx, res.Location)
 		if derr != nil {
 			m.log.Debug("describe server failed", zap.String("location", res.Location), zap.Error(derr))
