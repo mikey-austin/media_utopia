@@ -178,6 +178,17 @@ durations = ["30s", "60s"]
 refresh_interval_ms = 300000
 timeout_ms = 5000
 
+[modules.zone_snapcast]
+enabled = true
+name = "Snapcast"
+provider = "snapcast"
+resource = "default"
+server_url = "ws://snapserver.local:1780/jsonrpc"
+poll_interval_ms = 5000
+# zones: optional map of Snapcast client identifiers to friendly zone names
+# keys can be a client ID, client config name, host MAC, host name, or host IP
+# zones = { "client-abc123" = "Kitchen", "34:5a:60:4a:a5:db" = "Dining" }
+
 [modules.embedded_mqtt]
 enabled = true
 listen = "127.0.0.1:1883"

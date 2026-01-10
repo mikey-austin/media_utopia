@@ -52,6 +52,7 @@ type Presence struct {
 	Name   string         `json:"name"`
 	Caps   map[string]any `json:"caps,omitempty"`
 	EPs    map[string]any `json:"endpoints,omitempty"`
+	Source string         `json:"source,omitempty"`
 	TS     int64          `json:"ts"`
 }
 

@@ -1196,7 +1196,111 @@ mu/v1/node/R/evt
 
 ---
 
-## 15. Notes / Implementation Guidance
+## 15. Zone Controller and Zone Messages
+
+Zone controllers manage multi-room audio. Zones are speaker endpoints that can select audio sources.
+
+### Zone Controller Presence (retained)
+
+Topic: `mu/v1/node/<zone_controller>/presence`
+
+```json
+{
+  "nodeId": "mu:zone_controller:snapcast:mud@office:default",
+  "kind": "zone_controller",
+  "name": "Snapcast",
+  "sources": [
+    { "id": "mu:source:snapcast:mud@office:default", "name": "Default" },
+    { "id": "mu:source:snapcast:mud@office:librespot", "name": "Spotify" }
+  ],
+  "zones": [
+    "mu:zone:snapcast:mud@office:kitchen",
+    "mu:zone:snapcast:mud@office:dining"
+  ],
+  "ts": 1735580000
+}
+```
+
+Zone controllers are read-only discovery nodes with no state or commands.
+
+### Zone Presence (retained)
+
+Topic: `mu/v1/node/<zone>/presence`
+
+```json
+{
+  "nodeId": "mu:zone:snapcast:mud@office:kitchen",
+  "kind": "zone",
+  "name": "Kitchen Speaker",
+  "controllerId": "mu:zone_controller:snapcast:mud@office:default",
+  "caps": { "volume": true, "mute": true, "selectSource": true },
+  "ts": 1735580000
+}
+```
+
+### Zone State (retained)
+
+Topic: `mu/v1/node/<zone>/state`
+
+```json
+{
+  "volume": 0.75,
+  "mute": false,
+  "sourceId": "mu:source:snapcast:mud@office:default",
+  "connected": true,
+  "ts": 1735580000
+}
+```
+
+### Zone Commands (lease required)
+
+Topic: `mu/v1/node/<zone>/cmd`
+
+#### `zone.setVolume`
+
+```json
+{
+  "id": "zv1...",
+  "type": "zone.setVolume",
+  "ts": 1735580000,
+  "from": "homeassistant",
+  "replyTo": "mu/v1/reply/ha-xxx",
+  "lease": { "sessionId": "...", "token": "..." },
+  "body": { "volume": 0.5 }
+}
+```
+
+#### `zone.setMute`
+
+```json
+{
+  "id": "zm1...",
+  "type": "zone.setMute",
+  "ts": 1735580000,
+  "from": "homeassistant",
+  "replyTo": "mu/v1/reply/ha-xxx",
+  "lease": { "sessionId": "...", "token": "..." },
+  "body": { "mute": true }
+}
+```
+
+#### `zone.selectSource`
+
+```json
+{
+  "id": "zs1...",
+  "type": "zone.selectSource",
+  "ts": 1735580000,
+  "from": "homeassistant",
+  "replyTo": "mu/v1/reply/ha-xxx",
+  "lease": { "sessionId": "...", "token": "..." },
+  "body": { "sourceId": "mu:source:snapcast:mud@office:librespot" }
+}
+```
+
+---
+
+## 16. Notes / Implementation Guidance
 
 * Controllers SHOULD treat IDs as opaque strings; only providers parse their own IDs.
 * Renderer state is the primary source of truth for:
@@ -1214,7 +1318,7 @@ mu/v1/node/R/evt
 
 ---
 
-## 16. Appendix: Topic Summary
+## 17. Appendix: Topic Summary
 
 * Presence (retained): `mu/v1/node/<nodeId>/presence`
 * State (retained): `mu/v1/node/<nodeId>/state`

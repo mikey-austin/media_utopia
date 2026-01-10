@@ -23,6 +23,7 @@ import (
 	rendererupnp "github.com/mikey-austin/media_utopia/internal/modules/renderer_upnp"
 	renderervlc "github.com/mikey-austin/media_utopia/internal/modules/renderer_vlc"
 	upnplibrary "github.com/mikey-austin/media_utopia/internal/modules/upnp_library"
+	zonesnapcast "github.com/mikey-austin/media_utopia/internal/modules/zone_snapcast"
 	"github.com/mikey-austin/media_utopia/internal/mud"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 	"go.uber.org/zap"
@@ -472,6 +473,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				Crossfade:    crossfade,
 				Volume:       1.0,
 				PublishState: true,
+				Source:       cfgItem.Source,
 			})
 			if err != nil {
 				return nil, err
@@ -508,6 +510,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				Timeout:      timeout,
 				Volume:       1.0,
 				PublishState: true,
+				Source:       cfgItem.Source,
 			})
 			if err != nil {
 				return nil, err
@@ -544,6 +547,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				Timeout:      timeout,
 				Volume:       1.0,
 				PublishState: true,
+				Source:       cfgItem.Source,
 			})
 			if err != nil {
 				return nil, err
@@ -580,6 +584,39 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			}
 			modules = append(modules, mud.ModuleRunner{
 				Name: "renderer_upnp",
+				Run:  mod.Run,
+			})
+		}
+	}
+
+	if moduleOnly == "" || moduleOnly == "zone_snapcast" {
+		for _, item := range cfg.Modules.ZoneSnapcast.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			pollInterval := durationFromMS(cfgItem.PollIntervalMS)
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("zone_controller", cfgItem.Provider, cfg.Server.Namespace, resource)
+			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "zone_snapcast"); err != nil {
+				return nil, err
+			}
+			mod, err := zonesnapcast.NewModule(logger.With(zap.String("module", "zone_snapcast")), client, zonesnapcast.Config{
+				NodeID:       nodeID,
+				TopicBase:    cfg.Server.TopicBase,
+				Name:         cfgItem.Name,
+				ServerURL:    cfgItem.ServerURL,
+				PollInterval: pollInterval,
+				Zones:        cfgItem.Zones,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "zone_snapcast",
 				Run:  mod.Run,
 			})
 		}
@@ -647,6 +684,12 @@ func enabledModules(cfg mud.Config) []string {
 	for _, item := range cfg.Modules.BridgeUPNPLibrary.List() {
 		if item.Config.Enabled {
 			out = append(out, "bridge_upnp_library")
+			break
+		}
+	}
+	for _, item := range cfg.Modules.ZoneSnapcast.List() {
+		if item.Config.Enabled {
+			out = append(out, "zone_snapcast")
 			break
 		}
 	}

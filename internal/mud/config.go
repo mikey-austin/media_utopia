@@ -65,6 +65,7 @@ type ModulesConfig struct {
 	BridgeJellyfinLibrary ModuleConfigSet[JellyfinLibraryConfig]   `toml:"bridge_jellyfin_library"`
 	PodcastLibrary        ModuleConfigSet[PodcastLibraryConfig]    `toml:"podcast"`
 	Go2RTCLibrary         ModuleConfigSet[Go2RTCLibraryConfig]     `toml:"go2rtc"`
+	ZoneSnapcast          ModuleConfigSet[ZoneSnapcastConfig]      `toml:"zone_snapcast"`
 	EmbeddedMQTT          EmbeddedMQTTConfig                       `toml:"embedded_mqtt"`
 }
 
@@ -86,6 +87,7 @@ type RendererGStreamerConfig struct {
 	Pipeline    string `toml:"pipeline"`
 	Device      string `toml:"device"`
 	CrossfadeMS int64  `toml:"crossfade_ms"`
+	Source      string `toml:"source"`
 }
 
 // RendererKodiConfig configures the Kodi renderer module.
@@ -98,6 +100,7 @@ type RendererKodiConfig struct {
 	Username  string `toml:"username"`
 	Password  string `toml:"password"`
 	TimeoutMS int64  `toml:"timeout_ms"`
+	Source    string `toml:"source"`
 }
 
 // RendererVLCConfig configures the VLC renderer module.
@@ -110,6 +113,7 @@ type RendererVLCConfig struct {
 	Username  string `toml:"username"`
 	Password  string `toml:"password"`
 	TimeoutMS int64  `toml:"timeout_ms"`
+	Source    string `toml:"source"`
 }
 
 // RendererUPNPConfig configures the UPnP renderer bridge.
@@ -120,6 +124,7 @@ type RendererUPNPConfig struct {
 	Listen              string `toml:"listen"`
 	DiscoveryIntervalMS int64  `toml:"discovery_interval_ms"`
 	TimeoutMS           int64  `toml:"timeout_ms"`
+	Source              string `toml:"source"`
 }
 
 // BridgeUPNPLibraryConfig configures the UPnP library bridge.
@@ -190,6 +195,17 @@ type Go2RTCLibraryConfig struct {
 	CacheSize         int      `toml:"cache_size"`
 }
 
+// ZoneSnapcastConfig configures the Snapcast zone controller module.
+type ZoneSnapcastConfig struct {
+	Enabled        bool              `toml:"enabled"`
+	Name           string            `toml:"name"`
+	Provider       string            `toml:"provider"`
+	Resource       string            `toml:"resource"`
+	ServerURL      string            `toml:"server_url"`
+	PollIntervalMS int64             `toml:"poll_interval_ms"`
+	Zones          map[string]string `toml:"zones"`
+}
+
 // ModuleInstance holds a named config instance.
 type ModuleInstance[T any] struct {
 	Name   string
@@ -210,10 +226,26 @@ func (s *ModuleConfigSet[T]) UnmarshalTOML(data interface{}) error {
 	if !ok {
 		return fmt.Errorf("invalid module config")
 	}
+	fieldNames := map[string]struct{}{}
+	if typ := reflect.TypeOf((*T)(nil)).Elem(); typ.Kind() == reflect.Struct {
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			tag := field.Tag.Get("toml")
+			name := strings.Split(tag, ",")[0]
+			if name == "" {
+				name = strings.ToLower(field.Name)
+			}
+			fieldNames[name] = struct{}{}
+		}
+	}
 	base := make(map[string]interface{})
 	items := make(map[string]T)
 	for key, value := range raw {
 		if sub, ok := value.(map[string]interface{}); ok {
+			if _, isField := fieldNames[key]; isField {
+				base[key] = value
+				continue
+			}
 			var cfg T
 			if err := decodeConfig(sub, &cfg); err != nil {
 				return fmt.Errorf("invalid module instance %q: %w", key, err)
@@ -330,6 +362,26 @@ func assignField(field reflect.Value, raw interface{}) error {
 					return fmt.Errorf("expected string slice")
 				}
 				out = append(out, str)
+			}
+			field.Set(reflect.ValueOf(out))
+			return nil
+		}
+	case reflect.Map:
+		if field.Type().Key().Kind() != reflect.String || field.Type().Elem().Kind() != reflect.String {
+			return fmt.Errorf("unsupported map type")
+		}
+		switch val := raw.(type) {
+		case map[string]string:
+			field.Set(reflect.ValueOf(val))
+			return nil
+		case map[string]interface{}:
+			out := make(map[string]string, len(val))
+			for key, item := range val {
+				str, ok := item.(string)
+				if !ok {
+					return fmt.Errorf("expected string map value for key %q", key)
+				}
+				out[key] = str
 			}
 			field.Set(reflect.ValueOf(out))
 			return nil

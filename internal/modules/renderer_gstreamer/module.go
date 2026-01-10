@@ -14,7 +14,7 @@ import (
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/idgen"
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
-	"github.com/mikey-austin/media_utopia/internal/modules/renderer_core"
+	renderercore "github.com/mikey-austin/media_utopia/internal/modules/renderer_core"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 	"go.uber.org/zap"
 )
@@ -35,6 +35,7 @@ type Config struct {
 	Crossfade    time.Duration
 	Volume       float64
 	PublishState bool
+	Source       string
 }
 
 // Module implements a GStreamer renderer.
@@ -115,7 +116,8 @@ func (m *Module) publishPresence() error {
 			"seek":         true,
 			"volume":       true,
 		},
-		TS: time.Now().Unix(),
+		Source: m.config.Source,
+		TS:     time.Now().Unix(),
 	}
 	payload, err := json.Marshal(presence)
 	if err != nil {

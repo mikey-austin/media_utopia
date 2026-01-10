@@ -32,6 +32,10 @@ async def async_setup_entry(
     await manager.async_start()
     data["lease_sensor_manager"] = manager
 
+    zone_manager = ZoneSensorManager(bridge, async_add_entities)
+    await zone_manager.async_start()
+    data["zone_sensor_manager"] = zone_manager
+
 
 class LeaseSensorManager:
     """Manage lease sensors for renderer nodes."""
@@ -194,3 +198,180 @@ class QueueLengthSensor(LeaseSensorBase):
         if isinstance(length, int):
             return length
         return None
+
+
+class ZoneSensorManager:
+    """Manage sensors for zone controller nodes."""
+
+    def __init__(self, bridge, async_add_entities: AddEntitiesCallback) -> None:
+        self._bridge = bridge
+        self._async_add_entities = async_add_entities
+        self._sensors: dict[str, list[ZoneControllerSensorBase]] = {}
+
+    async def async_start(self) -> None:
+        self._bridge.register_zone_controller_listener(self._on_controller)
+        self._bridge.register_zone_state_listener(self._on_zone_state)
+
+        for node_id in self._bridge.list_zone_controllers():
+            self._on_controller(node_id)
+
+    @callback
+    def _on_controller(self, node_id: str) -> None:
+        if node_id in self._sensors:
+            for sensor in self._sensors[node_id]:
+                sensor.async_write_ha_state()
+            return
+
+        sensors: list[ZoneControllerSensorBase] = [
+            TotalZonesSensor(self._bridge, node_id),
+            ActiveZonesSensor(self._bridge, node_id),
+            TotalSourcesSensor(self._bridge, node_id),
+            SourceIDsSensor(self._bridge, node_id),
+        ]
+        self._sensors[node_id] = sensors
+        self._async_add_entities(sensors)
+
+    @callback
+    def _on_zone_state(self, zone_id: str, _state: dict[str, Any]) -> None:
+        zone = self._bridge.get_zone(zone_id)
+        if not zone:
+            return
+        controller_id = zone.get("controllerId")
+        if not controller_id or controller_id not in self._sensors:
+            return
+        for sensor in self._sensors[controller_id]:
+            sensor.async_write_ha_state()
+
+
+class ZoneControllerSensorBase(SensorEntity):
+    """Base class for zone controller sensors."""
+
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+
+    def __init__(self, bridge, node_id: str) -> None:
+        self._bridge = bridge
+        self._node_id = node_id
+
+    @property
+    def device_info(self):
+        controller = self._bridge.get_zone_controller(self._node_id) or {}
+        return {
+            "identifiers": {("mu", self._node_id)},
+            "name": controller.get("name", self._node_id),
+            "manufacturer": "Snapcast",
+            "model": "Zone Controller",
+        }
+
+    @property
+    def available(self) -> bool:
+        return self._bridge.get_zone_controller(self._node_id) is not None
+
+
+class TotalZonesSensor(ZoneControllerSensorBase):
+    """Sensor for total number of zones."""
+
+    _attr_name = "Total Zones"
+    _attr_unique_id_suffix = "total_zones"
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_zone_controller_{safe}_{self._attr_unique_id_suffix}"
+
+    @property
+    def native_value(self) -> int:
+        controller = self._bridge.get_zone_controller(self._node_id) or {}
+        zones = controller.get("zones") or []
+        return len(zones)
+
+
+class ActiveZonesSensor(ZoneControllerSensorBase):
+    """Sensor for number of active (playing/unmuted) zones."""
+
+    _attr_name = "Active Zones"
+    _attr_unique_id_suffix = "active_zones"
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_zone_controller_{safe}_{self._attr_unique_id_suffix}"
+
+    @property
+    def native_value(self) -> int:
+        controller = self._bridge.get_zone_controller(self._node_id) or {}
+        zone_ids = controller.get("zones") or []
+        count = 0
+        for zid in zone_ids:
+            zone = self._bridge.get_zone(zid)
+            if not zone:
+                continue
+            state = zone.get("state") or {}
+            if state.get("connected", True) and not state.get("mute", False):
+                count += 1
+        return count
+
+
+class TotalSourcesSensor(ZoneControllerSensorBase):
+    """Sensor for total number of sources."""
+
+    _attr_name = "Total Sources"
+    _attr_unique_id_suffix = "total_sources"
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_zone_controller_{safe}_{self._attr_unique_id_suffix}"
+
+    @property
+    def native_value(self) -> int:
+        controller = self._bridge.get_zone_controller(self._node_id) or {}
+        sources = controller.get("sources") or []
+        return len(sources)
+
+
+class SourceIDsSensor(ZoneControllerSensorBase):
+    """Sensor displaying available source IDs for renderer configuration."""
+
+    _attr_name = "Source IDs"
+    _attr_unique_id_suffix = "source_ids"
+    _attr_icon = "mdi:format-list-bulleted"
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_zone_controller_{safe}_{self._attr_unique_id_suffix}"
+
+    @property
+    def native_value(self) -> str:
+        """Return comma-separated list of source IDs."""
+        controller = self._bridge.get_zone_controller(self._node_id) or {}
+        sources = controller.get("sources") or []
+        if not sources:
+            return "No sources available"
+        source_ids = [s.get("id", "") for s in sources if s.get("id")]
+        if not source_ids:
+            return "No sources available"
+        return ", ".join(source_ids)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return source details as attributes for easy reference."""
+        controller = self._bridge.get_zone_controller(self._node_id) or {}
+        sources = controller.get("sources") or []
+        if not sources:
+            return {}
+        
+        # Create a mapping of source IDs to names
+        source_map = {}
+        for source in sources:
+            source_id = source.get("id")
+            source_name = source.get("name", source_id)
+            if source_id:
+                source_map[source_id] = source_name
+        
+        return {
+            "sources": source_map,
+            "count": len(sources),
+        }

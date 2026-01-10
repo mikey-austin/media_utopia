@@ -22,6 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .zone import ZoneEntityManager
 
 import logging
 
@@ -70,6 +71,10 @@ async def async_setup_entry(
     manager = RendererManager(bridge, async_add_entities)
     await manager.async_start()
     data["renderer_manager"] = manager
+
+    zone_manager = ZoneEntityManager(bridge, async_add_entities)
+    await zone_manager.async_start()
+    data["zone_manager"] = zone_manager
 
 
 class RendererManager:

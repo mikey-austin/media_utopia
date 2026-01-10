@@ -100,6 +100,11 @@ class MudBridge:
         self._leases: dict[str, Lease] = {}
         self._snapshot_names: dict[str, str] = {}
         self._playlist_listeners: list[callable] = []
+        self._zone_controllers: dict[str, dict[str, Any]] = {}
+        self._zone_controller_listeners: list[callable] = []
+        self._zones: dict[str, dict[str, Any]] = {}
+        self._zone_listeners: list[callable] = []
+        self._zone_state_listeners: list[callable] = []
         self._image_proxy_url = _image_proxy_url
 
     async def async_start(self) -> None:
@@ -268,6 +273,12 @@ class MudBridge:
             self._playlist_server = payload
             await self._publish_playlist_server_availability("online")
             await self._refresh_playlists()
+        elif kind == "zone_controller":
+            self._zone_controllers[node_id] = payload
+            self._notify_zone_controller_listeners(node_id)
+        elif kind == "zone":
+            self._zones[node_id] = payload
+            self._notify_zone_listeners(node_id)
 
     async def _on_state(self, msg) -> None:
         try:
@@ -277,13 +288,16 @@ class MudBridge:
         node_id = self._node_id_from_topic(msg.topic)
         if node_id is None:
             return
-        if node_id not in self._renderers:
-            return
-        _LOGGER.debug("state %s status=%s", node_id, (payload.get("playback") or {}).get("status"))
-        self._renderers[node_id]["state"] = payload
-        await self._maybe_resolve_metadata(node_id, payload)
-        self._notify_renderer_state_listeners(node_id, payload)
-        await self._publish_renderer_state(node_id, payload)
+        if node_id in self._renderers:
+            _LOGGER.debug("state %s status=%s", node_id, (payload.get("playback") or {}).get("status"))
+            self._renderers[node_id]["state"] = payload
+            await self._maybe_resolve_metadata(node_id, payload)
+            self._notify_renderer_state_listeners(node_id, payload)
+            await self._publish_renderer_state(node_id, payload)
+
+        if node_id in self._zones:
+            self._zones[node_id]["state"] = payload
+            self._notify_zone_state_listeners(node_id, payload)
 
     def register_renderer_listener(self, callback) -> None:
         self._renderer_listeners.append(callback)
@@ -347,6 +361,91 @@ class MudBridge:
         for node_id, info in self._renderers.items():
             out.append((node_id, info.get("name", node_id)))
         return out
+
+    def register_zone_listener(self, callback) -> None:
+        if callback not in self._zone_listeners:
+            self._zone_listeners.append(callback)
+
+    def register_zone_state_listener(self, callback) -> None:
+        if callback not in self._zone_state_listeners:
+            self._zone_state_listeners.append(callback)
+
+    def register_zone_controller_listener(self, callback) -> None:
+        if callback not in self._zone_controller_listeners:
+            self._zone_controller_listeners.append(callback)
+
+    def _notify_zone_listeners(self, node_id: str) -> None:
+        for callback in self._zone_listeners:
+            try:
+                callback(node_id)
+            except Exception:
+                pass
+
+    def _notify_zone_state_listeners(self, node_id: str, state: dict[str, Any]) -> None:
+        for callback in self._zone_state_listeners:
+            try:
+                callback(node_id, state)
+            except Exception:
+                pass
+
+    def _notify_zone_controller_listeners(self, node_id: str) -> None:
+        for callback in self._zone_controller_listeners:
+            try:
+                callback(node_id)
+            except Exception:
+                pass
+
+    def get_zone_controller(self, node_id: str) -> dict[str, Any] | None:
+        return self._zone_controllers.get(node_id)
+
+    def list_zone_controllers(self) -> list[str]:
+        return list(self._zone_controllers.keys())
+
+    def get_zone(self, node_id: str) -> dict[str, Any] | None:
+        return self._zones.get(node_id)
+
+    def list_zones(self) -> list[str]:
+        return list(self._zones.keys())
+
+    def _zone_controller_id(self, zone_id: str) -> str | None:
+        zone = self._zones.get(zone_id) or {}
+        controller_id = zone.get("controllerId")
+        if not controller_id:
+            return None
+        return str(controller_id)
+
+    async def async_zone_set_volume(self, node_id: str, volume: float) -> None:
+        await self._send_zone_command(node_id, "zone.setVolume", {"volume": volume})
+
+    async def async_zone_set_mute(self, node_id: str, mute: bool) -> None:
+        await self._send_zone_command(node_id, "zone.setMute", {"mute": mute})
+
+    async def async_zone_select_source(self, node_id: str, source_id: str) -> None:
+        await self._send_zone_command(
+            node_id, "zone.selectSource", {"sourceId": source_id}
+        )
+
+    async def _send_zone_command(
+        self, zone_id: str, cmd_type: str, body: dict[str, Any]
+    ) -> None:
+        controller_id = self._zone_controller_id(zone_id)
+        if controller_id is None:
+            _LOGGER.warning("zone controller missing for %s cmd=%s", zone_id, cmd_type)
+            return
+        payload = {"zoneId": zone_id, **body}
+        _LOGGER.debug(
+            "send zone cmd=%s controller=%s zone=%s body=%s",
+            cmd_type,
+            controller_id,
+            zone_id,
+            body,
+        )
+        await self._publish_command(
+            controller_id,
+            cmd_type,
+            payload,
+            need_lease=False,
+        )
 
     def get_playlist(self, playlist_id: str) -> dict[str, Any] | None:
         return self._playlists.get(playlist_id)
@@ -1678,5 +1777,4 @@ class MudBridge:
         if not library_id or not item_id:
             return None, None
         return library_id, item_id
-
 

@@ -7,6 +7,9 @@ Media Utopia is a set of discoverable **nodes** communicating over MQTT:
 - **Library**: browse/search/resolve media items into HTTP stream URLs
 - **Playlist Server** (**required in v1**): durable playlists + queue snapshots
 - **Advisor** (optional / future): observes events and proposes suggestions
+- **Zone Controller** (optional): manages multi-room audio zones (e.g. Snapcast)
+- **Zone**: a logical speaker endpoint managed by a zone controller
+- **Source**: an audio input stream available to zones
 
 ## Canonical queue
 The **renderer session** owns the canonical “now/next/later” queue.
@@ -26,8 +29,8 @@ IDs are opaque outside the provider that minted them.
 
 ### Components
 
-- `kind`: node type (`renderer`, `library`, `playlist`, `advisor`, `session`, etc).
-- `provider`: implementation or backend (`gstreamer`, `jellyfin`, `upnp`, `plsrv`, `go2rtc`, `vlc`).
+- `kind`: node type (`renderer`, `library`, `playlist`, `advisor`, `zone_controller`, `zone`, `source`, `session`, etc).
+- `provider`: implementation or backend (`gstreamer`, `jellyfin`, `upnp`, `plsrv`, `go2rtc`, `vlc`, `snapcast`).
 - `namespace`: deployment scope. Defaults to the server identity in `mud` (`mud@livingroom`, `media-hub`).
 - `resource`: instance name within the namespace (defaults to `default`).
 
@@ -41,9 +44,13 @@ IDs are opaque outside the provider that minted them.
 - `mu:library:upnp:mud@lab:basement-nas`
 - `mu:library:podcast:mud@studio:default`
 - `mu:library:go2rtc:mud@studio:default`
+- `mu:zone_controller:snapcast:mud@office:default`
+- `mu:zone:snapcast:mud@office:kitchen`
+- `mu:source:snapcast:mud@office:librespot`
 
 ### Use cases
 
 - **Multi-room:** same provider across namespaces (`mud@kitchen`, `mud@office`).
 - **Multi-instance:** multiple renderers per namespace (`default`, `livingroom`, `patio`).
 - **Bridges:** tie a provider name to a backend (`jellyfin`, `upnp`, `kodi`, `go2rtc`).
+- **Zones:** multi-room audio with zone controller backends (`snapcast`, `pipewire`).
