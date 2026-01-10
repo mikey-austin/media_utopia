@@ -492,13 +492,19 @@ class MudBridge:
         return results
 
     def _normalize_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        """Ensure metadata artwork is proxied before caching/returning."""
+        """Normalize metadata, applying base URL rewriting to artwork.
+
+        Note: This only applies base URL rewriting, not proxying.
+        Callers should use rewrite_artwork_url() to apply proxying as needed.
+        """
         if not metadata:
             return metadata
         art = metadata.get("artworkUrl")
         if art:
             metadata = dict(metadata)
-            metadata["artworkUrl"] = self.rewrite_artwork_url(art)
+            # Only apply base URL rewriting, not proxying
+            # Callers will apply proxying based on context (internal vs browser)
+            metadata["artworkUrl"] = self._rewrite_artwork_base(art)
         return metadata
 
     async def _resolve_sources_batch(

@@ -119,13 +119,18 @@ func (d *Driver) SetVolume(volume float64) error {
 	return nil
 }
 
-// SetMute sets mute state.
+// SetMute sets mute state using both GStreamer's mute property and volume.
+// The mute property preserves audio clock synchronization, while setting
+// volume to 0 ensures the audio is actually silenced.
 func (d *Driver) SetMute(mute bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.muted = mute
 	if d.current != nil {
+		// Set mute property for clock sync preservation.
+		_ = d.current.SetProperty("mute", mute)
+		// Also set volume to ensure audio is actually silenced.
 		target := d.volumeTarget()
 		if target != nil {
 			_ = target.SetProperty("volume", d.currentVolumeLocked())
@@ -176,6 +181,10 @@ func (d *Driver) startPipeline(pipeline *gst.Element, volumeEl *gst.Element) err
 	}
 	if err := pipeline.SetState(gst.StatePlaying); err != nil {
 		return err
+	}
+	// Apply current mute state to new pipeline.
+	if d.muted {
+		_ = pipeline.SetProperty("mute", true)
 	}
 	if d.crossfade > 0 {
 		_ = target.SetProperty("volume", 0.0)
