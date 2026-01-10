@@ -491,6 +491,62 @@ class MudBridge:
                 results[ref] = metadata
         return results
 
+    async def async_fetch_metadata_fresh(
+        self, item_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch metadata for items, bypassing cache (for queue browser)."""
+        results: dict[str, dict[str, Any]] = {}
+        if not item_ids:
+            return results
+        groups: dict[str, list[str]] = {}
+        ref_map: dict[str, dict[str, str]] = {}
+        for ref in item_ids:
+            library_id, raw_id = self._split_lib_ref(ref)
+            if not library_id or not raw_id:
+                continue
+            groups.setdefault(library_id, []).append(raw_id)
+            ref_map.setdefault(library_id, {})[raw_id] = ref
+
+        for library_id, raw_ids in groups.items():
+            async with self._metadata_sema:
+                reply = await self._request(
+                    library_id,
+                    "library.resolveBatch",
+                    {"itemIds": raw_ids, "metadataOnly": True},
+                    need_lease=False,
+                    timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
+                )
+            if reply is None or reply.get("type") != "ack":
+                # Fallback to individual requests
+                for raw_id in raw_ids:
+                    ref = ref_map[library_id].get(raw_id)
+                    if not ref:
+                        continue
+                    body = {"itemId": raw_id, "metadataOnly": True}
+                    reply2 = await self._request(
+                        library_id,
+                        "library.resolve",
+                        body,
+                        need_lease=False,
+                        timeout_seconds=max(10, REPLY_TIMEOUT_SECONDS),
+                    )
+                    if reply2 and reply2.get("type") == "ack":
+                        metadata = (reply2.get("body") or {}).get("metadata") or {}
+                        if metadata:
+                            results[ref] = self._normalize_metadata(metadata)
+                continue
+            items = (reply.get("body") or {}).get("items") or []
+            for item in items:
+                raw_id = item.get("itemId")
+                metadata = item.get("metadata") or {}
+                if not raw_id or not metadata:
+                    continue
+                ref = ref_map[library_id].get(raw_id)
+                if not ref:
+                    continue
+                results[ref] = self._normalize_metadata(metadata)
+        return results
+
     def _normalize_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Normalize metadata, applying base URL rewriting to artwork.
 
@@ -819,6 +875,36 @@ class MudBridge:
         await self._send_renderer_command(
             node_id, "playback.seek", {"positionMs": int(position * 1000)}
         )
+
+    async def async_get_queue(self, node_id: str) -> list[dict[str, Any]]:
+        """Fetch the current queue entries for a renderer with metadata."""
+        state = self.get_renderer_state(node_id)
+        queue = state.get("queue") or {}
+        length = queue.get("length") or 0
+        if length == 0:
+            return []
+        entries: list[dict[str, Any]] = []
+        from_index = 0
+        page_size = 100
+        while from_index < length:
+            reply = await self._request(
+                node_id,
+                "queue.get",
+                {"from": from_index, "count": page_size, "resolve": "metadata"},
+                need_lease=False,
+            )
+            if reply is None or reply.get("type") != "ack":
+                break
+            body = reply.get("body") or {}
+            for entry in body.get("entries") or []:
+                entries.append(entry)
+            from_index += page_size
+        return entries
+
+    async def async_queue_jump(self, node_id: str, index: int) -> None:
+        """Jump to a specific queue index and start playback."""
+        await self._send_renderer_command(node_id, "playback.play", {"index": index})
+
 
     async def async_shuffle(self, node_id: str, shuffle: bool) -> None:
         if shuffle:
@@ -1572,10 +1658,25 @@ class MudBridge:
         return None
 
     def _split_lib_ref(self, ref: str) -> tuple[str | None, str | None]:
+        """Split a library reference into (library_node_id, item_id).
+        
+        Format: lib:mu:library:{provider}:{namespace}:{resource}:{item_id}
+        Example: lib:mu:library:upnp:mud@office:default:uuid::base64
+        Returns: (mu:library:upnp:mud@office:default, uuid::base64)
+        """
         if not ref.startswith("lib:"):
             return None, None
         ref = ref[len("lib:") :]
-        idx = ref.rfind(":")
-        if idx <= 0 or idx >= len(ref) - 1:
+        # Library node IDs have the pattern: mu:library:{provider}:{namespace}:{resource}
+        # So we need to find the 5th colon to separate library_id from item_id
+        parts = ref.split(":", 5)  # Split into at most 6 parts
+        if len(parts) < 6:
             return None, None
-        return ref[:idx], ref[idx + 1 :]
+        # Rejoin first 5 parts as library_id, 6th part is item_id
+        library_id = ":".join(parts[:5])
+        item_id = parts[5]
+        if not library_id or not item_id:
+            return None, None
+        return library_id, item_id
+
+

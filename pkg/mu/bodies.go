@@ -46,8 +46,9 @@ type PlaybackSetMuteBody struct {
 
 // QueueGetBody fetches queue entries.
 type QueueGetBody struct {
-	From  int64 `json:"from"`
-	Count int64 `json:"count"`
+	From    int64  `json:"from"`
+	Count   int64  `json:"count"`
+	Resolve string `json:"resolve,omitempty"`
 }
 
 // QueueGetReply is the reply body for queue.get.

@@ -284,6 +284,14 @@ class MuRendererEntity(MediaPlayerEntity):
     ) -> None:
         _ = media_type
         _LOGGER.debug("play_media %s %s", self._node_id, media_id)
+        # Handle queue jump requests (from Current Queue browser)
+        if str(media_id).startswith("queue_jump:"):
+            try:
+                index = int(str(media_id)[len("queue_jump:"):])
+                await self._bridge.async_queue_jump(self._node_id, index)
+                return
+            except ValueError:
+                pass
         await self._bridge.async_play_media(self._node_id, media_id)
 
     async def async_browse_media(self, media_content_type=None, media_content_id=None):
@@ -298,6 +306,16 @@ class MuRendererEntity(MediaPlayerEntity):
         )
 
         if not media_content_id or media_content_id == "root":
+            root.children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_PLAYLIST,
+                    media_content_id="queue",
+                    media_content_type=MEDIA_TYPE_PLAYLIST,
+                    title="Current Queue",
+                    can_play=False,
+                    can_expand=True,
+                )
+            )
             root.children.append(
                 BrowseMedia(
                     media_class=MEDIA_CLASS_DIRECTORY,
@@ -382,6 +400,9 @@ class MuRendererEntity(MediaPlayerEntity):
 
         if str(media_content_id).startswith("snapshot:"):
             return await self._browse_snapshot(media_content_id)
+
+        if str(media_content_id) == "queue" or str(media_content_id).startswith("queue?"):
+            return await self._browse_queue(media_content_id)
 
         rest = str(media_content_id)[len("playlist:") :]
         page = 1
@@ -557,6 +578,112 @@ class MuRendererEntity(MediaPlayerEntity):
             title=f"{snapshot.get('name', snapshot_id)} (page {page})",
             can_play=True,
             can_expand=True,
+            children=children,
+        )
+
+    async def _browse_queue(self, media_content_id: str = "queue") -> BrowseMedia:
+        """Browse the current queue and allow jumping to any track."""
+        # Parse page from content_id
+        page = 1
+        if "?page=" in str(media_content_id):
+            try:
+                page = max(1, int(str(media_content_id).split("?page=")[1]))
+            except ValueError:
+                page = 1
+
+        entries = await self._bridge.async_get_queue(self._node_id)
+
+        # Empty queue case
+        if not entries:
+            return BrowseMedia(
+                media_class=MEDIA_CLASS_PLAYLIST,
+                media_content_id="queue",
+                media_content_type=MEDIA_TYPE_PLAYLIST,
+                title="Current Queue",
+                can_play=False,
+                can_expand=False,
+                children=[],
+            )
+
+        # Pagination
+        page_size = 25
+        total = len(entries)
+        start = max(0, (page - 1) * page_size)
+        end = min(total, start + page_size)
+        page_entries = entries[start:end]
+
+        # Collect item IDs that need metadata lookup (those without embedded metadata)
+        items_needing_meta = []
+        for entry in page_entries:
+            item_id = entry.get("itemId")
+            embedded_meta = entry.get("metadata") or {}
+            if item_id and not embedded_meta.get("title") and str(item_id).startswith("lib:"):
+                items_needing_meta.append(item_id)
+
+        # Fetch metadata in batch for items that need it
+        meta_map = {}
+        if items_needing_meta:
+            meta_map = await self._bridge.async_fetch_metadata_fresh(items_needing_meta)
+
+        children = []
+        for idx, entry in enumerate(page_entries):
+            global_idx = start + idx  # Actual queue index for jumping
+            item_id = entry.get("itemId") or ""
+            resolved = entry.get("resolved") or {}
+            url = resolved.get("url") or ""
+
+            # Try metadata sources in order: embedded, fetched, resolved
+            embedded_meta = entry.get("metadata") or {}
+            fetched_meta = meta_map.get(item_id, {})
+            resolved_meta = resolved.get("metadata") or {}
+            meta = {**resolved_meta, **fetched_meta, **embedded_meta}
+
+            title = meta.get("title") or item_id or url or f"Track {global_idx + 1}"
+            artist = meta.get("artist")
+            album = meta.get("album")
+            artwork = self._bridge.rewrite_artwork_url(meta.get("artworkUrl"))
+
+            # Build display title
+            if artist and album:
+                display = f"{title} — {artist} ({album})"
+            elif artist:
+                display = f"{title} — {artist}"
+            else:
+                display = title
+
+            children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_MUSIC,
+                    media_content_id=f"queue_jump:{global_idx}",
+                    media_content_type=MEDIA_TYPE_MUSIC,
+                    title=display,
+                    thumbnail=artwork,
+                    can_play=True,
+                    can_expand=False,
+                )
+            )
+
+        # Add "Next page" if there are more entries
+        if end < total:
+            children.append(
+                BrowseMedia(
+                    media_class=MEDIA_CLASS_DIRECTORY,
+                    media_content_id=f"queue?page={page + 1}",
+                    media_content_type=MEDIA_TYPE_DIRECTORY,
+                    title="Next page",
+                    can_play=False,
+                    can_expand=True,
+                )
+            )
+
+        title = "Current Queue" if page == 1 else f"Current Queue (page {page})"
+        return BrowseMedia(
+            media_class=MEDIA_CLASS_PLAYLIST,
+            media_content_id=f"queue?page={page}",
+            media_content_type=MEDIA_TYPE_PLAYLIST,
+            title=title,
+            can_play=False,
+            can_expand=False,
             children=children,
         )
 
