@@ -8,4 +8,6 @@ integrations/home_assistant/mosquitto/data/
 integrations/home_assistant/mosquitto/log/
 *.log
 /integrations/home_assistant/ha_config/ca/
+/integrations/home_assistant/ha_config/custom_components/
+/integrations/home_assistant/ha_config/www/
 /.cache/
