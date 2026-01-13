@@ -10,6 +10,7 @@ require (
 	github.com/eko/gocache/store/freecache/v4 v4.2.4
 	github.com/go-gst/go-gst v1.4.0
 	github.com/golang/snappy v0.0.4
+	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/mochi-mqtt/server/v2 v2.7.9
@@ -30,7 +31,6 @@ require (
 	github.com/containerd/console v1.0.5 // indirect
 	github.com/go-gst/go-glib v1.4.0 // indirect
 	github.com/gookit/color v1.5.4 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
