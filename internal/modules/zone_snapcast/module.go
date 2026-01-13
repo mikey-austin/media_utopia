@@ -46,6 +46,8 @@ type Zone struct {
 	Mute         bool    `json:"mute"`
 	SourceID     string  `json:"sourceId"`
 	Connected    bool    `json:"connected"`
+	dirty        bool    // set when state changes and needs publishing
+	published    bool    // set after first publish (for presence)
 }
 
 // Module implements the Snapcast zone controller.
@@ -173,13 +175,20 @@ func (m *Module) discoverSnapcast() error {
 				zone = &Zone{
 					NodeID:       zoneID,
 					ControllerID: m.config.NodeID,
+					dirty:        true, // new zone needs publishing
 				}
 				m.zones[zoneID] = zone
 			}
 
-			// Update zone state
+			// Update zone state, mark dirty only if changed
+			newVolume := float64(client.Config.Volume.Percent) / 100.0
+			if zone.Name != name || zone.Volume != newVolume ||
+				zone.Mute != client.Config.Volume.Muted ||
+				zone.SourceID != sourceID || zone.Connected != client.Connected {
+				zone.dirty = true
+			}
 			zone.Name = name
-			zone.Volume = float64(client.Config.Volume.Percent) / 100.0
+			zone.Volume = newVolume
 			zone.Mute = client.Config.Volume.Muted
 			zone.SourceID = sourceID
 			zone.Connected = client.Connected
@@ -190,8 +199,8 @@ func (m *Module) discoverSnapcast() error {
 		}
 	}
 
-	// Publish presence/state updates
-	go m.publishAllUpdates()
+	// Publish presence/state updates only for changed zones
+	go m.publishChangedUpdates()
 	return nil
 }
 
@@ -239,6 +248,52 @@ func (m *Module) publishAllUpdates() {
 		}
 		if err := m.publishZoneState(zone); err != nil {
 			m.log.Debug("failed to publish zone state", zap.String("zone", zone.NodeID), zap.Error(err))
+		}
+	}
+}
+
+// publishChangedUpdates publishes presence/state only for zones that have changed.
+func (m *Module) publishChangedUpdates() {
+	m.mu.Lock()
+	dirtyZones := make([]*Zone, 0)
+	for _, z := range m.zones {
+		if z.dirty {
+			dirtyZones = append(dirtyZones, z)
+		}
+	}
+	m.mu.Unlock()
+
+	if len(dirtyZones) == 0 {
+		return
+	}
+
+	// Publish controller presence if any zones are dirty (zone list might have changed)
+	if err := m.publishControllerPresence(); err != nil {
+		m.log.Debug("failed to publish controller presence", zap.Error(err))
+	}
+
+	for _, zone := range dirtyZones {
+		// Publish presence only if not yet published
+		m.mu.Lock()
+		needsPresence := !zone.published
+		m.mu.Unlock()
+
+		if needsPresence {
+			if err := m.publishZonePresence(zone); err != nil {
+				m.log.Debug("failed to publish zone presence", zap.String("zone", zone.NodeID), zap.Error(err))
+			} else {
+				m.mu.Lock()
+				zone.published = true
+				m.mu.Unlock()
+			}
+		}
+
+		if err := m.publishZoneState(zone); err != nil {
+			m.log.Debug("failed to publish zone state", zap.String("zone", zone.NodeID), zap.Error(err))
+		} else {
+			m.mu.Lock()
+			zone.dirty = false
+			m.mu.Unlock()
 		}
 	}
 }

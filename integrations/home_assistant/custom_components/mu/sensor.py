@@ -121,7 +121,18 @@ class LeaseOwnerSensor(LeaseSensorBase):
     @property
     def native_value(self) -> str | None:
         owner = self._session().get("owner")
-        return owner or None
+        if not owner:
+            return None
+        if len(owner) > 250:
+            return owner[:247] + "..."
+        return owner
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        owner = self._session().get("owner")
+        if not owner:
+            return {}
+        return {"full_owner": owner}
 
 
 class LeaseIDSensor(LeaseSensorBase):
@@ -141,7 +152,19 @@ class LeaseIDSensor(LeaseSensorBase):
     @property
     def native_value(self) -> str | None:
         session_id = self._session().get("id")
-        return session_id or None
+        if not session_id:
+            return None
+        # Show abbreviated version (last 8 chars), full ID in attributes
+        if len(session_id) > 12:
+            return "..." + session_id[-8:]
+        return session_id
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        session_id = self._session().get("id")
+        if not session_id:
+            return {}
+        return {"full_session_id": session_id}
 
 
 class LeaseTTLSecondsSensor(LeaseSensorBase):
@@ -344,16 +367,11 @@ class SourceIDsSensor(ZoneControllerSensorBase):
         return f"mu_zone_controller_{safe}_{self._attr_unique_id_suffix}"
 
     @property
-    def native_value(self) -> str:
-        """Return comma-separated list of source IDs."""
+    def native_value(self) -> int:
+        """Return count of sources (full list in attributes)."""
         controller = self._bridge.get_zone_controller(self._node_id) or {}
         sources = controller.get("sources") or []
-        if not sources:
-            return "No sources available"
-        source_ids = [s.get("id", "") for s in sources if s.get("id")]
-        if not source_ids:
-            return "No sources available"
-        return ", ".join(source_ids)
+        return len(sources)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
