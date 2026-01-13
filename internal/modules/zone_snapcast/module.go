@@ -24,12 +24,11 @@ type mqttClient interface {
 
 // Config configures the Snapcast zone module.
 type Config struct {
-	NodeID       string            // Zone controller node ID (mu:zone_controller:snapcast:namespace:resource)
-	TopicBase    string            // MQTT topic base (e.g. "mu/v1")
-	Name         string            // Human-readable name
-	ServerURL    string            // Snapcast server URL (ws://host:1780/jsonrpc)
-	PollInterval time.Duration     // How often to poll Snapcast for updates
-	Zones        map[string]string // Alias mapping for zones (clientID -> name)
+	NodeID    string            // Zone controller node ID (mu:zone_controller:snapcast:namespace:resource)
+	TopicBase string            // MQTT topic base (e.g. "mu/v1")
+	Name      string            // Human-readable name
+	ServerURL string            // Snapcast server URL (ws://host:1780/jsonrpc)
+	Zones     map[string]string // Alias mapping for zones (clientID -> name)
 }
 
 // Source represents an audio source (Snapcast stream).
@@ -68,9 +67,6 @@ type Module struct {
 func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
 	if cfg.ServerURL == "" {
 		return nil, fmt.Errorf("snapcast server_url is required")
-	}
-	if cfg.PollInterval == 0 {
-		cfg.PollInterval = 5 * time.Second
 	}
 	snapClient := NewSnapcastClient(log, cfg.ServerURL)
 	m := &Module{
@@ -116,20 +112,9 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Warn("failed to publish controller presence", zap.Error(err))
 	}
 
-	// Run poll loop
-	ticker := time.NewTicker(m.config.PollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-m.ctx.Done():
-			return nil
-		case <-ticker.C:
-			if err := m.discoverSnapcast(); err != nil {
-				m.log.Debug("snapcast poll failed", zap.Error(err))
-			}
-		}
-	}
+	// Block until context cancellation; updates come via websocket callback
+	<-m.ctx.Done()
+	return nil
 }
 
 // discoverSnapcast connects to Snapcast and discovers streams/clients.

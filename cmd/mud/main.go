@@ -595,7 +595,6 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if !cfgItem.Enabled {
 				continue
 			}
-			pollInterval := durationFromMS(cfgItem.PollIntervalMS)
 			resource := resourceFor(item.Name, cfgItem.Resource)
 			nodeID, err := buildNodeID("zone_controller", cfgItem.Provider, cfg.Server.Namespace, resource)
 			if err != nil {
@@ -605,12 +604,11 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				return nil, err
 			}
 			mod, err := zonesnapcast.NewModule(logger.With(zap.String("module", "zone_snapcast")), client, zonesnapcast.Config{
-				NodeID:       nodeID,
-				TopicBase:    cfg.Server.TopicBase,
-				Name:         cfgItem.Name,
-				ServerURL:    cfgItem.ServerURL,
-				PollInterval: pollInterval,
-				Zones:        cfgItem.Zones,
+				NodeID:    nodeID,
+				TopicBase: cfg.Server.TopicBase,
+				Name:      cfgItem.Name,
+				ServerURL: cfgItem.ServerURL,
+				Zones:     cfgItem.Zones,
 			})
 			if err != nil {
 				return nil, err

@@ -42,6 +42,7 @@ class ZoneEntityManager:
     async def async_start(self) -> None:
         self._bridge.register_zone_listener(self._on_zone)
         self._bridge.register_zone_state_listener(self._on_zone_state)
+        self._bridge.register_renderer_state_listener(self._on_renderer_state)
 
         # Add existing zones
         for node_id in self._bridge.list_zones():
@@ -60,6 +61,23 @@ class ZoneEntityManager:
         entity = self._entities.get(node_id)
         if entity:
             entity.async_write_ha_state()
+
+    @callback
+    def _on_renderer_state(self, renderer_id: str, _state: dict[str, Any]) -> None:
+        """Update zones when a renderer they track changes state."""
+        renderer = self._bridge.get_renderer(renderer_id)
+        if not renderer:
+            return
+        renderer_source = renderer.get("source")
+        if not renderer_source:
+            return
+        # Find all zones whose source matches this renderer's source
+        for node_id, entity in self._entities.items():
+            zone = self._bridge.get_zone(node_id) or {}
+            zone_state = zone.get("state") or {}
+            zone_source_id = zone_state.get("sourceId")
+            if zone_source_id and zone_source_id == renderer_source:
+                entity.async_write_ha_state()
 
 
 class MuZoneEntity(MediaPlayerEntity):
