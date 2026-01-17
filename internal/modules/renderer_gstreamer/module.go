@@ -146,9 +146,18 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
+	if cmd.Type == "queue.add" {
+		m.log.Info("queue.add received", zap.String("id", cmd.ID), zap.Any("body_len", len(cmd.Body)))
+	}
+
 	m.mu.Lock()
 	reply := m.dispatch(cmd)
 	m.mu.Unlock()
+
+	if cmd.Type == "queue.add" {
+		m.log.Info("queue.add dispatched", zap.String("id", cmd.ID), zap.Bool("ok", reply.OK), zap.Any("err", reply.Err))
+	}
+
 	m.publishReply(cmd.ReplyTo, reply)
 }
 

@@ -225,6 +225,8 @@ func (m *Module) playlistCreate(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	if err := m.storage.SavePlaylist(pl); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
+	payload, _ := json.Marshal(map[string]string{"playlistId": playlistID})
+	reply.Body = payload
 	return reply
 }
 

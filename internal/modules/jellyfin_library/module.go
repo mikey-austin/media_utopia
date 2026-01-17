@@ -1166,6 +1166,8 @@ func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, map[string]an
 		if err != nil {
 			return nil, nil, err
 		}
+		// Include the child's itemId in the source for proper metadata resolution
+		source.ItemID = child.ID
 		sources = append(sources, source)
 	}
 	if len(sources) == 0 {

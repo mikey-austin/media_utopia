@@ -362,6 +362,11 @@ class MudBridge:
             out.append((node_id, info.get("name", node_id)))
         return out
 
+    def get_renderer_info(self, node_id: str) -> dict[str, Any] | None:
+        """Get the full info dict for a renderer."""
+        return self._renderers.get(node_id)
+
+
     def register_zone_listener(self, callback) -> None:
         if callback not in self._zone_listeners:
             self._zone_listeners.append(callback)
@@ -461,6 +466,10 @@ class MudBridge:
         for playlist_id, info in self._playlists.items():
             out.append((playlist_id, info.get("name", playlist_id)))
         return out
+
+    def list_playlists_full(self) -> list[tuple[str, dict[str, Any]]]:
+        """Return list of (playlist_id, info_dict)."""
+        return list(self._playlists.items())
 
     async def _maybe_resolve_metadata(self, node_id: str, payload: dict[str, Any]) -> None:
         current = payload.get("current") or {}
@@ -1004,6 +1013,163 @@ class MudBridge:
         """Jump to a specific queue index and start playback."""
         await self._send_renderer_command(node_id, "playback.play", {"index": index})
 
+    async def async_queue_add(
+        self, node_id: str, items: list[str], mode: str = "append"
+    ) -> bool:
+        """Add items to queue with mode: replace, next, or append."""
+        if not items:
+            return True
+        entries = []
+        for item_id in items:
+            resolved = await self._resolve_media_entries(item_id)
+            entries.extend(resolved)
+        if not entries:
+            return False
+
+        if mode == "replace":
+            await self._queue_set_and_fill(node_id, entries)
+            return True
+
+        position = "next" if mode == "next" else "end"
+        reply = await self._request_with_lease(
+            node_id,
+            "queue.add",
+            {"position": position, "entries": entries},
+        )
+        return reply is not None and reply.get("type") == "ack"
+
+    async def async_queue_remove(
+        self, node_id: str, entry_id: str | None = None, index: int | None = None
+    ) -> bool:
+        """Remove item from queue by entry ID or index."""
+        body: dict[str, Any] = {}
+        if entry_id:
+            body["queueEntryId"] = entry_id
+        elif index is not None:
+            body["index"] = index
+        else:
+            return False
+        reply = await self._request_with_lease(node_id, "queue.remove", body)
+        return reply is not None and reply.get("type") == "ack"
+
+    async def async_queue_move(
+        self, node_id: str, from_index: int, to_index: int, if_revision: int | None = None
+    ) -> bool:
+        """Move queue entry from one index to another."""
+        body: dict[str, Any] = {"fromIndex": from_index, "toIndex": to_index}
+        if if_revision is not None:
+            # Add revision guard to request envelope, not body
+            pass  # ifRevision is handled at envelope level in _request
+        reply = await self._request_with_lease(node_id, "queue.move", body)
+        return reply is not None and reply.get("type") == "ack"
+
+    async def async_queue_clear(self, node_id: str) -> bool:
+        """Clear the queue."""
+        reply = await self._request_with_lease(node_id, "queue.clear", {})
+        return reply is not None and reply.get("type") == "ack"
+
+    async def async_playlist_create(self, name: str) -> str | None:
+        """Create a new playlist and return its ID."""
+        if self._playlist_server is None:
+            return None
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.create",
+            {"name": name},
+        )
+        if reply is None or reply.get("type") != "ack":
+            return None
+        body = reply.get("body") or {}
+        return body.get("playlistId")
+
+    async def async_playlist_create_from_snapshot(self, snapshot_id: str, name: str) -> str | None:
+        """Create a new playlist from a snapshot and return its ID."""
+        if self._playlist_server is None:
+            return None
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.create",
+            {"name": name, "snapshotId": snapshot_id},
+        )
+        if reply is None or reply.get("type") != "ack":
+            return None
+        body = reply.get("body") or {}
+        return body.get("playlistId")
+
+    async def async_playlist_rename(self, playlist_id: str, name: str) -> bool:
+        """Rename a playlist."""
+        if self._playlist_server is None:
+            return False
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.rename",
+            {"playlistId": playlist_id, "name": name},
+        )
+        return reply is not None and reply.get("type") == "ack"
+
+    async def async_delete_playlist(self, playlist_id: str) -> bool:
+        """Delete a playlist."""
+        if self._playlist_server is None:
+            return False
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.delete",
+            {"playlistId": playlist_id},
+        )
+        success = reply is not None and reply.get("type") == "ack"
+        if success:
+            self._playlists.pop(playlist_id, None)
+        return success
+
+    async def async_playlist_add_item(
+        self, playlist_id: str, item_id: str, mode: str = "append", at_index: int | None = None
+    ) -> bool:
+        """Add an item to a playlist."""
+        if self._playlist_server is None:
+            return False
+        body: dict[str, Any] = {
+            "playlistId": playlist_id,
+            "entries": [{"ref": {"id": item_id}}],
+        }
+        if mode == "insert" and at_index is not None:
+            body["atIndex"] = at_index
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.addItems",
+            body,
+        )
+        return reply is not None and reply.get("type") == "ack"
+
+    async def async_playlist_remove_item(self, playlist_id: str, entry_id: str) -> bool:
+        """Remove an item from a playlist."""
+        if self._playlist_server is None:
+            return False
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.removeItems",
+            {"playlistId": playlist_id, "entryIds": [entry_id]},
+        )
+        return reply is not None and reply.get("type") == "ack"
+
+    async def async_playlist_move(
+        self, playlist_id: str, from_index: int, to_index: int, if_revision: int | None = None
+    ) -> bool:
+        """Move playlist entry from one index to another."""
+        if self._playlist_server is None:
+            return False
+        body: dict[str, Any] = {
+            "playlistId": playlist_id,
+            "fromIndex": from_index,
+            "toIndex": to_index,
+        }
+        if if_revision is not None:
+            body["ifRevision"] = if_revision
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.move",
+            body,
+        )
+        return reply is not None and reply.get("type") == "ack"
 
     async def async_shuffle(self, node_id: str, shuffle: bool) -> None:
         if shuffle:
@@ -1360,15 +1526,18 @@ class MudBridge:
         chunk_size = 50
         for start in range(0, len(refs), chunk_size):
             chunk = refs[start : start + chunk_size]
-            entries = await self._entries_for_refs(chunk)
-            if not entries:
-                continue
-            reply = await self._request_with_lease(
-                node_id, "queue.add", {"position": "end", "entries": entries}
-            )
-            if reply is None or reply.get("type") != "ack":
-                _LOGGER.warning("queue.add failed for %s", node_id)
-                return
+            try:
+                entries = await self._entries_for_refs(chunk)
+                if not entries:
+                    _LOGGER.warning("queue_add_refs: no entries resolved for chunk start=%d count=%d", start, len(chunk))
+                    continue
+                reply = await self._request_with_lease(
+                    node_id, "queue.add", {"position": "end", "entries": entries}
+                )
+                if reply is None or reply.get("type") != "ack":
+                    _LOGGER.warning("queue.add failed for %s", node_id)
+            except Exception as e:
+                _LOGGER.exception("queue_add_refs failed: %s", e)
 
     async def _entries_for_library_items(
         self, library_id: str, item_ids: list[str]
@@ -1458,7 +1627,14 @@ class MudBridge:
             sources = body.get("sources") or []
             entries = []
             for source in sources:
-                entries.append({"ref": {"id": media_id}, "resolved": source})
+                # Use source's itemId if available for correct metadata lookup
+                # Otherwise fall back to original media_id (may be container for albums)
+                source_item_id = source.get("itemId")
+                if source_item_id:
+                    ref_id = f"lib:{library_id}:{source_item_id}"
+                else:
+                    ref_id = media_id
+                entries.append({"ref": {"id": ref_id}, "resolved": source})
             return entries
         return []
 

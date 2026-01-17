@@ -137,7 +137,25 @@ func (s *Storage) DeletePlaylist(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return os.Remove(s.playlistPath(id))
+	path := s.playlistPath(id)
+	if err := os.Remove(path); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		// File not found at expected path, try searching all files
+		paths, err := filepath.Glob(filepath.Join(s.root, "playlists", "*.json"))
+		if err != nil {
+			return err
+		}
+		for _, p := range paths {
+			var pl Playlist
+			if err := readJSON(p, &pl); err == nil && pl.PlaylistID == id {
+				return os.Remove(p)
+			}
+		}
+		return os.ErrNotExist
+	}
+	return nil
 }
 
 // ListSnapshots returns snapshot summaries.

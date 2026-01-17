@@ -148,6 +148,7 @@ type ItemRef struct {
 
 // ResolvedSource is a fully resolved source reference.
 type ResolvedSource struct {
+	ItemID    string `json:"itemId,omitempty"`
 	URL       string `json:"url"`
 	Mime      string `json:"mime,omitempty"`
 	ByteRange bool   `json:"byteRange"`

@@ -14,6 +14,7 @@ import (
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
 	embeddedmqtt "github.com/mikey-austin/media_utopia/internal/modules/embedded_mqtt"
+	fslibrary "github.com/mikey-austin/media_utopia/internal/modules/fs_library"
 	go2rtclibrary "github.com/mikey-austin/media_utopia/internal/modules/go2rtc_library"
 	jellyfinlibrary "github.com/mikey-austin/media_utopia/internal/modules/jellyfin_library"
 	"github.com/mikey-austin/media_utopia/internal/modules/playlist"
@@ -272,6 +273,48 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			modules = append(modules, mud.ModuleRunner{
 				Name: "playlist",
 				Run:  pl.Run,
+			})
+		}
+	}
+
+	if moduleOnly == "" || moduleOnly == "fs_library" {
+		for _, item := range cfg.Modules.FSLibrary.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			resource := resourceFor(item.Name, cfgItem.Resource)
+			nodeID, err := buildNodeID("library", cfgItem.Provider, cfg.Server.Namespace, resource)
+			if err != nil {
+				return nil, err
+			}
+			if err := ensureUnique(nodeID, "fs_library"); err != nil {
+				return nil, err
+			}
+			mod, err := fslibrary.NewModule(logger.With(zap.String("module", "fs_library")), client, fslibrary.Config{
+				NodeID:            nodeID,
+				TopicBase:         cfg.Server.TopicBase,
+				Name:              cfgItem.Name,
+				Roots:             cfgItem.Roots,
+				IncludeExts:       cfgItem.IncludeExts,
+				HTTPListen:        cfgItem.HTTPListen,
+				IndexMode:         cfgItem.IndexMode,
+				IndexPath:         cfgItem.IndexPath,
+				ScanIntervalMS:    cfgItem.ScanIntervalMS,
+				MetadataMode:      cfgItem.MetadataMode,
+				RepairPolicy:      cfgItem.RepairPolicy,
+				DedupePolicy:      cfgItem.DedupePolicy,
+				EmbeddingProvider: cfgItem.EmbeddingProvider,
+				EmbeddingModel:    cfgItem.EmbeddingModel,
+				EmbeddingEndpoint: cfgItem.EmbeddingEndpoint,
+				EmbeddingCache:    cfgItem.EmbeddingCache,
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "fs_library",
+				Run:  mod.Run,
 			})
 		}
 	}
@@ -634,6 +677,12 @@ func enabledModules(cfg mud.Config) []string {
 	for _, item := range cfg.Modules.Playlist.List() {
 		if item.Config.Enabled {
 			out = append(out, "playlist")
+			break
+		}
+	}
+	for _, item := range cfg.Modules.FSLibrary.List() {
+		if item.Config.Enabled {
+			out = append(out, "fs_library")
 			break
 		}
 	}

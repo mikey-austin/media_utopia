@@ -11,3 +11,4 @@ integrations/home_assistant/mosquitto/log/
 /integrations/home_assistant/ha_config/custom_components/
 /integrations/home_assistant/ha_config/www/
 /.cache/
+/.mud/

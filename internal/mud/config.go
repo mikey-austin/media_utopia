@@ -57,6 +57,7 @@ type AuthConfig struct {
 // ModulesConfig holds module configurations.
 type ModulesConfig struct {
 	Playlist              ModuleConfigSet[PlaylistConfig]          `toml:"playlist"`
+	FSLibrary             ModuleConfigSet[FSLibraryConfig]         `toml:"fs_library"`
 	RendererGStreamer     ModuleConfigSet[RendererGStreamerConfig] `toml:"renderer_gstreamer"`
 	RendererKodi          ModuleConfigSet[RendererKodiConfig]      `toml:"renderer_kodi"`
 	RendererVLC           ModuleConfigSet[RendererVLCConfig]       `toml:"renderer_vlc"`
@@ -76,6 +77,27 @@ type PlaylistConfig struct {
 	Provider    string `toml:"provider"`
 	Resource    string `toml:"resource"`
 	StoragePath string `toml:"storage_path"`
+}
+
+// FSLibraryConfig configures the filesystem library module.
+type FSLibraryConfig struct {
+	Enabled           bool     `toml:"enabled"`
+	Name              string   `toml:"name"`
+	Provider          string   `toml:"provider"`
+	Resource          string   `toml:"resource"`
+	Roots             []string `toml:"roots"`
+	IncludeExts       []string `toml:"include_exts"`
+	HTTPListen        string   `toml:"http_listen"`
+	IndexMode         string   `toml:"index_mode"`
+	IndexPath         string   `toml:"index_path"`
+	ScanIntervalMS    int64    `toml:"scan_interval_ms"`
+	MetadataMode      string   `toml:"metadata_mode"`
+	RepairPolicy      string   `toml:"repair_policy"`
+	DedupePolicy      string   `toml:"dedupe_policy"`
+	EmbeddingProvider string   `toml:"embedding_provider"`
+	EmbeddingModel    string   `toml:"embedding_model"`
+	EmbeddingEndpoint string   `toml:"embedding_endpoint"`
+	EmbeddingCache    string   `toml:"embedding_cache"`
 }
 
 // RendererGStreamerConfig configures the GStreamer renderer module.

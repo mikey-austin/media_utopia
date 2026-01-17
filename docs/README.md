@@ -9,5 +9,8 @@ Start here:
 - `design/motivation.md`
 - `design/decisions.md`
 - `design/mud-architecture.md`
+- `design/library_filesystem.md`
+- `design/library_providers.md`
 - `spec/overview.md`
 - `spec/messages.md` (you already placed this)
+- `spec/library_filesystem.md`

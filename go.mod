@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/coocood/freecache v1.2.4
+	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/eko/gocache/lib/v4 v4.2.3
 	github.com/eko/gocache/store/freecache/v4 v4.2.4
