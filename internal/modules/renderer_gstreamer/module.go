@@ -135,36 +135,90 @@ func (m *Module) publishState() error {
 }
 
 func (m *Module) handleMessage(msg paho.Message) {
+	recvTime := time.Now()
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
 		m.log.Warn("invalid command", zap.Error(err))
 		return
 	}
 
+	m.log.Debug("command received",
+		zap.String("id", cmd.ID),
+		zap.String("type", cmd.Type),
+		zap.String("from", cmd.From),
+		zap.String("replyTo", cmd.ReplyTo))
+
 	if cmd.Type == "queue.loadPlaylist" || cmd.Type == "queue.loadSnapshot" {
 		go m.handleLoadCommand(cmd)
 		return
 	}
 
-	if cmd.Type == "queue.add" {
-		m.log.Info("queue.add received", zap.String("id", cmd.ID), zap.Any("body_len", len(cmd.Body)))
-	}
-
+	// Track mutex acquisition time for contention diagnostics
+	lockStart := time.Now()
 	m.mu.Lock()
+	lockWait := time.Since(lockStart)
+
+	dispatchStart := time.Now()
 	reply := m.dispatch(cmd)
+	dispatchDuration := time.Since(dispatchStart)
 	m.mu.Unlock()
 
-	if cmd.Type == "queue.add" {
-		m.log.Info("queue.add dispatched", zap.String("id", cmd.ID), zap.Bool("ok", reply.OK), zap.Any("err", reply.Err))
+	totalDuration := time.Since(recvTime)
+
+	m.log.Debug("command completed",
+		zap.String("id", cmd.ID),
+		zap.String("type", cmd.Type),
+		zap.Duration("lock_wait", lockWait),
+		zap.Duration("dispatch", dispatchDuration),
+		zap.Duration("total", totalDuration),
+		zap.Bool("ok", reply.OK))
+
+	if totalDuration > 100*time.Millisecond {
+		m.log.Warn("slow command",
+			zap.String("id", cmd.ID),
+			zap.String("type", cmd.Type),
+			zap.Duration("lock_wait", lockWait),
+			zap.Duration("dispatch", dispatchDuration),
+			zap.Duration("total", totalDuration))
 	}
 
 	m.publishReply(cmd.ReplyTo, reply)
 }
 
 func (m *Module) handleLoadCommand(cmd mu.CommandEnvelope) {
+	start := time.Now()
+	m.log.Debug("load command started",
+		zap.String("id", cmd.ID),
+		zap.String("type", cmd.Type),
+		zap.String("from", cmd.From))
+
+	lockStart := time.Now()
 	m.mu.Lock()
+	lockWait := time.Since(lockStart)
+
+	dispatchStart := time.Now()
 	reply := m.dispatch(cmd)
+	dispatchDuration := time.Since(dispatchStart)
 	m.mu.Unlock()
+
+	totalDuration := time.Since(start)
+	m.log.Debug("load command completed",
+		zap.String("id", cmd.ID),
+		zap.String("type", cmd.Type),
+		zap.Duration("lock_wait", lockWait),
+		zap.Duration("dispatch", dispatchDuration),
+		zap.Duration("total", totalDuration),
+		zap.Bool("ok", reply.OK))
+
+	if totalDuration > 500*time.Millisecond {
+		m.log.Warn("slow load command",
+			zap.String("id", cmd.ID),
+			zap.String("type", cmd.Type),
+			zap.Duration("lock_wait", lockWait),
+			zap.Duration("dispatch", dispatchDuration),
+			zap.Duration("total", totalDuration))
+	}
+
 	m.publishReply(cmd.ReplyTo, reply)
 }
 

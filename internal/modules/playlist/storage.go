@@ -17,7 +17,7 @@ import (
 // Storage provides playlist/snapshot/suggestion persistence.
 type Storage struct {
 	root string
-	mu   sync.Mutex
+	mu   sync.RWMutex
 }
 
 // NewStorage creates a storage at root.
@@ -83,10 +83,9 @@ func (s *Storage) suggestionPath(id string) string {
 	return filepath.Join(s.root, "suggestions", safeFilename(id)+".json")
 }
 
-// ListPlaylists returns playlist summaries.
 func (s *Storage) ListPlaylists() ([]Playlist, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	paths, err := filepath.Glob(filepath.Join(s.root, "playlists", "*.json"))
 	if err != nil {
@@ -108,10 +107,9 @@ func (s *Storage) ListPlaylists() ([]Playlist, error) {
 	return playlists, nil
 }
 
-// GetPlaylist loads a playlist by id.
 func (s *Storage) GetPlaylist(id string) (Playlist, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var pl Playlist
 	if err := readJSON(s.playlistPath(id), &pl); err != nil {
@@ -158,10 +156,9 @@ func (s *Storage) DeletePlaylist(id string) error {
 	return nil
 }
 
-// ListSnapshots returns snapshot summaries.
 func (s *Storage) ListSnapshots() ([]Snapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	paths, err := filepath.Glob(filepath.Join(s.root, "snapshots", "*.json"))
 	if err != nil {
@@ -195,10 +192,9 @@ func (s *Storage) SaveSnapshot(snapshot Snapshot) error {
 	return writeJSON(path, snapshot)
 }
 
-// GetSnapshot loads a snapshot by id.
 func (s *Storage) GetSnapshot(id string) (Snapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var snap Snapshot
 	if err := readJSON(s.snapshotPath(id), &snap); err != nil {
@@ -215,10 +211,9 @@ func (s *Storage) RemoveSnapshot(id string) error {
 	return os.Remove(s.snapshotPath(id))
 }
 
-// ListSuggestions returns suggestion summaries.
 func (s *Storage) ListSuggestions() ([]Suggestion, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	paths, err := filepath.Glob(filepath.Join(s.root, "suggestions", "*.json"))
 	if err != nil {
@@ -240,10 +235,9 @@ func (s *Storage) ListSuggestions() ([]Suggestion, error) {
 	return suggestions, nil
 }
 
-// GetSuggestion loads a suggestion.
 func (s *Storage) GetSuggestion(id string) (Suggestion, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var sug Suggestion
 	if err := readJSON(s.suggestionPath(id), &sug); err != nil {

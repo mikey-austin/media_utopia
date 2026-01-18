@@ -105,13 +105,34 @@ func (m *Module) publishPresence() error {
 }
 
 func (m *Module) handleMessage(msg paho.Message) {
+	start := time.Now()
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
 		m.log.Warn("invalid command", zap.Error(err))
 		return
 	}
 
+	m.log.Debug("command received",
+		zap.String("id", cmd.ID),
+		zap.String("type", cmd.Type),
+		zap.String("from", cmd.From))
+
 	reply := m.dispatch(cmd)
+
+	duration := time.Since(start)
+	m.log.Debug("command completed",
+		zap.String("id", cmd.ID),
+		zap.String("type", cmd.Type),
+		zap.Duration("duration", duration),
+		zap.Bool("ok", reply.OK))
+
+	if duration > 100*time.Millisecond {
+		m.log.Warn("slow command",
+			zap.String("id", cmd.ID),
+			zap.String("type", cmd.Type),
+			zap.Duration("duration", duration))
+	}
+
 	if cmd.ReplyTo == "" {
 		return
 	}

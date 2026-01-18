@@ -647,6 +647,8 @@ class MuPanel extends LitElement {
     this.browserLoading = false;
     this.browserTotal = 0;
     this.playlists = [];
+    this.playlistServers = [];
+    this.selectedPlaylistServer = null;
     this.snapshots = [];
     this.loading = true;
     this.toast = null;
@@ -671,6 +673,8 @@ class MuPanel extends LitElement {
     this._boundSeekEnd = this._onSeekEnd.bind(this);
     this._boundVolMove = this._onVolMove.bind(this);
     this._boundVolEnd = this._onVolEnd.bind(this);
+    this._boundZoneVolMove = this._onZoneVolMove.bind(this);
+    this._boundZoneVolEnd = this._onZoneVolEnd.bind(this);
   }
 
   disconnectedCallback() {
@@ -682,11 +686,14 @@ class MuPanel extends LitElement {
     document.removeEventListener('mouseup', this._boundSeekEnd);
     document.removeEventListener('mousemove', this._boundVolMove);
     document.removeEventListener('mouseup', this._boundVolEnd);
+    document.removeEventListener('mousemove', this._boundZoneVolMove);
+    document.removeEventListener('mouseup', this._boundZoneVolEnd);
   }
 
   async _init() {
     await this._loadRenderers();
     await this._loadLibraries();
+    await this._loadPlaylistServers();
     await this._loadPlaylists();
     await this._loadSnapshots();
     this.loading = false;
@@ -751,6 +758,25 @@ class MuPanel extends LitElement {
 
   async _loadPlaylists() { const r = await this._callWS('mu/playlists_list'); if (r) this.playlists = r; }
   async _loadSnapshots() { const r = await this._callWS('mu/snapshots_list'); if (r) this.snapshots = r; }
+  async _loadPlaylistServers() {
+    const r = await this._callWS('mu/playlist_servers_list');
+    console.log('Playlist servers:', r);
+    if (r) {
+      this.playlistServers = r;
+      const selected = r.find(s => s.selected);
+      this.selectedPlaylistServer = selected?.nodeId || null;
+    }
+  }
+  async _selectPlaylistServer(e) {
+    const nodeId = e.target.value;
+    if (nodeId === this.selectedPlaylistServer) return;
+    const r = await this._callWS('mu/playlist_server_select', { node_id: nodeId });
+    if (r?.success) {
+      this.selectedPlaylistServer = nodeId;
+      await this._loadPlaylists();
+      this._showToast('Server switched');
+    }
+  }
   async _refreshState() { await this._loadRendererState(); }
 
   async _selectRenderer(e) {
@@ -1192,7 +1218,16 @@ class MuPanel extends LitElement {
   }
 
   _renderPlaylistsTab() {
-    return html`<div class="browser-list">
+    return html`
+      ${this.playlistServers.length > 1 ? html`
+        <div class="pane-header">
+          <span class="pane-title">Server:</span>
+          <select class="renderer-select" @change=${(e) => this._selectPlaylistServer(e)}>
+            ${this.playlistServers.map(s => html`<option value="${s.nodeId}" ?selected=${s.nodeId === this.selectedPlaylistServer}>${s.name}</option>`)}
+          </select>
+        </div>
+      ` : ''}
+      <div class="browser-list">
       ${!this.playlists.length ? html`<div class="empty">No playlists</div>` : ''}
       ${this.playlists.map(pl => html`
         <div class="browser-item">
@@ -1301,7 +1336,7 @@ class MuPanel extends LitElement {
     return html`
       <div class="zone-item">
         <span class="zone-item-name ${zone.connected ? '' : 'disconnected'}">${zone.name}</span>
-        <div class="zone-volume-slider" @click=${(e) => this._handleZoneVolumeClick(e, zone)}>
+        <div class="zone-volume-slider" @mousedown=${(e) => this._onZoneVolStart(e, zone)} @click=${(e) => e.preventDefault()}>
           <div class="zone-volume-fill" style="width: ${volumePct}%"></div>
         </div>
         <span style="font-size:10px;color:var(--mu-secondary);min-width:28px">${volumePct}%</span>
@@ -1319,6 +1354,46 @@ class MuPanel extends LitElement {
     const rect = e.currentTarget.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     this._setZoneVolume(zone, pct);
+  }
+
+  _onZoneVolStart(e, zone) {
+    this._zoneVolDragging = true;
+    this._zoneVolTrack = e.currentTarget;
+    this._zoneVolZone = zone;
+    this._updateZoneVolFromEvent(e);
+    document.addEventListener('mousemove', this._boundZoneVolMove);
+    document.addEventListener('mouseup', this._boundZoneVolEnd);
+    e.preventDefault();
+  }
+
+  _onZoneVolMove(e) {
+    if (!this._zoneVolDragging) return;
+    this._updateZoneVolFromEvent(e);
+  }
+
+  _onZoneVolEnd() {
+    if (!this._zoneVolDragging) return;
+    this._zoneVolDragging = false;
+    document.removeEventListener('mousemove', this._boundZoneVolMove);
+    document.removeEventListener('mouseup', this._boundZoneVolEnd);
+    this._zoneVolZone = null;
+  }
+
+  _updateZoneVolFromEvent(e) {
+    if (!this._zoneVolTrack || !this._zoneVolZone) return;
+    const rect = this._zoneVolTrack.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    // Optimistically update UI
+    const zone = this._zoneVolZone;
+    const idx = this.zones.findIndex(z => z.zoneId === zone.zoneId);
+    if (idx >= 0) {
+      this.zones = [...this.zones.slice(0, idx), { ...this.zones[idx], volume: pct }, ...this.zones.slice(idx + 1)];
+    }
+    // Debounce API call
+    clearTimeout(this._zoneVolDebounce);
+    this._zoneVolDebounce = setTimeout(() => {
+      this._callWS('mu/zone_set_volume', { zone_id: zone.zoneId, volume: pct });
+    }, 50);
   }
 
   async _setZoneVolume(zone, volume) {

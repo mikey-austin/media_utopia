@@ -54,6 +54,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_zone_set_volume)
     websocket_api.async_register_command(hass, ws_zone_set_mute)
     websocket_api.async_register_command(hass, ws_zone_select_source)
+    websocket_api.async_register_command(hass, ws_playlist_servers_list)
+    websocket_api.async_register_command(hass, ws_playlist_server_select)
 
 
 def _get_bridge(hass: HomeAssistant):
@@ -1128,3 +1130,54 @@ async def ws_zone_select_source(
 
     await bridge.async_zone_select_source(msg["zone_id"], msg["source_id"])
     connection.send_result(msg["id"], {"success": True})
+
+
+# --- Playlist Servers ---
+
+
+@websocket_api.websocket_command({vol.Required("type"): "mu/playlist_servers_list"})
+@websocket_api.async_response
+async def ws_playlist_servers_list(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """List all discovered playlist servers."""
+    bridge = _get_bridge(hass)
+    if bridge is None:
+        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        return
+
+    servers = []
+    selected = bridge.get_selected_playlist_server()
+    for node_id, name in bridge.list_playlist_servers():
+        servers.append({
+            "nodeId": node_id,
+            "name": name,
+            "selected": node_id == selected,
+        })
+    connection.send_result(msg["id"], servers)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "mu/playlist_server_select",
+    vol.Required("node_id"): str,
+})
+@websocket_api.async_response
+async def ws_playlist_server_select(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Select which playlist server to use."""
+    bridge = _get_bridge(hass)
+    if bridge is None:
+        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        return
+
+    success = await bridge.select_playlist_server(msg["node_id"])
+    if not success:
+        connection.send_error(msg["id"], "not_found", f"Playlist server {msg['node_id']} not found")
+        return
+    connection.send_result(msg["id"], {"success": True})
+

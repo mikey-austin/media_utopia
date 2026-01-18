@@ -95,7 +95,8 @@ class MudBridge:
         self._request_sema = asyncio.Semaphore(4)
         self._metadata_sema = asyncio.Semaphore(2)
         self._libraries: dict[str, dict[str, Any]] = {}
-        self._playlist_server: dict[str, Any] | None = None
+        self._playlist_servers: dict[str, dict[str, Any]] = {}  # All servers by nodeId
+        self._selected_playlist_server: str | None = None  # Currently selected server
         self._playlists: dict[str, dict[str, Any]] = {}
         self._leases: dict[str, Lease] = {}
         self._snapshot_names: dict[str, str] = {}
@@ -109,6 +110,7 @@ class MudBridge:
 
     async def async_start(self) -> None:
         """Start the bridge."""
+        self._ready = False
         await mqtt.async_wait_for_mqtt_client(self.hass)
 
         await self._cleanup_discovery_topics()
@@ -133,8 +135,12 @@ class MudBridge:
 
         self._register_services()
 
-        self._playlist_task = asyncio.create_task(self._playlist_loop())
+        # Wait for MQTT subscriptions to be confirmed and retained messages to arrive
+        await asyncio.sleep(0.5)
+        self._ready = True
         _LOGGER.debug("mu bridge started with topic_base=%s", self.topic_base)
+
+        self._playlist_task = asyncio.create_task(self._playlist_loop())
 
     async def async_stop(self) -> None:
         """Stop the bridge."""
@@ -231,6 +237,16 @@ class MudBridge:
         )
 
     async def _playlist_loop(self) -> None:
+        # Immediate refresh on startup if playlist server already known
+        if self._playlist_server is not None:
+            for attempt in range(3):
+                try:
+                    await self._refresh_playlists()
+                    break
+                except Exception:
+                    _LOGGER.debug("playlist refresh attempt %d failed, retrying", attempt + 1)
+                    await asyncio.sleep(1)
+
         while True:
             try:
                 await asyncio.sleep(self.playlist_refresh)
@@ -270,9 +286,15 @@ class MudBridge:
         elif kind == "library":
             self._libraries[node_id] = payload
         elif kind == "playlist":
-            self._playlist_server = payload
-            await self._publish_playlist_server_availability("online")
-            await self._refresh_playlists()
+            self._playlist_servers[node_id] = payload
+            await self._publish_playlist_server_availability(node_id, "online")
+            # Auto-select first server if none selected
+            if self._selected_playlist_server is None:
+                self._selected_playlist_server = node_id
+                _LOGGER.debug("auto-selected playlist server: %s", node_id)
+            # Only refresh immediately if bridge is ready and this is the selected server
+            if getattr(self, "_ready", False) and node_id == self._selected_playlist_server:
+                await self._refresh_playlists()
         elif kind == "zone_controller":
             self._zone_controllers[node_id] = payload
             self._notify_zone_controller_listeners(node_id)
@@ -451,6 +473,35 @@ class MudBridge:
             payload,
             need_lease=False,
         )
+
+    @property
+    def _playlist_server(self) -> dict[str, Any] | None:
+        """Get currently selected playlist server (backward compatibility)."""
+        if self._selected_playlist_server is None:
+            return None
+        return self._playlist_servers.get(self._selected_playlist_server)
+
+    def list_playlist_servers(self) -> list[tuple[str, str]]:
+        """Return list of (node_id, name) for all discovered playlist servers."""
+        out: list[tuple[str, str]] = []
+        for node_id, info in self._playlist_servers.items():
+            out.append((node_id, info.get("name", node_id)))
+        return out
+
+    def get_selected_playlist_server(self) -> str | None:
+        """Get the currently selected playlist server node ID."""
+        return self._selected_playlist_server
+
+    async def select_playlist_server(self, node_id: str) -> bool:
+        """Select a playlist server by node_id. Returns True if successful."""
+        if node_id not in self._playlist_servers:
+            return False
+        self._selected_playlist_server = node_id
+        _LOGGER.debug("selected playlist server: %s", node_id)
+        # Clear cached playlists and refresh from new server
+        self._playlists.clear()
+        await self._refresh_playlists()
+        return True
 
     def get_playlist(self, playlist_id: str) -> dict[str, Any] | None:
         return self._playlists.get(playlist_id)
@@ -762,10 +813,8 @@ class MudBridge:
             return
         await self._publish(topics["availability"], status, retain=True)
 
-    async def _publish_playlist_server_availability(self, status: str) -> None:
-        if self._playlist_server is None:
-            return
-        topic = self._playlist_availability_topic(self._playlist_server["nodeId"])
+    async def _publish_playlist_server_availability(self, node_id: str, status: str) -> None:
+        topic = self._playlist_availability_topic(node_id)
         await self._publish(topic, status, retain=True)
 
     async def _ensure_renderer_discovery(self, node_id: str) -> None:
