@@ -234,6 +234,18 @@ const styles = css`
 
   .queue-item:hover .queue-item-actions, .browser-item:hover .browser-item-actions { opacity: 1; }
 
+  .queue-drag-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    min-height: 32px;
+    color: var(--mu-secondary, #888);
+    cursor: grab;
+  }
+  .queue-drag-handle:active { cursor: grabbing; }
+  .queue-drag-handle svg { width: 18px; height: 18px; pointer-events: none; }
+
   .icon-btn {
     background: transparent;
     border: none;
@@ -267,6 +279,31 @@ const styles = css`
 
   .browser-with-index { display: flex; flex: 1; overflow: hidden; position: relative; }
   .browser-list-wrapper { flex: 1; overflow-y: auto; }
+
+  /* Hidden by default, shown on mobile */
+  .folder-actions { display: none; }
+  
+  .main-header {
+    display: flex;
+    align-items: center;
+    height: 56px;
+    padding: 0 4px;
+    background: var(--app-header-background-color, var(--primary-color));
+    color: var(--app-header-text-color, var(--text-primary-color, #fff));
+    box-shadow: 0 2px 4px rgba(0,0,0,0.16);
+    z-index: 10;
+    flex-shrink: 0;
+  }
+  
+  .main-header-title {
+    font-size: 20px;
+    font-weight: 500;
+    margin-left: 16px;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   .letter-index {
     display: flex;
@@ -518,21 +555,36 @@ const styles = css`
 
   /* Responsive: Mobile (600px and below) */
   @media (max-width: 600px) {
-    .mobile-view-toggle { display: flex; }
+    :host { padding-top: 0; }
     
-    .panel-container { flex-direction: column; }
+    .mobile-view-toggle {
+      display: flex;
+      background: var(--mu-card-bg);
+      border-bottom: 1px solid var(--mu-border);
+    }
+    
+    .panel-container {
+      flex-direction: column;
+      background: var(--primary-background-color, #1c1c1c);
+    }
     
     .browser-pane {
       width: 100% !important;
       border-right: none;
       border-bottom: 1px solid var(--mu-border);
       min-width: unset;
+      flex: 1;
+      min-height: 0;
     }
     
     .browser-pane.hidden { display: none; }
     .queue-pane.hidden { display: none; }
     
-    .queue-pane { min-width: unset; }
+    .queue-pane {
+      min-width: unset;
+      flex: 1;
+      min-height: 0;
+    }
     
     .pane-header { padding: 10px 12px; }
     .renderer-select { max-width: none; flex: 1; font-size: 14px; padding: 8px; }
@@ -549,10 +601,29 @@ const styles = css`
     
     .seek-bar, .volume-bar { height: 10px; }
     
-    .browser-item, .queue-item { padding: 12px 10px; }
-    .browser-item-art, .queue-item-art { width: 48px; height: 48px; }
-    .browser-item-title, .queue-item-title { font-size: 14px; }
-    .browser-item-subtitle, .queue-item-subtitle { font-size: 12px; }
+    .browser-item { padding: 12px 10px; user-select: none; }
+    .queue-item { padding: 12px 10px 12px 0; user-select: none; touch-action: pan-y; } /* 0 padding left for handle */
+    
+    .browser-item-title, .queue-item-title { font-size: 14px; margin-left: 8px; }
+    .browser-item-subtitle, .queue-item-subtitle { font-size: 12px; margin-left: 8px; }
+    
+    .queue-drag-handle {
+      padding: 0 4px;
+      cursor: grab;
+      touch-action: none;
+      color: var(--mu-secondary, #888);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 48px;
+      min-height: 48px;
+    }
+    .queue-drag-handle:active { cursor: grabbing; }
+    .queue-drag-handle svg {
+      width: 24px;
+      height: 24px;
+      pointer-events: none; /* Pass touches to container */
+    }
     
     .action-btn { padding: 8px 12px; font-size: 12px; }
     .icon-btn { width: 32px; height: 32px; }
@@ -564,17 +635,58 @@ const styles = css`
     .zone-group { padding: 12px; }
     .zone-item { padding: 12px 0; gap: 10px; }
     .zone-item-name { font-size: 13px; }
-    .zone-volume-slider { height: 10px; }
+    .zone-item-name { font-size: 13px; }
+    /* Touch target container (invisible shim) */
+    .zone-volume-slider { 
+      height: 10px; 
+      position: relative;
+      touch-action: none;
+      user-select: none;
+      cursor: pointer;
+      margin: 0 4px;
+      /* Ensure visible bar is same as before */
+      background: var(--mu-border);
+      border-radius: 5px;
+    }
+    /* Increase touch target with pseudo-element */
+    .zone-volume-slider::after {
+      content: '';
+      position: absolute;
+      top: -15px; bottom: -15px; left: 0; right: 0;
+      z-index: 10;
+    }
+    .zone-volume-fill {
+      height: 100%;
+      background: var(--mu-accent);
+      border-radius: 5px;
+      pointer-events: none; /* Let clicks pass to slider */
+    }
     .zone-mute-btn { width: 40px; height: 40px; }
     .zone-source-select { padding: 6px; font-size: 12px; max-width: none; }
     
     .breadcrumbs { padding: 8px 10px; }
     .breadcrumb { padding: 6px 8px; font-size: 12px; }
     
-    .letter-index { padding: 6px 4px; }
+    .letter-index {
+      padding: 6px 4px;
+      justify-content: flex-start;
+      overflow-y: auto;
+    }
     .letter-index button { padding: 8px 10px; font-size: 13px; min-width: 24px; }
     
     .toast { bottom: 60px; padding: 10px 18px; font-size: 13px; }
+    
+    /* Always show action buttons on touch devices */
+    .browser-item-actions, .queue-item-actions { opacity: 1; }
+    
+    /* Folder actions header */
+    .folder-actions {
+      display: flex;
+      gap: 6px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--mu-border);
+      background: var(--mu-card-bg);
+    }
   }
 `;
 
@@ -586,6 +698,7 @@ const icons = {
   camera: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9z"/></svg>`,
   prev: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>`,
   next: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>`,
+  drag: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z"/></svg>`,
   play: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`,
   pause: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`,
   stop: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>`,
@@ -609,6 +722,7 @@ class MuPanel extends LitElement {
 
   static properties = {
     hass: { type: Object },
+    narrow: { type: Boolean },
     renderers: { state: true },
     selectedRenderer: { state: true },
     rendererState: { state: true },
@@ -662,6 +776,9 @@ class MuPanel extends LitElement {
     this._refreshInterval = null;
     this._localSeekPos = null;
     this._localVolume = null;
+    this._touchDragTimer = null;
+    this._touchDragItem = null;
+    this._touchDragStartY = 0;
   }
 
   connectedCallback() {
@@ -809,13 +926,21 @@ class MuPanel extends LitElement {
     this._seekDragging = true;
     this._seekTrack = e.currentTarget;
     this._updateSeekFromEvent(e);
-    document.addEventListener('mousemove', this._boundSeekMove);
-    document.addEventListener('mouseup', this._boundSeekEnd);
-    e.preventDefault();
+
+    if (e.type === 'touchstart') {
+      document.addEventListener('touchmove', this._boundSeekMove, { passive: false });
+      document.addEventListener('touchend', this._boundSeekEnd);
+      document.addEventListener('touchcancel', this._boundSeekEnd);
+    } else {
+      document.addEventListener('mousemove', this._boundSeekMove);
+      document.addEventListener('mouseup', this._boundSeekEnd);
+    }
+    if (e.cancelable) e.preventDefault();
   }
 
   _onSeekMove(e) {
     if (!this._seekDragging) return;
+    if (e.type === 'touchmove') e.preventDefault();
     this._updateSeekFromEvent(e);
   }
 
@@ -824,14 +949,21 @@ class MuPanel extends LitElement {
     this._seekDragging = false;
     document.removeEventListener('mousemove', this._boundSeekMove);
     document.removeEventListener('mouseup', this._boundSeekEnd);
-    // Reset local value after a short delay to let server state catch up
+    document.removeEventListener('touchmove', this._boundSeekMove);
+    document.removeEventListener('touchend', this._boundSeekEnd);
+    document.removeEventListener('touchcancel', this._boundSeekEnd);
+    // Reset local value after a short delay
     setTimeout(() => { this._localSeekPos = null; this.requestUpdate(); }, 300);
   }
 
   _updateSeekFromEvent(e) {
     if (!this._seekTrack) return;
+    let clientX;
+    if (e.touches && e.touches.length > 0) clientX = e.touches[0].clientX;
+    else clientX = e.clientX;
+
     const rect = this._seekTrack.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     const dur = this.rendererState?.playback?.duration_ms || 0;
     // Update UI immediately
     this._localSeekPos = Math.round(pct * dur);
@@ -848,13 +980,21 @@ class MuPanel extends LitElement {
     this._volDragging = true;
     this._volTrack = e.currentTarget;
     this._updateVolumeFromEvent(e);
-    document.addEventListener('mousemove', this._boundVolMove);
-    document.addEventListener('mouseup', this._boundVolEnd);
-    e.preventDefault();
+
+    if (e.type === 'touchstart') {
+      document.addEventListener('touchmove', this._boundVolMove, { passive: false });
+      document.addEventListener('touchend', this._boundVolEnd);
+      document.addEventListener('touchcancel', this._boundVolEnd);
+    } else {
+      document.addEventListener('mousemove', this._boundVolMove);
+      document.addEventListener('mouseup', this._boundVolEnd);
+    }
+    if (e.cancelable) e.preventDefault();
   }
 
   _onVolMove(e) {
     if (!this._volDragging) return;
+    if (e.type === 'touchmove') e.preventDefault();
     this._updateVolumeFromEvent(e);
   }
 
@@ -863,14 +1003,21 @@ class MuPanel extends LitElement {
     this._volDragging = false;
     document.removeEventListener('mousemove', this._boundVolMove);
     document.removeEventListener('mouseup', this._boundVolEnd);
-    // Reset local value after a short delay to let server state catch up
+    document.removeEventListener('touchmove', this._boundVolMove);
+    document.removeEventListener('touchend', this._boundVolEnd);
+    document.removeEventListener('touchcancel', this._boundVolEnd);
+    // Reset local value
     setTimeout(() => { this._localVolume = null; this.requestUpdate(); }, 300);
   }
 
   _updateVolumeFromEvent(e) {
     if (!this._volTrack) return;
+    let clientX;
+    if (e.touches && e.touches.length > 0) clientX = e.touches[0].clientX;
+    else clientX = e.clientX;
+
     const rect = this._volTrack.getBoundingClientRect();
-    const vol = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const vol = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     // Update UI immediately
     this._localVolume = vol;
     this.requestUpdate();
@@ -923,6 +1070,24 @@ class MuPanel extends LitElement {
     this._showToast('Cleared');
   }
 
+  async _saveQueueToPlaylist(e) {
+    const playlistId = e.target.value;
+    if (!playlistId || !this.selectedRenderer) return;
+    // Reset the dropdown
+    e.target.value = '';
+    const r = await this._callWS('mu/playlist_save_from_queue', {
+      renderer_id: this.selectedRenderer,
+      playlist_id: playlistId,
+    });
+    if (r?.success) {
+      const playlist = this.playlists.find(p => p.playlistId === playlistId);
+      this._showToast(`Saved to ${playlist?.name || 'playlist'} (${r.itemCount} items)`);
+      await this._loadPlaylists();
+    } else {
+      this._showToast('Save failed');
+    }
+  }
+
   async _browseContainer(item) {
     if (item.isLibrary) {
       this.browserPath = [{ id: item.itemId, title: item.title, isLibrary: true }];
@@ -967,6 +1132,26 @@ class MuPanel extends LitElement {
       this.browserPath = this.browserPath.slice(0, idx + 1);
       await this._loadBrowserItems(libId, idx === 0 ? '' : target.id);
     }
+  }
+
+  async _addFolderToQueue(mode) {
+    if (!this.selectedRenderer || !this.browserItems.length) return;
+    const libId = this.browserPath[0]?.id;
+    if (!libId) return;
+
+    // Filter for playable items only
+    const items = this.browserItems
+      .filter(item => !item.isContainer && !item.isLibrary && item.itemId)
+      .map(item => `lib:${libId}:${item.itemId}`);
+
+    if (!items.length) {
+      this._showToast('No playable items');
+      return;
+    }
+
+    await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
+    await this._loadQueue();
+    this._showToast(mode === 'replace' ? `Playing folder (${items.length})` : `Added folder (${items.length})`);
   }
 
   async _addToQueue(item, mode) {
@@ -1049,6 +1234,11 @@ class MuPanel extends LitElement {
   render() {
     if (this.loading) return html`<div class="loading"><div class="spinner"></div></div>`;
     return html`
+      <div class="main-header">
+        <ha-menu-button .hass=${this.hass} .narrow=${this.narrow}></ha-menu-button>
+        <div class="main-header-title">Media Utopia</div>
+        <ha-icon-button icon="mdi:dots-vertical"></ha-icon-button>
+      </div>
       <div class="mobile-view-toggle">
         <button class="${this.mobileView === 'browser' ? 'active' : ''}" @click=${() => this.mobileView = 'browser'}>Browse</button>
         <button class="${this.mobileView === 'player' ? 'active' : ''}" @click=${() => this.mobileView = 'player'}>Player</button>
@@ -1080,11 +1270,18 @@ class MuPanel extends LitElement {
   }
 
   _renderBrowseTab() {
+    const currentFolder = this.browserPath.length > 0 ? this.browserPath[this.browserPath.length - 1] : null;
     return html`
       <div class="breadcrumbs">
         <button class="breadcrumb" @click=${() => this._navigateBreadcrumb(-1)}>${icons.home}</button>
         ${this.browserPath.map((c, i) => html`<span class="breadcrumb-sep">›</span><button class="breadcrumb" @click=${() => this._navigateBreadcrumb(i)}>${c.title}</button>`)}
       </div>
+      ${currentFolder ? html`
+        <div class="folder-actions">
+          <button class="action-btn" @click=${() => this._addFolderToQueue('replace')} title="Play folder">▶ Play</button>
+          <button class="action-btn secondary" @click=${() => this._addFolderToQueue('append')} title="Add folder to queue">+ Add All</button>
+        </div>
+      ` : ''}
       <div class="browser-with-index">
         <div class="browser-list-wrapper">
           <div class="browser-list">
@@ -1336,7 +1533,10 @@ class MuPanel extends LitElement {
     return html`
       <div class="zone-item">
         <span class="zone-item-name ${zone.connected ? '' : 'disconnected'}">${zone.name}</span>
-        <div class="zone-volume-slider" @mousedown=${(e) => this._onZoneVolStart(e, zone)} @click=${(e) => e.preventDefault()}>
+        <div class="zone-volume-slider" 
+          @mousedown=${(e) => this._onZoneVolStart(e, zone)} 
+          @touchstart=${(e) => this._onZoneVolStart(e, zone)}
+          @click=${(e) => e.preventDefault()}>
           <div class="zone-volume-fill" style="width: ${volumePct}%"></div>
         </div>
         <span style="font-size:10px;color:var(--mu-secondary);min-width:28px">${volumePct}%</span>
@@ -1363,6 +1563,9 @@ class MuPanel extends LitElement {
     this._updateZoneVolFromEvent(e);
     document.addEventListener('mousemove', this._boundZoneVolMove);
     document.addEventListener('mouseup', this._boundZoneVolEnd);
+    document.addEventListener('touchmove', this._boundZoneVolMove, { passive: false });
+    document.addEventListener('touchend', this._boundZoneVolEnd);
+    document.addEventListener('touchcancel', this._boundZoneVolEnd);
     e.preventDefault();
   }
 
@@ -1371,18 +1574,114 @@ class MuPanel extends LitElement {
     this._updateZoneVolFromEvent(e);
   }
 
+  _onTouchStart(e, idx) {
+    // Only single touch
+    if (e.touches.length !== 1) return;
+
+    // Direct start for drag handle
+    const touch = e.touches[0];
+    this._startTouchDrag(idx, touch);
+    e.preventDefault();
+  }
+
+  _onTouchMove(e) {
+    if (this.dragIndex !== null) {
+      // We are dragging
+      e.preventDefault(); // Stop scrolling
+      const touch = e.touches[0];
+      const target = this.shadowRoot?.elementFromPoint
+        ? this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY)
+        : document.elementFromPoint(touch.clientX, touch.clientY);
+      const queueItem = target?.closest('.queue-item');
+      if (queueItem && queueItem.dataset.index !== undefined) {
+        const newIndex = parseInt(queueItem.dataset.index, 10);
+        if (!isNaN(newIndex) && newIndex !== this.dragOverIndex) {
+          this.dragOverIndex = newIndex;
+        }
+      }
+    } else if (this._touchDragTimer) {
+      // Check if we moved too much before timer fired
+      const touch = e.touches[0];
+      if (Math.abs(touch.clientY - this._touchDragStartY) > 10) {
+        clearTimeout(this._touchDragTimer);
+        this._touchDragTimer = null;
+      }
+    }
+  }
+
+  _onTouchEnd(e) {
+    if (this._touchDragTimer) {
+      clearTimeout(this._touchDragTimer);
+      this._touchDragTimer = null;
+    }
+
+    if (this.dragIndex !== null) {
+      e.preventDefault();
+      // Drop
+      const from = this.dragIndex;
+      const to = this.dragOverIndex;
+      this.dragIndex = null;
+      this.dragOverIndex = null;
+
+      this._removeTouchListeners();
+
+      if (to !== null && from !== to) {
+        this._callWS('mu/queue_move', { renderer_id: this.selectedRenderer, from_index: from, to_index: to });
+        // Optimistic update
+        const item = this.queue[from];
+        const newQueue = [...this.queue];
+        newQueue.splice(from, 1);
+        newQueue.splice(to, 0, item);
+        this.queue = newQueue;
+      }
+    }
+  }
+
+  _startTouchDrag(idx, touch) {
+    this.dragIndex = idx;
+    if (navigator.vibrate) navigator.vibrate(50);
+
+    // Bind global move/up listeners
+    this._boundTouchMove = this._onTouchMove.bind(this);
+    this._boundTouchEnd = this._onTouchEnd.bind(this);
+    document.addEventListener('touchmove', this._boundTouchMove, { passive: false });
+    document.addEventListener('touchend', this._boundTouchEnd);
+    document.addEventListener('touchcancel', this._boundTouchEnd);
+  }
+
+  _removeTouchListeners() {
+    if (this._boundTouchMove) {
+      document.removeEventListener('touchmove', this._boundTouchMove);
+      document.removeEventListener('touchend', this._boundTouchEnd);
+      document.removeEventListener('touchcancel', this._boundTouchEnd);
+      this._boundTouchMove = null;
+      this._boundTouchEnd = null;
+    }
+  }
+
   _onZoneVolEnd() {
     if (!this._zoneVolDragging) return;
     this._zoneVolDragging = false;
     document.removeEventListener('mousemove', this._boundZoneVolMove);
     document.removeEventListener('mouseup', this._boundZoneVolEnd);
+    document.removeEventListener('touchmove', this._boundZoneVolMove);
+    document.removeEventListener('touchend', this._boundZoneVolEnd);
+    document.removeEventListener('touchcancel', this._boundZoneVolEnd);
     this._zoneVolZone = null;
   }
 
   _updateZoneVolFromEvent(e) {
     if (!this._zoneVolTrack || !this._zoneVolZone) return;
+
+    let clientX;
+    if (e.touches && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+    } else {
+      clientX = e.clientX;
+    }
+
     const rect = this._zoneVolTrack.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     // Optimistically update UI
     const zone = this._zoneVolZone;
     const idx = this.zones.findIndex(z => z.zoneId === zone.zoneId);
@@ -1466,14 +1765,14 @@ class MuPanel extends LitElement {
         <div class="progress-section">
           <div class="progress-bar-container">
             <span>${formatTime(pos)}</span>
-            <div class="progress-track" @mousedown=${this._onSeekStart}>
+            <div class="progress-track" @mousedown=${this._onSeekStart} @touchstart=${this._onSeekStart} style="touch-action:none">
               <div class="progress-fill" style="width:${(pos / dur) * 100}%"><div class="progress-thumb"></div></div>
             </div>
             <span>${formatTime(dur)}</span>
           </div>
           <div class="volume-row">
             ${icons.volume}
-            <div class="volume-track" @mousedown=${this._onVolumeStart}><div class="volume-fill" style="width:${vol * 100}%"><div class="volume-thumb"></div></div></div>
+            <div class="volume-track" @mousedown=${this._onVolumeStart} @touchstart=${this._onVolumeStart} style="touch-action:none"><div class="volume-fill" style="width:${vol * 100}%"><div class="volume-thumb"></div></div></div>
             <span>${Math.round(vol * 100)}%</span>
           </div>
         </div>
@@ -1481,6 +1780,10 @@ class MuPanel extends LitElement {
         <div class="pane-header">
           <span class="pane-title">Queue (${this.queue.length})</span>
           <button class="icon-btn" @click=${this._shuffleQueue} ?disabled=${!this.leaseOwned || this.queue.length < 2} title="Shuffle">${icons.shuffle}</button>
+          <select class="renderer-select" style="max-width:100px" @change=${this._saveQueueToPlaylist} ?disabled=${!this.queue.length || !this.playlists.length}>
+            <option value="" selected disabled>Save to...</option>
+            ${this.playlists.map(pl => html`<option value="${pl.playlistId}">${pl.name}</option>`)}
+          </select>
           <button class="action-btn secondary" @click=${this._queueClear} ?disabled=${!this.leaseOwned || !this.queue.length}>Clear</button>
         </div>
 
@@ -1494,8 +1797,19 @@ class MuPanel extends LitElement {
 
   _renderQueueItem(entry, idx, curIdx) {
     return html`
-      <div class="queue-item ${idx === curIdx ? 'playing' : ''} ${this.dragIndex === idx ? 'dragging' : ''} ${this.dragOverIndex === idx ? 'drag-over' : ''}"
-        draggable="true" @dragstart=${e => this._onDragStart(e, idx)} @dragover=${e => this._onDragOver(e, idx)} @dragleave=${this._onDragLeave} @drop=${e => this._onDrop(e, idx)} @click=${() => this._queueJump(idx)}>
+      <div class="queue-item ${idx === curIdx ? 'playing' : ''} ${this.dragIndex === idx ? 'dragging' : ''} ${this.dragOverIndex === idx ? 'drag-over' : ''}" data-index="${idx}" @click=${() => this._queueJump(idx)}>
+        <div class="queue-drag-handle"
+           @touchstart=${e => { e.stopPropagation(); this._onTouchStart(e, idx); }}
+           @touchmove=${e => this._onTouchMove(e)}
+           @touchend=${e => this._onTouchEnd(e)}
+           draggable="true" 
+           data-index="${idx}"
+           @dragstart=${e => this._onDragStart(e, idx)} 
+           @dragover=${e => this._onDragOver(e, idx)} 
+           @dragleave=${this._onDragLeave} 
+           @drop=${e => this._onDrop(e, idx)}>
+           ${icons.drag}
+        </div>  
         ${entry.art_url ? html`<img class="queue-item-art" src="${entry.art_url}"/>` : html`<div class="queue-item-art">${icons.music}</div>`}
         <div class="queue-item-info">
           <div class="queue-item-title">${entry.title || 'Unknown'}</div>

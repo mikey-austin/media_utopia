@@ -1200,6 +1200,24 @@ class MudBridge:
         )
         return reply is not None and reply.get("type") == "ack"
 
+    async def async_playlist_replace_items(
+        self, playlist_id: str, item_ids: list[str]
+    ) -> bool:
+        """Replace all items in a playlist with new items."""
+        if self._playlist_server is None:
+            return False
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.replaceItems",
+            {"playlistId": playlist_id, "items": item_ids},
+        )
+        if reply is not None and reply.get("type") == "ack":
+            # Update cached playlist size
+            if playlist_id in self._playlists:
+                self._playlists[playlist_id]["size"] = len(item_ids)
+            return True
+        return False
+
     async def async_playlist_move(
         self, playlist_id: str, from_index: int, to_index: int, if_revision: int | None = None
     ) -> bool:

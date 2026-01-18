@@ -56,6 +56,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_zone_select_source)
     websocket_api.async_register_command(hass, ws_playlist_servers_list)
     websocket_api.async_register_command(hass, ws_playlist_server_select)
+    websocket_api.async_register_command(hass, ws_playlist_save_from_queue)
 
 
 def _get_bridge(hass: HomeAssistant):
@@ -1180,4 +1181,43 @@ async def ws_playlist_server_select(
         connection.send_error(msg["id"], "not_found", f"Playlist server {msg['node_id']} not found")
         return
     connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "mu/playlist_save_from_queue",
+    vol.Required("renderer_id"): str,
+    vol.Required("playlist_id"): str,
+})
+@websocket_api.async_response
+async def ws_playlist_save_from_queue(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Save current queue contents to a playlist (replaces all items)."""
+    bridge = _get_bridge(hass)
+    if bridge is None:
+        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        return
+
+    renderer_id = msg["renderer_id"]
+    playlist_id = msg["playlist_id"]
+
+    # Get current queue entries
+    entries = await bridge.async_get_queue(renderer_id)
+    if entries is None:
+        connection.send_error(msg["id"], "queue_error", "Failed to get queue")
+        return
+
+    # Extract item IDs from queue entries
+    item_ids = [entry.get("itemId") for entry in entries if entry.get("itemId")]
+
+    # Replace playlist items
+    success = await bridge.async_playlist_replace_items(playlist_id, item_ids)
+    if not success:
+        connection.send_error(msg["id"], "save_failed", "Failed to save queue to playlist")
+        return
+
+    connection.send_result(msg["id"], {"success": True, "itemCount": len(item_ids)})
+
 

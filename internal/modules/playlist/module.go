@@ -169,6 +169,8 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.playlistRename(cmd, reply)
 	case "playlist.delete":
 		return m.playlistDelete(cmd, reply)
+	case "playlist.replaceItems":
+		return m.playlistReplaceItems(cmd, reply)
 	case "snapshot.save":
 		return m.snapshotSave(cmd, reply)
 	case "snapshot.list":
@@ -335,6 +337,41 @@ func (m *Module) playlistRemoveItems(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 	if err := m.storage.SavePlaylist(pl); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
+	return reply
+}
+
+func (m *Module) playlistReplaceItems(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.PlaylistReplaceItemsBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	pl, err := m.storage.GetPlaylist(body.PlaylistID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errorReply(cmd, "NOT_FOUND", "playlist not found")
+		}
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	if cmd.IfRevision != nil && *cmd.IfRevision != pl.Revision {
+		return errorReply(cmd, "CONFLICT", "revision mismatch")
+	}
+
+	// Build new entries from item IDs
+	newEntries := make([]PlaylistEntry, 0, len(body.Items))
+	for _, itemID := range body.Items {
+		newEntries = append(newEntries, PlaylistEntry{
+			EntryID: fmt.Sprintf("mu:playlistentry:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID()),
+			Ref:     &mu.ItemRef{ID: itemID},
+		})
+	}
+	pl.Entries = newEntries
+	pl.Revision++
+	pl.UpdatedAt = time.Now().Unix()
+	if err := m.storage.SavePlaylist(pl); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	payload, _ := json.Marshal(map[string]int64{"revision": pl.Revision})
+	reply.Body = payload
 	return reply
 }
 

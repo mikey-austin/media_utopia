@@ -205,6 +205,12 @@ type PlaylistDeleteBody struct {
 	PlaylistID string `json:"playlistId"`
 }
 
+// PlaylistReplaceItemsBody is the payload for playlist.replaceItems.
+type PlaylistReplaceItemsBody struct {
+	PlaylistID string   `json:"playlistId"`
+	Items      []string `json:"items"` // Array of itemIds to replace all entries
+}
+
 // SnapshotSaveBody is the payload for snapshot.save.
 type SnapshotSaveBody struct {
 	Name       string          `json:"name"`
