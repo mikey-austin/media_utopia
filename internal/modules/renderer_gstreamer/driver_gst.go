@@ -52,7 +52,7 @@ func (d *Driver) Play(url string, positionMS int64) error {
 		return err
 	}
 
-	if d.current != nil && d.crossfade > 0 {
+	if d.current != nil && d.crossfade > 0 && !d.muted {
 		old := d.current
 		oldVol := d.volumeEl
 		targetVolume := d.currentVolumeLocked()
@@ -190,10 +190,17 @@ func (d *Driver) startPipeline(pipeline *gst.Element, volumeEl *gst.Element) err
 	if target == nil {
 		target = pipeline
 	}
-	_ = target.SetProperty("volume", d.volume)
-	_ = target.SetProperty("mute", d.muted)
 
-	if d.crossfade > 0 {
+	if d.muted {
+		// Disable the mute property as it screws with some alsa sink
+		// setups and causes playback to skip.
+		//_ = target.SetProperty("mute", d.muted)
+		_ = target.SetProperty("volume", 0.00001)
+	} else {
+		_ = target.SetProperty("volume", d.volume)
+	}
+
+	if d.crossfade > 0 && !d.muted {
 		_ = target.SetProperty("volume", 0.0)
 		targetVolume := d.currentVolumeLocked()
 		go d.fadeIn(pipeline, target, d.crossfade, targetVolume)
