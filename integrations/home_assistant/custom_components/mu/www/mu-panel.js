@@ -44,7 +44,7 @@ const styles = css`
     flex-shrink: 0;
   }
 
-  .pane-title { font-size: 16px; font-weight: 500; flex: 1; }
+  .pane-title { font-size: 18px; font-weight: 500; flex: 1; }
 
   .renderer-select {
     background: var(--primary-background-color);
@@ -52,7 +52,7 @@ const styles = css`
     border: 1px solid var(--mu-border);
     border-radius: 4px;
     padding: 4px 6px;
-    font-size: 14px;
+    font-size: 15px;
     max-width: 140px;
   }
 
@@ -63,7 +63,7 @@ const styles = css`
     cursor: pointer;
     padding: 4px 10px;
     border-radius: 4px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
   }
 
@@ -97,14 +97,14 @@ const styles = css`
   .now-playing-info { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
 
   .now-playing-title {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .now-playing-artist { font-size: 14px; color: var(--mu-secondary); }
+  .now-playing-artist { font-size: 16px; color: var(--mu-secondary); }
 
   .transport {
     display: flex;
@@ -208,7 +208,7 @@ const styles = css`
   .queue-item-info, .browser-item-info { flex: 1; min-width: 0; overflow: hidden; }
 
   .queue-item-title, .browser-item-title {
-    font-size: 14px;
+    font-size: 16px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -216,7 +216,7 @@ const styles = css`
   }
 
   .queue-item-artist, .browser-item-subtitle {
-    font-size: 12px;
+    font-size: 14px;
     color: var(--mu-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -269,7 +269,7 @@ const styles = css`
     cursor: pointer;
     padding: 3px 5px;
     border-radius: 3px;
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     flex-shrink: 0;
@@ -323,7 +323,7 @@ const styles = css`
     color: var(--mu-secondary);
     cursor: pointer;
     padding: 2px 6px;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 500;
     border-radius: 3px;
     min-width: 20px;
@@ -341,8 +341,9 @@ const styles = css`
     display: flex;
     align-items: center;
     gap: 8px;
+    gap: 8px;
     margin-bottom: 8px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
     color: var(--primary-text-color);
   }
@@ -357,7 +358,7 @@ const styles = css`
     align-items: center;
     gap: 8px;
     padding: 6px 0;
-    font-size: 11px;
+    font-size: 14px;
   }
 
   .zone-item-name {
@@ -421,7 +422,7 @@ const styles = css`
     border: 1px solid var(--mu-border);
     border-radius: 3px;
     padding: 2px 4px;
-    font-size: 10px;
+    font-size: 12px;
     max-width: 100px;
   }
 
@@ -430,7 +431,7 @@ const styles = css`
     align-items: center;
     gap: 2px;
     padding: 5px 8px;
-    font-size: 10px;
+    font-size: 13px;
     color: var(--mu-secondary);
     flex-shrink: 0;
     overflow-x: auto;
@@ -444,7 +445,7 @@ const styles = css`
     cursor: pointer;
     padding: 2px 4px;
     border-radius: 3px;
-    font-size: 10px;
+    font-size: 13px;
     white-space: nowrap;
   }
 
@@ -461,7 +462,7 @@ const styles = css`
     color: var(--mu-secondary);
     padding: 8px;
     cursor: pointer;
-    font-size: 10px;
+    font-size: 13px;
     font-weight: 500;
     text-transform: uppercase;
     border-bottom: 2px solid transparent;

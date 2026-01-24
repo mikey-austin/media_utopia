@@ -132,7 +132,15 @@ func (d *Driver) SetMute(mute bool) error {
 		// Use volumeEl which points to the actual playbin
 		target := d.volumeTarget()
 		if target != nil {
-			_ = target.SetProperty("mute", mute)
+			// Disable for now as dmix alsa sinks screw with playback
+			//_ = target.SetProperty("mute", mute)
+			if mute {
+				// Set to -100dB, completely inaudible in practice, while
+				// still keeping the pipeline in sync.
+				_ = target.SetProperty("volume", 0.00001)
+			} else {
+				_ = target.SetProperty("volume", d.volume)
+			}
 		}
 	}
 	return nil
