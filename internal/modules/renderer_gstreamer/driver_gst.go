@@ -14,7 +14,7 @@ import (
 
 // Driver implements a GStreamer-backed playback driver using Go bindings.
 type Driver struct {
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	pipeline  string
 	device    string
 	crossfade time.Duration
@@ -55,7 +55,8 @@ func (d *Driver) Play(url string, positionMS int64) error {
 	if d.current != nil && d.crossfade > 0 {
 		old := d.current
 		oldVol := d.volumeEl
-		go d.fadeOut(old, oldVol, d.crossfade)
+		targetVolume := d.currentVolumeLocked()
+		go d.fadeOut(old, oldVol, d.crossfade, targetVolume)
 	}
 
 	d.current = pipeline
@@ -110,30 +111,28 @@ func (d *Driver) SetVolume(volume float64) error {
 	defer d.mu.Unlock()
 
 	d.volume = volume
-	if d.current != nil {
+	if d.current != nil && !d.muted {
 		target := d.volumeTarget()
 		if target != nil {
-			_ = target.SetProperty("volume", d.currentVolumeLocked())
+			_ = target.SetProperty("volume", d.volume)
 		}
 	}
+
 	return nil
 }
 
 // SetMute sets mute state using both GStreamer's mute property and volume.
-// The mute property preserves audio clock synchronization, while setting
-// volume to 0 ensures the audio is actually silenced.
+// The mute property preserves audio clock synchronization.
 func (d *Driver) SetMute(mute bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	d.muted = mute
 	if d.current != nil {
-		// Set mute property for clock sync preservation.
-		_ = d.current.SetProperty("mute", mute)
-		// Also set volume to ensure audio is actually silenced.
+		// Use volumeEl which points to the actual playbin
 		target := d.volumeTarget()
 		if target != nil {
-			_ = target.SetProperty("volume", d.currentVolumeLocked())
+			_ = target.SetProperty("mute", mute)
 		}
 	}
 	return nil
@@ -141,8 +140,8 @@ func (d *Driver) SetMute(mute bool) error {
 
 // Position returns current position/duration in ms when available.
 func (d *Driver) Position() (int64, int64, bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 
 	if d.current == nil {
 		return 0, 0, false
@@ -175,21 +174,23 @@ func (d *Driver) buildPipeline(url string, volume float64, positionMS int64) (*g
 }
 
 func (d *Driver) startPipeline(pipeline *gst.Element, volumeEl *gst.Element) error {
+	if err := pipeline.SetState(gst.StatePlaying); err != nil {
+		return err
+	}
+
 	target := volumeEl
 	if target == nil {
 		target = pipeline
 	}
-	if err := pipeline.SetState(gst.StatePlaying); err != nil {
-		return err
-	}
-	// Apply current mute state to new pipeline.
-	if d.muted {
-		_ = pipeline.SetProperty("mute", true)
-	}
+	_ = target.SetProperty("volume", d.volume)
+	_ = target.SetProperty("mute", d.muted)
+
 	if d.crossfade > 0 {
 		_ = target.SetProperty("volume", 0.0)
-		go d.fadeIn(pipeline, target, d.crossfade)
+		targetVolume := d.currentVolumeLocked()
+		go d.fadeIn(pipeline, target, d.crossfade, targetVolume)
 	}
+
 	return nil
 }
 
@@ -211,11 +212,11 @@ func (d *Driver) seekLocked(pipeline *gst.Element, positionMS int64) error {
 	return nil
 }
 
-func (d *Driver) fadeIn(pipeline *gst.Element, target *gst.Element, duration time.Duration) {
+func (d *Driver) fadeIn(pipeline *gst.Element, target *gst.Element, duration time.Duration, targetVolume float64) {
 	steps := 10
 	step := duration / time.Duration(steps)
 	for i := 0; i <= steps; i++ {
-		volume := (float64(i) / float64(steps)) * d.currentVolumeLocked()
+		volume := (float64(i) / float64(steps)) * targetVolume
 		if target != nil {
 			_ = target.SetProperty("volume", volume)
 		}
@@ -223,11 +224,11 @@ func (d *Driver) fadeIn(pipeline *gst.Element, target *gst.Element, duration tim
 	}
 }
 
-func (d *Driver) fadeOut(pipeline *gst.Element, target *gst.Element, duration time.Duration) {
+func (d *Driver) fadeOut(pipeline *gst.Element, target *gst.Element, duration time.Duration, targetVolume float64) {
 	steps := 10
 	step := duration / time.Duration(steps)
 	for i := steps; i >= 0; i-- {
-		volume := (float64(i) / float64(steps)) * d.currentVolumeLocked()
+		volume := (float64(i) / float64(steps)) * targetVolume
 		if target != nil {
 			_ = target.SetProperty("volume", volume)
 		}
@@ -237,9 +238,6 @@ func (d *Driver) fadeOut(pipeline *gst.Element, target *gst.Element, duration ti
 }
 
 func (d *Driver) currentVolumeLocked() float64 {
-	if d.muted {
-		return 0
-	}
 	return d.volume
 }
 

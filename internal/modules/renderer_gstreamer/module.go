@@ -254,14 +254,21 @@ func (m *Module) runPositionUpdates(ctx context.Context) {
 
 func (m *Module) updatePlaybackState() {
 	m.mu.Lock()
-
-	if m.engine.State.Playback == nil || m.engine.State.Playback.Status != "playing" {
+	playing := m.engine.State.Playback != nil && m.engine.State.Playback.Status == "playing"
+	if !playing {
 		m.eosSeen = ""
 		m.mu.Unlock()
 		return
 	}
+	m.mu.Unlock()
+
 	posMS, durMS, ok := m.engine.Driver.Position()
 	if !ok {
+		return
+	}
+
+	m.mu.Lock()
+	if m.engine.State.Playback == nil || m.engine.State.Playback.Status != "playing" {
 		m.mu.Unlock()
 		return
 	}
