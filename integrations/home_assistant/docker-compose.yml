@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   homeassistant:
-    image: ghcr.io/home-assistant/home-assistant:stable
+    image: ghcr.io/home-assistant/home-assistant:latest
     container_name: media_utopia_ha
     restart: unless-stopped
     ports:

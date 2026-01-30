@@ -44,16 +44,17 @@ const styles = css`
     flex-shrink: 0;
   }
 
-  .pane-title { font-size: 18px; font-weight: 500; flex: 1; }
+  .pane-title { font-size: 22px; font-weight: 500; flex: 1; }
+
 
   .renderer-select {
     background: var(--primary-background-color);
     color: var(--primary-text-color);
     border: 1px solid var(--mu-border);
     border-radius: 4px;
-    padding: 4px 6px;
-    font-size: 15px;
-    max-width: 140px;
+    padding: 6px 8px;
+    font-size: 16px;
+    max-width: 160px;
   }
 
   .lease-btn {
@@ -97,7 +98,7 @@ const styles = css`
   .now-playing-info { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
 
   .now-playing-title {
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
@@ -331,44 +332,36 @@ const styles = css`
 
   .letter-index button:hover { background: rgba(255,255,255,0.1); color: var(--mu-accent); }
 
-  /* Zone Styles */
-  .zone-group {
-    border-bottom: 1px solid var(--mu-border);
-    padding: 8px;
-  }
 
-  .zone-group-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    gap: 8px;
-    margin-bottom: 8px;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--primary-text-color);
-  }
 
-  .zone-group-header .source-name {
-    flex: 1;
-    color: var(--mu-accent);
-  }
+
 
   .zone-item {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 0;
-    font-size: 14px;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--mu-border);
+  }
+
+  .zone-item:last-child {
+    border-bottom: none;
   }
 
   .zone-item-name {
-    flex: 1;
-    min-width: 80px;
+    font-size: 16px;
+    font-weight: 500;
     color: var(--primary-text-color);
   }
 
   .zone-item-name.disconnected {
     opacity: 0.5;
+  }
+
+  .zone-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
 
   .zone-volume-slider {
@@ -421,9 +414,9 @@ const styles = css`
     color: var(--primary-text-color);
     border: 1px solid var(--mu-border);
     border-radius: 3px;
-    padding: 2px 4px;
-    font-size: 12px;
-    max-width: 100px;
+    padding: 4px 6px;
+    font-size: 14px;
+    max-width: 120px;
   }
 
   .breadcrumbs {
@@ -633,7 +626,7 @@ const styles = css`
     .tabs { gap: 0; }
     .tab { padding: 12px 8px; font-size: 11px; }
     
-    .zone-group { padding: 12px; }
+
     .zone-item { padding: 12px 0; gap: 10px; }
     .zone-item-name { font-size: 13px; }
     .zone-item-name { font-size: 13px; }
@@ -1496,57 +1489,40 @@ class MuPanel extends LitElement {
       return html`<div class="browser-list"><div class="empty">No zones available</div></div>`;
     }
 
-    // Group zones by sourceId
-    const groups = new Map();
-    for (const zone of this.zones) {
-      const sourceId = zone.sourceId || 'unassigned';
-      if (!groups.has(sourceId)) {
-        groups.set(sourceId, []);
-      }
-      groups.get(sourceId).push(zone);
-    }
+
 
     const sources = this._getAllSources();
+    const sortedZones = [...this.zones].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
     return html`
-      <div class="browser-list" style="padding: 0;">
-        ${Array.from(groups.entries()).map(([sourceId, zones]) =>
-      this._renderZoneGroup(sourceId, zones, sources)
-    )}
+      <div class="browser-list" style="padding: 12px;">
+        ${sortedZones.map(zone => this._renderZoneItem(zone, sources))}
       </div>
     `;
   }
 
-  _renderZoneGroup(sourceId, zones, sources) {
-    const sourceName = this._getSourceName(sourceId);
-    return html`
-      <div class="zone-group">
-        <div class="zone-group-header">
-          <span class="source-name">🎵 ${sourceName}</span>
-        </div>
-        ${zones.map(zone => this._renderZoneItem(zone, sources))}
-      </div>
-    `;
-  }
+
 
   _renderZoneItem(zone, sources) {
     const volumePct = Math.round((zone.volume || 0) * 100);
     return html`
       <div class="zone-item">
         <span class="zone-item-name ${zone.connected ? '' : 'disconnected'}">${zone.name}</span>
-        <div class="zone-volume-slider" 
-          @mousedown=${(e) => this._onZoneVolStart(e, zone)} 
-          @touchstart=${(e) => this._onZoneVolStart(e, zone)}
-          @click=${(e) => e.preventDefault()}>
-          <div class="zone-volume-fill" style="width: ${volumePct}%"></div>
+        <div class="zone-controls">
+          <div class="zone-volume-slider" 
+            @mousedown=${(e) => this._onZoneVolStart(e, zone)} 
+            @touchstart=${(e) => this._onZoneVolStart(e, zone)}
+            @click=${(e) => e.preventDefault()}>
+            <div class="zone-volume-fill" style="width: ${volumePct}%"></div>
+          </div>
+          <span style="font-size:12px;color:var(--mu-secondary);min-width:32px">${volumePct}%</span>
+          <button class="zone-mute-btn ${zone.mute ? 'muted' : ''}" @click=${() => this._toggleZoneMute(zone)} title="${zone.mute ? 'Unmute' : 'Mute'}">
+            ${zone.mute ? html`<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>` : icons.volume}
+          </button>
+          <select class="zone-source-select" @change=${(e) => this._setZoneSource(zone, e.target.value)} .value=${zone.sourceId || ''}>
+            ${sources.map(s => html`<option value="${s.id}" ?selected=${s.id === zone.sourceId}>${s.name}</option>`)}
+          </select>
         </div>
-        <span style="font-size:10px;color:var(--mu-secondary);min-width:28px">${volumePct}%</span>
-        <button class="zone-mute-btn ${zone.mute ? 'muted' : ''}" @click=${() => this._toggleZoneMute(zone)} title="${zone.mute ? 'Unmute' : 'Mute'}">
-          ${zone.mute ? html`<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>` : icons.volume}
-        </button>
-        <select class="zone-source-select" @change=${(e) => this._setZoneSource(zone, e.target.value)} .value=${zone.sourceId || ''}>
-          ${sources.map(s => html`<option value="${s.id}" ?selected=${s.id === zone.sourceId}>${s.name}</option>`)}
-        </select>
       </div>
     `;
   }
@@ -1824,4 +1800,6 @@ class MuPanel extends LitElement {
   }
 }
 
-customElements.define('mu-panel', MuPanel);
+if (!customElements.get('mu-panel')) {
+  customElements.define('mu-panel', MuPanel);
+}
