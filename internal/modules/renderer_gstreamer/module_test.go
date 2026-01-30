@@ -1,6 +1,7 @@
 package renderergstreamer
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"testing"
@@ -76,8 +77,12 @@ func (d stubDriver) SetMute(mute bool) error                 { return nil }
 func (d stubDriver) Position() (int64, int64, bool)          { return 0, 0, false }
 
 func TestQueueLoadPlaylist(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	client := &fakeMQTTClient{}
 	engine := renderercore.NewEngine("mu:renderer:test", "Test Renderer", stubDriver{})
+	replyTopic := mu.TopicReply(mu.BaseTopic, "mu:renderer:test")
 	module := &Module{
 		log:    zap.NewNop(),
 		client: client,
@@ -87,7 +92,22 @@ func TestQueueLoadPlaylist(t *testing.T) {
 			TopicBase: mu.BaseTopic,
 			Name:      "Test Renderer",
 		},
+		ctx:           ctx,
+		cmdQueue:      make(chan cmdWork, 64),
+		replyHandlers: make(map[string]chan mu.ReplyEnvelope),
+		replyTopic:    replyTopic,
+		debounceChan:  make(chan struct{}, 1),
 	}
+
+	// Subscribe to reply topic to receive replies
+	if err := client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
+		module.handleReply(msg)
+	}); err != nil {
+		t.Fatalf("subscribe reply topic: %v", err)
+	}
+
+	// Start a command worker
+	go module.commandWorker(ctx)
 
 	lease, err := engine.Leases.Acquire("tester", time.Minute)
 	if err != nil {

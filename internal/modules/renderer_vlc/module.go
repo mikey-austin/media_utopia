@@ -39,6 +39,12 @@ type Config struct {
 	Source       string
 }
 
+// cmdWork represents a command to be processed by a worker.
+type cmdWork struct {
+	cmd      mu.CommandEnvelope
+	recvTime time.Time
+}
+
 // Module implements a VLC renderer.
 type Module struct {
 	log                 *zap.Logger
@@ -49,6 +55,15 @@ type Module struct {
 	mu                  sync.Mutex
 	eosSeen             string
 	publishTimeoutUntil int64
+
+	// Async command processing
+	cmdQueue chan cmdWork
+	ctx      context.Context
+
+	// Persistent reply handling
+	replyMu       sync.RWMutex
+	replyHandlers map[string]chan mu.ReplyEnvelope
+	replyTopic    string
 }
 
 // NewModule creates a renderer module.
@@ -76,12 +91,24 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
+	replyTopic := mu.TopicReply(cfg.TopicBase, cfg.NodeID)
 
-	return &Module{log: log, client: client, engine: engine, config: cfg, cmdTopic: cmdTopic}, nil
+	return &Module{
+		log:           log,
+		client:        client,
+		engine:        engine,
+		config:        cfg,
+		cmdTopic:      cmdTopic,
+		cmdQueue:      make(chan cmdWork, 64),
+		replyHandlers: make(map[string]chan mu.ReplyEnvelope),
+		replyTopic:    replyTopic,
+	}, nil
 }
 
 // Run starts the renderer module.
 func (m *Module) Run(ctx context.Context) error {
+	m.ctx = ctx
+
 	if err := m.publishPresence(); err != nil {
 		return err
 	}
@@ -100,17 +127,38 @@ func (m *Module) Run(ctx context.Context) error {
 		_ = m.publishStatePayload(payload)
 	}
 
+	// Subscribe to persistent reply topic for inter-module communication
+	replyHandler := func(_ paho.Client, msg paho.Message) {
+		m.handleReply(msg)
+	}
+	if err := m.client.Subscribe(m.replyTopic, 1, replyHandler); err != nil {
+		return err
+	}
+	defer m.client.Unsubscribe(m.replyTopic)
+
+	// Start command worker pool
+	const numWorkers = 4
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func() {
+			defer wg.Done()
+			m.commandWorker(ctx)
+		}()
+	}
+
 	go m.runPositionUpdates(ctx)
 
-	handler := func(_ paho.Client, msg paho.Message) {
+	cmdHandler := func(_ paho.Client, msg paho.Message) {
 		m.handleMessage(msg)
 	}
-	if err := m.client.Subscribe(m.cmdTopic, 1, handler); err != nil {
+	if err := m.client.Subscribe(m.cmdTopic, 1, cmdHandler); err != nil {
 		return err
 	}
 	defer m.client.Unsubscribe(m.cmdTopic)
 
 	<-ctx.Done()
+	wg.Wait()
 	return nil
 }
 
@@ -142,6 +190,7 @@ func (m *Module) publishState() error {
 	return m.publishStatePayload(payload)
 }
 
+// handleMessage receives MQTT messages and queues them for async processing.
 func (m *Module) handleMessage(msg paho.Message) {
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
@@ -149,18 +198,56 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
-	if cmd.Type == "queue.loadPlaylist" || cmd.Type == "queue.loadSnapshot" {
-		go m.handleLoadCommand(cmd)
+	work := cmdWork{cmd: cmd, recvTime: time.Now()}
+
+	select {
+	case m.cmdQueue <- work:
+		// Queued successfully
+	default:
+		// Queue full - apply backpressure
+		m.log.Warn("command queue full",
+			zap.String("id", cmd.ID),
+			zap.String("type", cmd.Type))
+		if cmd.ReplyTo != "" {
+			reply := errorReply(cmd, "OVERLOADED", "command queue full")
+			m.publishReply(cmd.ReplyTo, reply)
+		}
+	}
+}
+
+// commandWorker processes commands from the queue.
+func (m *Module) commandWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case work := <-m.cmdQueue:
+			m.processCommand(work.cmd)
+		}
+	}
+}
+
+// handleReply processes replies on the persistent reply topic.
+func (m *Module) handleReply(msg paho.Message) {
+	var reply mu.ReplyEnvelope
+	if err := json.Unmarshal(msg.Payload(), &reply); err != nil {
 		return
 	}
 
-	m.mu.Lock()
-	reply := m.dispatch(cmd)
-	m.mu.Unlock()
-	m.publishReply(cmd.ReplyTo, reply)
+	m.replyMu.RLock()
+	ch, ok := m.replyHandlers[reply.ID]
+	m.replyMu.RUnlock()
+
+	if ok {
+		select {
+		case ch <- reply:
+		default:
+		}
+	}
 }
 
-func (m *Module) handleLoadCommand(cmd mu.CommandEnvelope) {
+// processCommand handles a single command.
+func (m *Module) processCommand(cmd mu.CommandEnvelope) {
 	m.mu.Lock()
 	reply := m.dispatch(cmd)
 	m.mu.Unlock()
@@ -554,37 +641,37 @@ func (m *Module) buildSnapshotEntries(owner string, items []string, resolve stri
 	return entries, nil
 }
 
+// publishCommand sends a command to another module and waits for a reply.
+// Uses the persistent reply topic to avoid Subscribe/Unsubscribe overhead.
 func (m *Module) publishCommand(targetID string, owner string, cmdType string, body any) (mu.ReplyEnvelope, error) {
+	const commandTimeout = 5 * time.Second
+
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return mu.ReplyEnvelope{}, err
 	}
 
+	cmdID := idgen.Generator{}.NewID()
 	cmd := mu.CommandEnvelope{
-		ID:      idgen.Generator{}.NewID(),
+		ID:      cmdID,
 		Type:    cmdType,
 		TS:      time.Now().Unix(),
 		From:    owner,
-		ReplyTo: mu.TopicReply(m.config.TopicBase, fmt.Sprintf("%s-%d", m.config.NodeID, time.Now().UnixNano())),
+		ReplyTo: m.replyTopic,
 		Body:    payload,
 	}
 
+	// Register reply handler before sending command
 	replyCh := make(chan mu.ReplyEnvelope, 1)
-	handler := func(_ paho.Client, msg paho.Message) {
-		var reply mu.ReplyEnvelope
-		if err := json.Unmarshal(msg.Payload(), &reply); err != nil {
-			return
-		}
-		select {
-		case replyCh <- reply:
-		default:
-		}
-	}
+	m.replyMu.Lock()
+	m.replyHandlers[cmdID] = replyCh
+	m.replyMu.Unlock()
 
-	if err := m.client.Subscribe(cmd.ReplyTo, 1, handler); err != nil {
-		return mu.ReplyEnvelope{}, err
-	}
-	defer m.client.Unsubscribe(cmd.ReplyTo)
+	defer func() {
+		m.replyMu.Lock()
+		delete(m.replyHandlers, cmdID)
+		m.replyMu.Unlock()
+	}()
 
 	if err := m.client.Publish(mu.TopicCommands(m.config.TopicBase, targetID), 1, false, mustJSON(cmd)); err != nil {
 		return mu.ReplyEnvelope{}, err
@@ -593,7 +680,9 @@ func (m *Module) publishCommand(targetID string, owner string, cmdType string, b
 	select {
 	case reply := <-replyCh:
 		return reply, nil
-	case <-time.After(5 * time.Second):
+	case <-m.ctx.Done():
+		return mu.ReplyEnvelope{}, m.ctx.Err()
+	case <-time.After(commandTimeout):
 		return mu.ReplyEnvelope{}, errors.New("timeout waiting for reply")
 	}
 }
