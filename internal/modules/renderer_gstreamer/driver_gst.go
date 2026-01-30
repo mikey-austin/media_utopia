@@ -3,6 +3,7 @@
 package renderergstreamer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,14 +15,16 @@ import (
 
 // Driver implements a GStreamer-backed playback driver using Go bindings.
 type Driver struct {
-	mu        sync.RWMutex
-	pipeline  string
-	device    string
-	crossfade time.Duration
-	volume    float64
-	muted     bool
-	current   *gst.Element
-	volumeEl  *gst.Element
+	mu         sync.RWMutex
+	pipeline   string
+	device     string
+	crossfade  time.Duration
+	volume     float64
+	muted      bool
+	current    *gst.Element
+	volumeEl   *gst.Element
+	ctx        context.Context
+	cancelFade context.CancelFunc // cancels any running fade goroutines
 }
 
 var gstInitOnce sync.Once
@@ -43,6 +46,12 @@ func (d *Driver) Play(url string, positionMS int64) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Cancel any running fade goroutines from previous playback
+	if d.cancelFade != nil {
+		d.cancelFade()
+	}
+	d.ctx, d.cancelFade = context.WithCancel(context.Background())
+
 	volume := d.currentVolumeLocked()
 	pipeline, volumeEl, err := d.buildPipeline(url, volume, positionMS)
 	if err != nil {
@@ -52,11 +61,17 @@ func (d *Driver) Play(url string, positionMS int64) error {
 		return err
 	}
 
-	if d.current != nil && d.crossfade > 0 && !d.muted {
-		old := d.current
-		oldVol := d.volumeEl
-		targetVolume := d.currentVolumeLocked()
-		go d.fadeOut(old, oldVol, d.crossfade, targetVolume)
+	if d.current != nil {
+		if d.crossfade > 0 && !d.muted {
+			// Crossfade: fade out old pipeline in background
+			old := d.current
+			oldVol := d.volumeEl
+			targetVolume := d.currentVolumeLocked()
+			go d.fadeOut(d.ctx, old, oldVol, d.crossfade, targetVolume)
+		} else {
+			// No crossfade: stop old pipeline immediately to prevent resource leak
+			_ = d.current.SetState(gst.StateNull)
+		}
 	}
 
 	d.current = pipeline
@@ -203,7 +218,7 @@ func (d *Driver) startPipeline(pipeline *gst.Element, volumeEl *gst.Element) err
 	if d.crossfade > 0 && !d.muted {
 		_ = target.SetProperty("volume", 0.0)
 		targetVolume := d.currentVolumeLocked()
-		go d.fadeIn(pipeline, target, d.crossfade, targetVolume)
+		go d.fadeIn(d.ctx, pipeline, target, d.crossfade, targetVolume)
 	}
 
 	return nil
@@ -227,27 +242,67 @@ func (d *Driver) seekLocked(pipeline *gst.Element, positionMS int64) error {
 	return nil
 }
 
-func (d *Driver) fadeIn(pipeline *gst.Element, target *gst.Element, duration time.Duration, targetVolume float64) {
+func (d *Driver) fadeIn(ctx context.Context, pipeline *gst.Element, target *gst.Element, duration time.Duration, targetVolume float64) {
 	steps := 10
-	step := duration / time.Duration(steps)
+	ticker := time.NewTicker(duration / time.Duration(steps))
+	defer ticker.Stop()
+
 	for i := 0; i <= steps; i++ {
+		select {
+		case <-ctx.Done():
+			// Fade cancelled, set final volume immediately
+			if target != nil {
+				_ = target.SetProperty("volume", targetVolume)
+			}
+			return
+		default:
+		}
+
 		volume := (float64(i) / float64(steps)) * targetVolume
 		if target != nil {
 			_ = target.SetProperty("volume", volume)
 		}
-		time.Sleep(step)
+
+		if i < steps {
+			select {
+			case <-ctx.Done():
+				if target != nil {
+					_ = target.SetProperty("volume", targetVolume)
+				}
+				return
+			case <-ticker.C:
+			}
+		}
 	}
 }
 
-func (d *Driver) fadeOut(pipeline *gst.Element, target *gst.Element, duration time.Duration, targetVolume float64) {
+func (d *Driver) fadeOut(ctx context.Context, pipeline *gst.Element, target *gst.Element, duration time.Duration, targetVolume float64) {
 	steps := 10
-	step := duration / time.Duration(steps)
+	ticker := time.NewTicker(duration / time.Duration(steps))
+	defer ticker.Stop()
+
 	for i := steps; i >= 0; i-- {
+		select {
+		case <-ctx.Done():
+			// Fade cancelled, stop pipeline immediately
+			_ = pipeline.SetState(gst.StateNull)
+			return
+		default:
+		}
+
 		volume := (float64(i) / float64(steps)) * targetVolume
 		if target != nil {
 			_ = target.SetProperty("volume", volume)
 		}
-		time.Sleep(step)
+
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				_ = pipeline.SetState(gst.StateNull)
+				return
+			case <-ticker.C:
+			}
+		}
 	}
 	_ = pipeline.SetState(gst.StateNull)
 }

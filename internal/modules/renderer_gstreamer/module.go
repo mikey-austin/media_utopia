@@ -45,9 +45,13 @@ type Module struct {
 	engine              *renderercore.Engine
 	config              Config
 	cmdTopic            string
-	mu                  sync.Mutex
+	mu                  sync.RWMutex
 	eosSeen             string
 	publishTimeoutUntil int64
+	// State publish debouncing
+	stateDirty    int32         // atomic flag: 1 if state needs publishing
+	debounceOnce  sync.Once     // ensures single debounce goroutine
+	debounceChan  chan struct{} // signals state change for debouncer
 }
 
 // NewModule creates a renderer module.
@@ -76,7 +80,14 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
 
-	return &Module{log: log, client: client, engine: engine, config: cfg, cmdTopic: cmdTopic}, nil
+	return &Module{
+		log:          log,
+		client:       client,
+		engine:       engine,
+		config:       cfg,
+		cmdTopic:     cmdTopic,
+		debounceChan: make(chan struct{}, 1),
+	}, nil
 }
 
 // Run starts the renderer module.
@@ -89,10 +100,13 @@ func (m *Module) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		_ = m.publishStatePayload(payload)
+		if err := m.publishStatePayload(payload); err != nil {
+			m.log.Warn("failed to publish initial state", zap.Error(err))
+		}
 	}
 
 	go m.runPositionUpdates(ctx)
+	go m.runStateDebouncer(ctx)
 
 	handler := func(_ paho.Client, msg paho.Message) {
 		m.handleMessage(msg)
@@ -231,10 +245,52 @@ func (m *Module) publishReply(replyTo string, reply mu.ReplyEnvelope) {
 			}
 		}
 	}
-	if m.config.PublishState && !m.shouldShedState() {
-		payload, err := m.buildStatePayload()
-		if err == nil {
-			_ = m.publishStatePayload(payload)
+	if m.config.PublishState {
+		m.scheduleStatePublish()
+	}
+}
+
+// scheduleStatePublish signals the debouncer that state needs publishing.
+func (m *Module) scheduleStatePublish() {
+	atomic.StoreInt32(&m.stateDirty, 1)
+	select {
+	case m.debounceChan <- struct{}{}:
+	default:
+		// Debouncer already notified
+	}
+}
+
+// runStateDebouncer coalesces rapid state changes into batched publishes.
+func (m *Module) runStateDebouncer(ctx context.Context) {
+	const debounceInterval = 50 * time.Millisecond
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.debounceChan:
+			// Wait for debounce interval to coalesce rapid changes
+			timer := time.NewTimer(debounceInterval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+
+			// Check if state is still dirty and publish
+			if atomic.CompareAndSwapInt32(&m.stateDirty, 1, 0) {
+				if !m.shouldShedState() {
+					payload, err := m.buildStatePayload()
+					if err != nil {
+						m.log.Debug("failed to build state payload", zap.Error(err))
+						continue
+					}
+					if err := m.publishStatePayload(payload); err != nil {
+						m.log.Debug("failed to publish state", zap.Error(err))
+					}
+				}
+			}
 		}
 	}
 }
@@ -253,14 +309,17 @@ func (m *Module) runPositionUpdates(ctx context.Context) {
 }
 
 func (m *Module) updatePlaybackState() {
-	m.mu.Lock()
+	// Use read lock for initial status check
+	m.mu.RLock()
 	playing := m.engine.State.Playback != nil && m.engine.State.Playback.Status == "playing"
+	m.mu.RUnlock()
+
 	if !playing {
+		m.mu.Lock()
 		m.eosSeen = ""
 		m.mu.Unlock()
 		return
 	}
-	m.mu.Unlock()
 
 	posMS, durMS, ok := m.engine.Driver.Position()
 	if !ok {
@@ -278,18 +337,16 @@ func (m *Module) updatePlaybackState() {
 	}
 	m.engine.State.TS = time.Now().Unix()
 	m.advanceOnEndLocked(posMS, durMS)
-	payload, err := m.buildStatePayloadLocked()
 	m.mu.Unlock()
+
 	if m.config.PublishState {
-		if err == nil && !m.shouldShedState() {
-			_ = m.publishStatePayload(payload)
-		}
+		m.scheduleStatePublish()
 	}
 }
 
 func (m *Module) buildStatePayload() ([]byte, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.buildStatePayloadLocked()
 }
 
