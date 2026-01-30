@@ -105,12 +105,18 @@ func (m *Module) publishPresence() error {
 }
 
 func (m *Module) handleMessage(msg paho.Message) {
-	start := time.Now()
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
 		m.log.Warn("invalid command", zap.Error(err))
 		return
 	}
+
+	// Process command asynchronously to avoid blocking MQTT handler
+	go m.processCommand(cmd)
+}
+
+func (m *Module) processCommand(cmd mu.CommandEnvelope) {
+	start := time.Now()
 
 	m.log.Debug("command received",
 		zap.String("id", cmd.ID),
@@ -200,7 +206,11 @@ func (m *Module) playlistList(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu
 	for _, pl := range playlists {
 		out.Playlists = append(out.Playlists, mu.PlaylistSummary{PlaylistID: pl.PlaylistID, Name: pl.Name, Revision: pl.Revision})
 	}
-	payload, _ := json.Marshal(out)
+	payload, err := json.Marshal(out)
+	if err != nil {
+		m.log.Error("marshal playlist list", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to encode response")
+	}
 	reply.Body = payload
 	return reply
 }
@@ -248,7 +258,11 @@ func (m *Module) playlistCreate(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	if err := m.storage.SavePlaylist(pl); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(map[string]string{"playlistId": playlistID})
+	payload, err := json.Marshal(map[string]string{"playlistId": playlistID})
+	if err != nil {
+		m.log.Error("marshal playlist create response", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to encode response")
+	}
 	reply.Body = payload
 	return reply
 }
@@ -265,7 +279,11 @@ func (m *Module) playlistGet(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.
 		}
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(pl)
+	payload, err := json.Marshal(pl)
+	if err != nil {
+		m.log.Error("marshal playlist", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to encode response")
+	}
 	reply.Body = payload
 	return reply
 }
@@ -325,7 +343,8 @@ func (m *Module) playlistRemoveItems(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 		set[id] = struct{}{}
 	}
 
-	filtered := pl.Entries[:0]
+	// Allocate new slice to avoid memory leak from sharing backing array
+	filtered := make([]PlaylistEntry, 0, len(pl.Entries))
 	for _, entry := range pl.Entries {
 		if _, ok := set[entry.EntryID]; !ok {
 			filtered = append(filtered, entry)
@@ -370,7 +389,11 @@ func (m *Module) playlistReplaceItems(cmd mu.CommandEnvelope, reply mu.ReplyEnve
 	if err := m.storage.SavePlaylist(pl); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(map[string]int64{"revision": pl.Revision})
+	payload, err := json.Marshal(map[string]int64{"revision": pl.Revision})
+	if err != nil {
+		m.log.Error("marshal playlist replace response", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to encode response")
+	}
 	reply.Body = payload
 	return reply
 }
@@ -455,7 +478,11 @@ func (m *Module) snapshotList(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu
 	for _, snap := range snapshots {
 		out.Snapshots = append(out.Snapshots, mu.SnapshotSummary{SnapshotID: snap.SnapshotID, Name: snap.Name, Revision: snap.Revision})
 	}
-	payload, _ := json.Marshal(out)
+	payload, err := json.Marshal(out)
+	if err != nil {
+		m.log.Error("marshal snapshot list", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to encode response")
+	}
 	reply.Body = payload
 	return reply
 }
@@ -475,13 +502,17 @@ func (m *Module) snapshotGet(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.
 		}
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(mu.SnapshotGetReply{
+	payload, err := json.Marshal(mu.SnapshotGetReply{
 		SnapshotID: snap.SnapshotID,
 		Name:       snap.Name,
 		Revision:   snap.Revision,
 		Items:      snap.Items,
 		Capture:    snap.Capture,
 	})
+	if err != nil {
+		m.log.Error("marshal snapshot", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to encode response")
+	}
 	reply.Body = payload
 	return reply
 }
@@ -513,7 +544,11 @@ func (m *Module) suggestList(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.
 	for _, sug := range suggestions {
 		out.Suggestions = append(out.Suggestions, mu.SuggestSummary{SuggestionID: sug.SuggestionID, Name: sug.Name, Revision: sug.Revision})
 	}
-	payload, _ := json.Marshal(out)
+	payload, err := json.Marshal(out)
+	if err != nil {
+		m.log.Error("marshal suggestion list", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to encode response")
+	}
 	reply.Body = payload
 	return reply
 }
@@ -530,7 +565,11 @@ func (m *Module) suggestGet(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.R
 		}
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(sug)
+	payload, err := json.Marshal(sug)
+	if err != nil {
+		m.log.Error("marshal suggestion", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to encode response")
+	}
 	reply.Body = payload
 	return reply
 }

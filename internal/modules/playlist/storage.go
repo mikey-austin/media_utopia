@@ -258,7 +258,18 @@ func (s *Storage) SaveSuggestion(sug Suggestion) error {
 	return writeJSON(path, sug)
 }
 
+// maxFileSize is the maximum size of a JSON file we'll read (10MB).
+// This protects against OOM from malformed or malicious files.
+const maxFileSize = 10 * 1024 * 1024
+
 func readJSON(path string, v any) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Size() > maxFileSize {
+		return fmt.Errorf("file too large: %d bytes (max %d)", info.Size(), maxFileSize)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -275,7 +286,12 @@ func writeJSON(path string, v any) error {
 	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		// Clean up temp file on rename failure
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func safeFilename(id string) string {
