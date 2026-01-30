@@ -16,6 +16,22 @@ import (
 	"go.uber.org/zap"
 )
 
+// RPCError represents a JSON-RPC error from the Snapcast server.
+type RPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("snapcast rpc error %d: %s", e.Code, e.Message)
+}
+
+// rpcResponse holds the result or error from a JSON-RPC call.
+type rpcResponse struct {
+	Result json.RawMessage
+	Err    error
+}
+
 // SnapcastClient provides JSON-RPC communication with Snapcast server.
 type SnapcastClient struct {
 	log          *zap.Logger
@@ -25,10 +41,11 @@ type SnapcastClient struct {
 	isTCP        bool
 	mu           sync.Mutex
 	reqID        atomic.Uint64
-	pending      map[uint64]chan json.RawMessage
+	pending      map[uint64]chan rpcResponse
 	pendingMu    sync.Mutex
-	onUpdate     func() // callback when server sends notification
-	onDisconnect func() // callback when connection is lost
+	callbackMu   sync.RWMutex // protects onUpdate and onDisconnect
+	onUpdate     func()       // callback when server sends notification
+	onDisconnect func()       // callback when connection is lost
 }
 
 // NewSnapcastClient creates a new Snapcast client.
@@ -36,18 +53,22 @@ func NewSnapcastClient(log *zap.Logger, serverURL string) *SnapcastClient {
 	return &SnapcastClient{
 		log:       log,
 		serverURL: serverURL,
-		pending:   make(map[uint64]chan json.RawMessage),
+		pending:   make(map[uint64]chan rpcResponse),
 	}
 }
 
 // SetUpdateCallback sets the callback for server notifications.
 func (c *SnapcastClient) SetUpdateCallback(cb func()) {
+	c.callbackMu.Lock()
 	c.onUpdate = cb
+	c.callbackMu.Unlock()
 }
 
 // SetDisconnectCallback sets the callback for when the connection is lost.
 func (c *SnapcastClient) SetDisconnectCallback(cb func()) {
+	c.callbackMu.Lock()
 	c.onDisconnect = cb
+	c.callbackMu.Unlock()
 }
 
 // Connect establishes a connection to the Snapcast server.
@@ -112,6 +133,10 @@ func (c *SnapcastClient) Close() error {
 	return err
 }
 
+// maxScannerBuffer is the maximum buffer size for TCP message scanning.
+// Snapcast server status can be large with many clients/streams.
+const maxScannerBuffer = 1024 * 1024 // 1MB
+
 // readLoopTCP reads messages from the TCP connection.
 func (c *SnapcastClient) readLoopTCP() {
 	c.mu.Lock()
@@ -122,6 +147,7 @@ func (c *SnapcastClient) readLoopTCP() {
 	}
 
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 64*1024), maxScannerBuffer)
 	for scanner.Scan() {
 		c.handleMessage(scanner.Bytes())
 	}
@@ -129,32 +155,57 @@ func (c *SnapcastClient) readLoopTCP() {
 		c.log.Debug("tcp read error", zap.Error(err))
 	}
 	c.Close()
-	if c.onDisconnect != nil {
-		c.onDisconnect()
+	c.cancelPendingRequests()
+	c.callbackMu.RLock()
+	cb := c.onDisconnect
+	c.callbackMu.RUnlock()
+	if cb != nil {
+		cb()
 	}
 }
 
 // readLoop reads messages from the WebSocket.
 func (c *SnapcastClient) readLoop() {
-	for {
-		c.mu.Lock()
-		conn := c.conn
-		c.mu.Unlock()
-		if conn == nil {
-			return
-		}
+	// Get connection reference once at start - it won't change during read loop
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn == nil {
+		return
+	}
 
+	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			c.log.Debug("websocket read error", zap.Error(err))
 			c.Close()
-			if c.onDisconnect != nil {
-				c.onDisconnect()
+			c.cancelPendingRequests()
+			c.callbackMu.RLock()
+			cb := c.onDisconnect
+			c.callbackMu.RUnlock()
+			if cb != nil {
+				cb()
 			}
 			return
 		}
 
 		c.handleMessage(message)
+	}
+}
+
+// cancelPendingRequests cancels all pending requests when connection is lost.
+func (c *SnapcastClient) cancelPendingRequests() {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+
+	disconnectErr := fmt.Errorf("connection closed")
+	for id, ch := range c.pending {
+		select {
+		case ch <- rpcResponse{Err: disconnectErr}:
+		default:
+			// Channel already has a value or is closed
+		}
+		delete(c.pending, id)
 	}
 }
 
@@ -164,10 +215,7 @@ func (c *SnapcastClient) handleMessage(data []byte) {
 		ID     *uint64         `json:"id,omitempty"`
 		Method string          `json:"method,omitempty"`
 		Result json.RawMessage `json:"result,omitempty"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
+		Error  *RPCError       `json:"error,omitempty"`
 	}
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return
@@ -182,14 +230,23 @@ func (c *SnapcastClient) handleMessage(data []byte) {
 		}
 		c.pendingMu.Unlock()
 		if ok && ch != nil {
-			ch <- msg.Result
+			resp := rpcResponse{Result: msg.Result}
+			if msg.Error != nil {
+				resp.Err = msg.Error
+			}
+			ch <- resp
 		}
 		return
 	}
 
 	// Notification from server (e.g. Client.OnVolumeChanged)
-	if msg.Method != "" && c.onUpdate != nil {
-		c.onUpdate()
+	if msg.Method != "" {
+		c.callbackMu.RLock()
+		cb := c.onUpdate
+		c.callbackMu.RUnlock()
+		if cb != nil {
+			cb()
+		}
 	}
 }
 
@@ -221,7 +278,7 @@ func (c *SnapcastClient) call(ctx context.Context, method string, params any) (j
 	}
 
 	// Create response channel
-	respCh := make(chan json.RawMessage, 1)
+	respCh := make(chan rpcResponse, 1)
 	c.pendingMu.Lock()
 	c.pending[id] = respCh
 	c.pendingMu.Unlock()
@@ -252,8 +309,11 @@ func (c *SnapcastClient) call(ctx context.Context, method string, params any) (j
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
 		return nil, ctx.Err()
-	case result := <-respCh:
-		return result, nil
+	case resp := <-respCh:
+		if resp.Err != nil {
+			return nil, resp.Err
+		}
+		return resp.Result, nil
 	}
 }
 

@@ -60,6 +60,7 @@ type Module struct {
 	sources       []Source
 	zones         map[string]*Zone  // keyed by zone node ID
 	clientMap     map[string]string // Snapcast client ID -> zone node ID
+	zoneToClient  map[string]string // zone node ID -> Snapcast client ID (reverse of clientMap)
 	groupMap      map[string]string // zone node ID -> Snapcast group ID
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -79,6 +80,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		config:        cfg,
 		zones:         make(map[string]*Zone),
 		clientMap:     make(map[string]string),
+		zoneToClient:  make(map[string]string),
 		groupMap:      make(map[string]string),
 		reconnectChan: make(chan struct{}, 1),
 	}
@@ -242,6 +244,7 @@ func (m *Module) discoverSnapcast() error {
 
 			// Track mappings for command handling
 			m.clientMap[client.ID] = zoneID
+			m.zoneToClient[zoneID] = client.ID
 			m.groupMap[zoneID] = group.ID
 		}
 	}
@@ -299,18 +302,28 @@ func (m *Module) publishAllUpdates() {
 	}
 }
 
+// zonePublishInfo holds zone info needed for publishing, captured under lock.
+type zonePublishInfo struct {
+	zone          *Zone
+	needsPresence bool
+}
+
 // publishChangedUpdates publishes presence/state only for zones that have changed.
 func (m *Module) publishChangedUpdates() {
+	// Collect dirty zones and their publish requirements in a single lock
 	m.mu.Lock()
-	dirtyZones := make([]*Zone, 0)
+	var toPublish []zonePublishInfo
 	for _, z := range m.zones {
 		if z.dirty {
-			dirtyZones = append(dirtyZones, z)
+			toPublish = append(toPublish, zonePublishInfo{
+				zone:          z,
+				needsPresence: !z.published,
+			})
 		}
 	}
 	m.mu.Unlock()
 
-	if len(dirtyZones) == 0 {
+	if len(toPublish) == 0 {
 		return
 	}
 
@@ -319,30 +332,38 @@ func (m *Module) publishChangedUpdates() {
 		m.log.Debug("failed to publish controller presence", zap.Error(err))
 	}
 
-	for _, zone := range dirtyZones {
-		// Publish presence only if not yet published
-		m.mu.Lock()
-		needsPresence := !zone.published
-		m.mu.Unlock()
+	// Track which zones were successfully published
+	presenceOK := make(map[*Zone]bool)
+	stateOK := make(map[*Zone]bool)
 
-		if needsPresence {
-			if err := m.publishZonePresence(zone); err != nil {
-				m.log.Debug("failed to publish zone presence", zap.String("zone", zone.NodeID), zap.Error(err))
+	// Publish all zones without holding the lock
+	for _, info := range toPublish {
+		if info.needsPresence {
+			if err := m.publishZonePresence(info.zone); err != nil {
+				m.log.Debug("failed to publish zone presence", zap.String("zone", info.zone.NodeID), zap.Error(err))
 			} else {
-				m.mu.Lock()
-				zone.published = true
-				m.mu.Unlock()
+				presenceOK[info.zone] = true
 			}
 		}
 
-		if err := m.publishZoneState(zone); err != nil {
-			m.log.Debug("failed to publish zone state", zap.String("zone", zone.NodeID), zap.Error(err))
+		if err := m.publishZoneState(info.zone); err != nil {
+			m.log.Debug("failed to publish zone state", zap.String("zone", info.zone.NodeID), zap.Error(err))
 		} else {
-			m.mu.Lock()
-			zone.dirty = false
-			m.mu.Unlock()
+			stateOK[info.zone] = true
 		}
 	}
+
+	// Update flags in a single lock
+	m.mu.Lock()
+	for _, info := range toPublish {
+		if presenceOK[info.zone] {
+			info.zone.published = true
+		}
+		if stateOK[info.zone] {
+			info.zone.dirty = false
+		}
+	}
+	m.mu.Unlock()
 }
 
 // publishControllerPresence publishes the zone controller presence.
@@ -477,15 +498,9 @@ func (m *Module) handleSetVolume(zone *Zone, cmd mu.CommandEnvelope) mu.ReplyEnv
 		return mu.ReplyEnvelope{ID: cmd.ID, Type: "error", OK: false, TS: time.Now().Unix()}
 	}
 
-	// Find Snapcast client ID from zone
+	// Find Snapcast client ID from zone using reverse map (O(1) lookup)
 	m.mu.Lock()
-	var snapClientID string
-	for cid, zid := range m.clientMap {
-		if zid == zone.NodeID {
-			snapClientID = cid
-			break
-		}
-	}
+	snapClientID := m.zoneToClient[zone.NodeID]
 	m.mu.Unlock()
 
 	if snapClientID == "" {
@@ -522,15 +537,9 @@ func (m *Module) handleSetMute(zone *Zone, cmd mu.CommandEnvelope) mu.ReplyEnvel
 		return mu.ReplyEnvelope{ID: cmd.ID, Type: "error", OK: false, TS: time.Now().Unix()}
 	}
 
-	// Find Snapcast client ID from zone
+	// Find Snapcast client ID from zone using reverse map (O(1) lookup)
 	m.mu.Lock()
-	var snapClientID string
-	for cid, zid := range m.clientMap {
-		if zid == zone.NodeID {
-			snapClientID = cid
-			break
-		}
-	}
+	snapClientID := m.zoneToClient[zone.NodeID]
 	currentVolume := int(zone.Volume * 100)
 	m.mu.Unlock()
 
