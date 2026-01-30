@@ -18,16 +18,17 @@ import (
 
 // SnapcastClient provides JSON-RPC communication with Snapcast server.
 type SnapcastClient struct {
-	log       *zap.Logger
-	serverURL string
-	conn      *websocket.Conn
-	tcpConn   net.Conn
-	isTCP     bool
-	mu        sync.Mutex
-	reqID     atomic.Uint64
-	pending   map[uint64]chan json.RawMessage
-	pendingMu sync.Mutex
-	onUpdate  func() // callback when server sends notification
+	log          *zap.Logger
+	serverURL    string
+	conn         *websocket.Conn
+	tcpConn      net.Conn
+	isTCP        bool
+	mu           sync.Mutex
+	reqID        atomic.Uint64
+	pending      map[uint64]chan json.RawMessage
+	pendingMu    sync.Mutex
+	onUpdate     func() // callback when server sends notification
+	onDisconnect func() // callback when connection is lost
 }
 
 // NewSnapcastClient creates a new Snapcast client.
@@ -42,6 +43,11 @@ func NewSnapcastClient(log *zap.Logger, serverURL string) *SnapcastClient {
 // SetUpdateCallback sets the callback for server notifications.
 func (c *SnapcastClient) SetUpdateCallback(cb func()) {
 	c.onUpdate = cb
+}
+
+// SetDisconnectCallback sets the callback for when the connection is lost.
+func (c *SnapcastClient) SetDisconnectCallback(cb func()) {
+	c.onDisconnect = cb
 }
 
 // Connect establishes a connection to the Snapcast server.
@@ -123,6 +129,9 @@ func (c *SnapcastClient) readLoopTCP() {
 		c.log.Debug("tcp read error", zap.Error(err))
 	}
 	c.Close()
+	if c.onDisconnect != nil {
+		c.onDisconnect()
+	}
 }
 
 // readLoop reads messages from the WebSocket.
@@ -139,6 +148,9 @@ func (c *SnapcastClient) readLoop() {
 		if err != nil {
 			c.log.Debug("websocket read error", zap.Error(err))
 			c.Close()
+			if c.onDisconnect != nil {
+				c.onDisconnect()
+			}
 			return
 		}
 

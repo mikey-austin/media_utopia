@@ -52,17 +52,18 @@ type Zone struct {
 
 // Module implements the Snapcast zone controller.
 type Module struct {
-	log        *zap.Logger
-	client     mqttClient
-	snapClient *SnapcastClient
-	config     Config
-	mu         sync.Mutex
-	sources    []Source
-	zones      map[string]*Zone  // keyed by zone node ID
-	clientMap  map[string]string // Snapcast client ID -> zone node ID
-	groupMap   map[string]string // zone node ID -> Snapcast group ID
-	ctx        context.Context
-	cancel     context.CancelFunc
+	log           *zap.Logger
+	client        mqttClient
+	snapClient    *SnapcastClient
+	config        Config
+	mu            sync.Mutex
+	sources       []Source
+	zones         map[string]*Zone  // keyed by zone node ID
+	clientMap     map[string]string // Snapcast client ID -> zone node ID
+	groupMap      map[string]string // zone node ID -> Snapcast group ID
+	ctx           context.Context
+	cancel        context.CancelFunc
+	reconnectChan chan struct{} // signals that reconnection is needed
 }
 
 // NewModule creates a new Snapcast zone module.
@@ -72,20 +73,32 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 	snapClient := NewSnapcastClient(log, cfg.ServerURL)
 	m := &Module{
-		log:        log.With(zap.String("module", "zone_snapcast")),
-		client:     client,
-		snapClient: snapClient,
-		config:     cfg,
-		zones:      make(map[string]*Zone),
-		clientMap:  make(map[string]string),
-		groupMap:   make(map[string]string),
+		log:           log.With(zap.String("module", "zone_snapcast")),
+		client:        client,
+		snapClient:    snapClient,
+		config:        cfg,
+		zones:         make(map[string]*Zone),
+		clientMap:     make(map[string]string),
+		groupMap:      make(map[string]string),
+		reconnectChan: make(chan struct{}, 1),
 	}
 	snapClient.SetUpdateCallback(func() {
 		// Re-discover on server notifications
 		go m.discoverSnapcast()
 	})
+	snapClient.SetDisconnectCallback(func() {
+		// Signal reconnection needed
+		m.log.Warn("snapcast connection lost, will attempt to reconnect")
+		select {
+		case m.reconnectChan <- struct{}{}:
+		default:
+			// reconnect already pending
+		}
+	})
 	return m, nil
 }
+
+const reconnectInterval = 5 * time.Second
 
 // Run starts the zone module.
 func (m *Module) Run(ctx context.Context) error {
@@ -107,6 +120,11 @@ func (m *Module) Run(ctx context.Context) error {
 	// Initial discovery
 	if err := m.discoverSnapcast(); err != nil {
 		m.log.Warn("initial snapcast discovery failed", zap.Error(err))
+		// Trigger reconnect loop if initial connection fails
+		select {
+		case m.reconnectChan <- struct{}{}:
+		default:
+		}
 	}
 
 	// Publish zone controller presence
@@ -114,9 +132,38 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Warn("failed to publish controller presence", zap.Error(err))
 	}
 
-	// Block until context cancellation; updates come via websocket callback
-	<-m.ctx.Done()
-	return nil
+	// Main loop: handle context cancellation and reconnection
+	var reconnectTimer *time.Timer
+	for {
+		select {
+		case <-m.ctx.Done():
+			if reconnectTimer != nil {
+				reconnectTimer.Stop()
+			}
+			return nil
+		case <-m.reconnectChan:
+			// Start periodic reconnection attempts
+			if reconnectTimer == nil {
+				reconnectTimer = time.NewTimer(reconnectInterval)
+			} else {
+				reconnectTimer.Reset(reconnectInterval)
+			}
+		case <-func() <-chan time.Time {
+			if reconnectTimer != nil {
+				return reconnectTimer.C
+			}
+			return nil
+		}():
+			m.log.Info("attempting to reconnect to snapcast")
+			if err := m.discoverSnapcast(); err != nil {
+				m.log.Warn("snapcast reconnection failed, will retry", zap.Error(err))
+				reconnectTimer.Reset(reconnectInterval)
+			} else {
+				m.log.Info("snapcast reconnected successfully")
+				reconnectTimer = nil
+			}
+		}
+	}
 }
 
 // discoverSnapcast connects to Snapcast and discovers streams/clients.
