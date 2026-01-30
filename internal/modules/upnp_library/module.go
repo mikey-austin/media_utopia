@@ -10,6 +10,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -34,6 +35,9 @@ import (
 
 // Enabled indicates the upnp build tag is active.
 const Enabled = true
+
+// maxResponseSize is the maximum HTTP response body size to prevent OOM (10MB).
+const maxResponseSize = 10 * 1024 * 1024
 
 // Config configures the UPnP library bridge.
 type Config struct {
@@ -80,6 +84,9 @@ type Module struct {
 
 	subMu         sync.Mutex
 	serverCmdSubs map[string]bool
+
+	cacheOnce       sync.Once
+	browseCacheOnce sync.Once
 }
 
 // mediaServer represents a discovered UPnP MediaServer.
@@ -199,12 +206,15 @@ func (m *Module) Run(ctx context.Context) error {
 	if err := m.client.Subscribe(m.cmdTopic, 1, handler); err != nil {
 		return err
 	}
+	defer m.client.Unsubscribe(m.cmdTopic)
+
 	// Wildcard to catch per-server commands (nodeId:<serverID>/cmd).
 	wildcardTopic := fmt.Sprintf("%s/node/+/cmd", m.config.TopicBase)
 	if err := m.client.Subscribe(wildcardTopic, 1, handler); err != nil {
 		m.log.Debug("upnp wildcard subscribe failed", zap.String("topic", wildcardTopic), zap.Error(err))
+	} else {
+		defer m.client.Unsubscribe(wildcardTopic)
 	}
-	defer m.client.Unsubscribe(m.cmdTopic)
 
 	<-ctx.Done()
 	return nil
@@ -256,8 +266,13 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
-	started := time.Now()
+	// Process command asynchronously to avoid blocking MQTT handler
 	serverID := m.serverIDFromTopic(msg.Topic())
+	go m.processCommand(cmd, serverID)
+}
+
+func (m *Module) processCommand(cmd mu.CommandEnvelope, serverID string) {
+	started := time.Now()
 	reply := m.dispatch(cmd, serverID)
 	if cmd.ReplyTo == "" {
 		return
@@ -334,7 +349,11 @@ func (m *Module) libraryBrowse(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 		)
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(libraryItemsReply{Items: items, Start: body.Start, Count: int64(len(items)), Total: total})
+	payload, err := json.Marshal(libraryItemsReply{Items: items, Start: body.Start, Count: int64(len(items)), Total: total})
+	if err != nil {
+		m.log.Error("marshal browse reply", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to marshal response")
+	}
 	m.log.Debug(
 		"library browse ok",
 		zap.String("container", body.ContainerID),
@@ -402,7 +421,11 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 		m.log.Debug("library search failed", zap.String("query", body.Query), zap.Error(err))
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(libraryItemsReply{Items: items, Start: body.Start, Count: int64(len(items)), Total: total})
+	payload, err := json.Marshal(libraryItemsReply{Items: items, Start: body.Start, Count: int64(len(items)), Total: total})
+	if err != nil {
+		m.log.Error("marshal search reply", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to marshal response")
+	}
 	m.log.Debug(
 		"library search ok",
 		zap.String("query", body.Query),
@@ -432,7 +455,11 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope, 
 		)
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
+	payload, err := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
+	if err != nil {
+		m.log.Error("marshal resolve reply", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to marshal response")
+	}
 	m.log.Debug(
 		"library resolve ok",
 		zap.String("item", body.ItemID),
@@ -453,21 +480,53 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 	if len(body.ItemIDs) == 0 {
 		return errorReply(cmd, "INVALID", "itemIds required")
 	}
-	items := make([]mu.LibraryResolveBatchItem, 0, len(body.ItemIDs))
+
+	// Normalize item IDs first
+	normalizedIDs := make([]string, 0, len(body.ItemIDs))
 	for _, itemID := range body.ItemIDs {
 		itemID = strings.TrimSpace(itemID)
 		itemID = m.normalizeItemID(itemID, serverID)
-		if itemID == "" {
-			continue
+		if itemID != "" {
+			normalizedIDs = append(normalizedIDs, itemID)
 		}
-		metadata, sources, err := m.resolveItem(itemID, body.MetadataOnly)
-		entry := mu.LibraryResolveBatchItem{ItemID: itemID, Metadata: metadata, Sources: sources}
-		if err != nil {
-			entry.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
-		}
-		items = append(items, entry)
 	}
-	payload, _ := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
+
+	// Resolve items in parallel for better performance
+	type resolveResult struct {
+		index int
+		entry mu.LibraryResolveBatchItem
+	}
+	results := make(chan resolveResult, len(normalizedIDs))
+	var wg sync.WaitGroup
+	for i, itemID := range normalizedIDs {
+		wg.Add(1)
+		go func(idx int, id string) {
+			defer wg.Done()
+			metadata, sources, err := m.resolveItem(id, body.MetadataOnly)
+			entry := mu.LibraryResolveBatchItem{ItemID: id, Metadata: metadata, Sources: sources}
+			if err != nil {
+				entry.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
+			}
+			results <- resolveResult{index: idx, entry: entry}
+		}(i, itemID)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results preserving original order
+	items := make([]mu.LibraryResolveBatchItem, len(normalizedIDs))
+	for res := range results {
+		items[res.index] = res.entry
+	}
+
+	payload, err := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
+	if err != nil {
+		m.log.Error("marshal resolveBatch reply", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to marshal response")
+	}
 	reply.Body = payload
 	return reply
 }
@@ -576,7 +635,7 @@ func (m *Module) describeServer(ctx context.Context, location string) (*mediaSer
 		return nil, fmt.Errorf("device description error: %s", resp.Status)
 	}
 	var desc deviceDescription
-	if err := xml.NewDecoder(resp.Body).Decode(&desc); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&desc); err != nil {
 		return nil, err
 	}
 	service, ok := desc.ContentDirectory()
@@ -690,7 +749,6 @@ func (m *Module) searchItems(query string, start int64, count int64) ([]libraryI
 	if len(servers) == 0 {
 		return nil, 0, errors.New("no libraries available")
 	}
-	all := []libraryItem{}
 	reqCount := count
 	if reqCount <= 0 {
 		reqCount = 100
@@ -699,18 +757,42 @@ func (m *Module) searchItems(query string, start int64, count int64) ([]libraryI
 	if desired <= 0 {
 		desired = reqCount
 	}
+
+	// Search servers in parallel for better performance
+	type searchResult struct {
+		items []libraryItem
+	}
+	results := make(chan searchResult, len(servers))
+	var wg sync.WaitGroup
 	for _, srv := range servers {
-		resp, err := m.contentDirectorySearch(srv, query, 0, desired)
-		if err != nil {
-			m.log.Debug("content directory search failed", zap.String("server", srv.FriendlyName), zap.Error(err))
-			continue
-		}
-		for _, obj := range resp.Items {
-			all = append(all, m.libraryItemFromObject(srv, obj))
-		}
-		for _, obj := range resp.Containers {
-			all = append(all, m.libraryItemFromObject(srv, obj))
-		}
+		wg.Add(1)
+		go func(srv *mediaServer) {
+			defer wg.Done()
+			resp, err := m.contentDirectorySearch(srv, query, 0, desired)
+			if err != nil {
+				m.log.Debug("content directory search failed", zap.String("server", srv.FriendlyName), zap.Error(err))
+				results <- searchResult{}
+				return
+			}
+			items := make([]libraryItem, 0, len(resp.Items)+len(resp.Containers))
+			for _, obj := range resp.Items {
+				items = append(items, m.libraryItemFromObject(srv, obj))
+			}
+			for _, obj := range resp.Containers {
+				items = append(items, m.libraryItemFromObject(srv, obj))
+			}
+			results <- searchResult{items: items}
+		}(srv)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	all := []libraryItem{}
+	for res := range results {
+		all = append(all, res.items...)
 	}
 	total := int64(len(all))
 	return paginateItems(all, start, count, total)
@@ -725,7 +807,9 @@ func (m *Module) contentDirectoryBrowse(server *mediaServer, objectID string, st
 		browseFlag = "BrowseMetadata"
 	}
 	envelope := buildBrowseEnvelope(server.ServiceType, objectID, browseFlag, start, count)
-	req, err := http.NewRequest("POST", server.ControlURL, bytes.NewReader(envelope))
+	ctx, cancel := context.WithTimeout(context.Background(), m.config.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", server.ControlURL, bytes.NewReader(envelope))
 	if err != nil {
 		return didlResponse{}, err
 	}
@@ -753,7 +837,7 @@ func (m *Module) contentDirectoryBrowse(server *mediaServer, objectID string, st
 		return didlResponse{}, fmt.Errorf("content directory error: %s", resp.Status)
 	}
 	var env browseResponseEnvelope
-	if err := xml.NewDecoder(resp.Body).Decode(&env); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&env); err != nil {
 		m.log.Debug("content directory browse decode error",
 			zap.String("server", server.FriendlyName),
 			zap.String("object", objectID),
@@ -791,7 +875,9 @@ func (m *Module) contentDirectorySearch(server *mediaServer, query string, start
 
 	criteria := searchCriteria(query)
 	envelope := buildSearchEnvelope(server.ServiceType, "0", criteria, start, count)
-	req, err := http.NewRequest("POST", server.ControlURL, bytes.NewReader(envelope))
+	ctx, cancel := context.WithTimeout(context.Background(), m.config.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", server.ControlURL, bytes.NewReader(envelope))
 	if err != nil {
 		return didlResponse{}, err
 	}
@@ -818,7 +904,7 @@ func (m *Module) contentDirectorySearch(server *mediaServer, query string, start
 		return didlResponse{}, nil
 	}
 	var env searchResponseEnvelope
-	if err := xml.NewDecoder(resp.Body).Decode(&env); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&env); err != nil {
 		m.log.Debug("content directory search decode error",
 			zap.String("server", server.FriendlyName),
 			zap.String("query", query),
@@ -1217,17 +1303,19 @@ func (m *Module) browseCachePut(key string, payload []byte) {
 }
 
 func (m *Module) ensureCache() {
-	if m.cache != nil {
-		return
-	}
-	m.cache = newCache(m.config.CacheSize)
+	m.cacheOnce.Do(func() {
+		if m.cache == nil {
+			m.cache = newCache(m.config.CacheSize)
+		}
+	})
 }
 
 func (m *Module) ensureBrowseCache() {
-	if m.browseCache != nil {
-		return
-	}
-	m.browseCache = newCache(m.config.BrowseCacheSize)
+	m.browseCacheOnce.Do(func() {
+		if m.browseCache == nil {
+			m.browseCache = newCache(m.config.BrowseCacheSize)
+		}
+	})
 }
 
 func (m *Module) cacheTTL() time.Duration {
@@ -1293,10 +1381,7 @@ func (m *Module) releaseRequest() {
 	if m.reqSem == nil {
 		return
 	}
-	select {
-	case <-m.reqSem:
-	default:
-	}
+	<-m.reqSem
 }
 
 // ID helpers.
