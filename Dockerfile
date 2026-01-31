@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-libav \
     gstreamer1.0-alsa \
     gstreamer1.0-tools \
+    gstreamer1.0-pipewire \
     alsa-utils \
     libupnp17t64 \
     libasound2t64 \
