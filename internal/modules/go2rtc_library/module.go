@@ -550,10 +550,10 @@ func (m *Module) fetchStreams() (map[string]streamInfo, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024)) // 1MB limit for errors
 		return nil, fmt.Errorf("go2rtc error: %s", strings.TrimSpace(string(body)))
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB limit
 	if err != nil {
 		return nil, err
 	}

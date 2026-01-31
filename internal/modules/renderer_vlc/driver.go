@@ -158,7 +158,7 @@ func (d *Driver) request(values url.Values) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB limit
 	if resp.StatusCode >= 400 {
 		msg := strings.TrimSpace(string(body))
 		if msg == "" {

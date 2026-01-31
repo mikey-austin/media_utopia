@@ -210,10 +210,10 @@ func (d *Driver) rpc(method string, params interface{}) (json.RawMessage, error)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024)) // 1MB limit for errors
 		return nil, fmt.Errorf("kodi error: %s", strings.TrimSpace(string(body)))
 	}
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB limit
 	if err != nil {
 		return nil, err
 	}

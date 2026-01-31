@@ -56,6 +56,12 @@ type Config struct {
 	DiscoveryInterval      time.Duration
 }
 
+// cmdWork represents a command to be processed by a worker.
+type cmdWork struct {
+	cmd      mu.CommandEnvelope
+	serverID string
+}
+
 // Module handles library commands via UPnP ContentDirectory.
 type Module struct {
 	log    *zap.Logger
@@ -65,6 +71,7 @@ type Module struct {
 	config Config
 
 	cmdTopic string
+	cmdQueue chan cmdWork
 
 	cache          gocache.CacheInterface[[]byte]
 	cacheCtx       context.Context
@@ -170,12 +177,21 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 
 	return &Module{
-		log:            log,
-		client:         client,
-		http:           &http.Client{Timeout: cfg.Timeout},
+		log:    log,
+		client: client,
+		http: &http.Client{
+			Timeout: cfg.Timeout,
+			Transport: &http.Transport{
+				MaxConnsPerHost:     8,
+				MaxIdleConns:        16,
+				MaxIdleConnsPerHost: 4,
+				IdleConnTimeout:     60 * time.Second,
+			},
+		},
 		upnp:           upnpClient,
 		config:         cfg,
 		cmdTopic:       cmdTopic,
+		cmdQueue:       make(chan cmdWork, 64),
 		cache:          newCache(cfg.CacheSize),
 		cacheCtx:       context.Background(),
 		browseCache:    newCache(cfg.BrowseCacheSize),
@@ -199,6 +215,17 @@ func (m *Module) Run(ctx context.Context) error {
 		go m.discoveryLoop(ctx)
 	})
 
+	// Start command worker pool
+	const numWorkers = 4
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func() {
+			defer wg.Done()
+			m.commandWorker(ctx)
+		}()
+	}
+
 	handler := func(_ paho.Client, msg paho.Message) {
 		m.handleMessage(msg)
 	}
@@ -217,6 +244,7 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	<-ctx.Done()
+	wg.Wait()
 	return nil
 }
 
@@ -266,9 +294,33 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
-	// Process command asynchronously to avoid blocking MQTT handler
+	// Queue command for async processing to avoid blocking MQTT handler
 	serverID := m.serverIDFromTopic(msg.Topic())
-	go m.processCommand(cmd, serverID)
+	select {
+	case m.cmdQueue <- cmdWork{cmd: cmd, serverID: serverID}:
+		// Queued successfully
+	default:
+		// Queue full - apply backpressure
+		m.log.Warn("command queue full, dropping command", zap.String("type", cmd.Type))
+		if cmd.ReplyTo != "" {
+			reply := errorReply(cmd, "OVERLOADED", "module overloaded, try again")
+			if payload, err := json.Marshal(reply); err == nil {
+				_ = m.client.Publish(cmd.ReplyTo, 1, false, payload)
+			}
+		}
+	}
+}
+
+// commandWorker processes commands from the queue.
+func (m *Module) commandWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case work := <-m.cmdQueue:
+			m.processCommand(work.cmd, work.serverID)
+		}
+	}
 }
 
 func (m *Module) processCommand(cmd mu.CommandEnvelope, serverID string) {

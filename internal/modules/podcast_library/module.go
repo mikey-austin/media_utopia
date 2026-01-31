@@ -649,7 +649,7 @@ func (m *Module) fetchFeed(feedURL string) (*cachedFeed, error) {
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("feed fetch failed: %s", resp.Status)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB limit
 	if err != nil {
 		return nil, err
 	}

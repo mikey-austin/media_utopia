@@ -108,7 +108,10 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		http: &http.Client{
 			Timeout: cfg.Timeout,
 			Transport: &http.Transport{
-				DisableKeepAlives: true,
+				MaxConnsPerHost:     8,
+				MaxIdleConns:        16,
+				MaxIdleConnsPerHost: 4,
+				IdleConnTimeout:     60 * time.Second,
 			},
 		},
 		upnp:    upnpClient,
