@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
+
+// DefaultShutdownTimeout is the maximum time to wait for modules to stop.
+const DefaultShutdownTimeout = 30 * time.Second
 
 // ModuleRunner runs a module within the supervisor.
 type ModuleRunner struct {
@@ -19,12 +23,18 @@ type ModuleRunner struct {
 type Supervisor struct {
 	Logger          *zap.Logger
 	ContinueOnError bool
+	ShutdownTimeout time.Duration
 }
 
 // Run starts all module runners and waits for termination.
 func (s Supervisor) Run(ctx context.Context, modules []ModuleRunner) error {
 	if len(modules) == 0 {
 		return fmt.Errorf("no modules enabled")
+	}
+
+	shutdownTimeout := s.ShutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = DefaultShutdownTimeout
 	}
 
 	var wg sync.WaitGroup
@@ -63,6 +73,20 @@ func (s Supervisor) Run(ctx context.Context, modules []ModuleRunner) error {
 		return err
 	}
 
-	wg.Wait()
+	// Wait for modules to stop with timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		s.Logger.Info("all modules stopped")
+	case <-time.After(shutdownTimeout):
+		s.Logger.Warn("shutdown timeout exceeded, some modules may not have stopped gracefully",
+			zap.Duration("timeout", shutdownTimeout))
+	}
+
 	return nil
 }

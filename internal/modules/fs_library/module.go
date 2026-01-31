@@ -46,12 +46,18 @@ type Config struct {
 	EmbeddingCache    string
 }
 
+// cmdWork represents a command to be processed by a worker.
+type cmdWork struct {
+	cmd mu.CommandEnvelope
+}
+
 // Module exposes a filesystem library to mu.
 type Module struct {
 	log      *zap.Logger
 	client   *mqttserver.Client
 	config   Config
 	cmdTopic string
+	cmdQueue chan cmdWork
 
 	mu      sync.RWMutex
 	index   *libraryIndex
@@ -141,6 +147,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		client:   client,
 		config:   cfg,
 		cmdTopic: cmdTopic,
+		cmdQueue: make(chan cmdWork, 64),
 		index:    &libraryIndex{Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}},
 	}, nil
 }
@@ -160,6 +167,17 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Warn("initial scan failed", zap.Error(err))
 	}
 
+	// Start command worker pool
+	const numWorkers = 4
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func() {
+			defer wg.Done()
+			m.commandWorker(ctx)
+		}()
+	}
+
 	handler := func(_ paho.Client, msg paho.Message) {
 		m.handleMessage(msg)
 	}
@@ -176,6 +194,7 @@ func (m *Module) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			m.shutdownHTTPServer()
+			wg.Wait()
 			return nil
 		case <-ticker.C:
 			if err := m.scan(); err != nil {
@@ -205,12 +224,43 @@ func (m *Module) publishPresence() error {
 	return m.client.Publish(mu.TopicPresence(m.config.TopicBase, m.config.NodeID), 1, true, payload)
 }
 
+// handleMessage receives MQTT messages and queues them for async processing.
 func (m *Module) handleMessage(msg paho.Message) {
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
 		m.log.Warn("invalid command", zap.Error(err))
 		return
 	}
+
+	select {
+	case m.cmdQueue <- cmdWork{cmd: cmd}:
+		// Queued successfully
+	default:
+		// Queue full - apply backpressure
+		m.log.Warn("command queue full",
+			zap.String("id", cmd.ID),
+			zap.String("type", cmd.Type))
+		if cmd.ReplyTo != "" {
+			reply := errorReply(cmd, "OVERLOADED", "command queue full")
+			payload, _ := json.Marshal(reply)
+			_ = m.client.Publish(cmd.ReplyTo, 1, false, payload)
+		}
+	}
+}
+
+// commandWorker processes commands from the queue.
+func (m *Module) commandWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case work := <-m.cmdQueue:
+			m.processCommand(work.cmd)
+		}
+	}
+}
+
+func (m *Module) processCommand(cmd mu.CommandEnvelope) {
 	reply := m.dispatch(cmd)
 	if cmd.ReplyTo == "" {
 		return

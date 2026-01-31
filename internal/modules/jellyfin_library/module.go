@@ -11,6 +11,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,6 +47,11 @@ type Config struct {
 	PublishTimeoutCooldown time.Duration
 }
 
+// cmdWork represents a command to be processed by a worker.
+type cmdWork struct {
+	cmd mu.CommandEnvelope
+}
+
 // Module handles library commands via Jellyfin.
 type Module struct {
 	log                 *zap.Logger
@@ -53,6 +59,7 @@ type Module struct {
 	http                *http.Client
 	config              Config
 	cmdTopic            string
+	cmdQueue            chan cmdWork
 	cache               gocache.CacheInterface[[]byte]
 	cacheCtx            context.Context
 	browseCache         gocache.CacheInterface[[]byte]
@@ -115,6 +122,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		http:           &http.Client{Timeout: cfg.Timeout},
 		config:         cfg,
 		cmdTopic:       cmdTopic,
+		cmdQueue:       make(chan cmdWork, 64),
 		cache:          newCache(cfg.CacheSize),
 		cacheCtx:       context.Background(),
 		browseCache:    newCache(cfg.BrowseCacheSize),
@@ -129,6 +137,17 @@ func (m *Module) Run(ctx context.Context) error {
 		return err
 	}
 
+	// Start command worker pool
+	const numWorkers = 4
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go func() {
+			defer wg.Done()
+			m.commandWorker(ctx)
+		}()
+	}
+
 	handler := func(_ paho.Client, msg paho.Message) {
 		m.handleMessage(msg)
 	}
@@ -139,6 +158,7 @@ func (m *Module) Run(ctx context.Context) error {
 	defer m.client.Unsubscribe(m.cmdTopic)
 
 	<-ctx.Done()
+	wg.Wait()
 	return nil
 }
 
@@ -162,6 +182,7 @@ func (m *Module) publishPresence() error {
 	return m.client.Publish(mu.TopicPresence(m.config.TopicBase, m.config.NodeID), 1, true, payload)
 }
 
+// handleMessage receives MQTT messages and queues them for async processing.
 func (m *Module) handleMessage(msg paho.Message) {
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
@@ -169,6 +190,35 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
+	select {
+	case m.cmdQueue <- cmdWork{cmd: cmd}:
+		// Queued successfully
+	default:
+		// Queue full - apply backpressure
+		m.log.Warn("command queue full",
+			zap.String("id", cmd.ID),
+			zap.String("type", cmd.Type))
+		if cmd.ReplyTo != "" {
+			reply := errorReply(cmd, "OVERLOADED", "command queue full")
+			payload, _ := json.Marshal(reply)
+			_ = m.client.Publish(cmd.ReplyTo, 1, false, payload)
+		}
+	}
+}
+
+// commandWorker processes commands from the queue.
+func (m *Module) commandWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case work := <-m.cmdQueue:
+			m.processCommand(work.cmd)
+		}
+	}
+}
+
+func (m *Module) processCommand(cmd mu.CommandEnvelope) {
 	started := time.Now()
 	reply := m.dispatch(cmd)
 	if cmd.ReplyTo == "" {
