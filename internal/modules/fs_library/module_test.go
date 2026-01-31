@@ -150,3 +150,242 @@ func mustJSON(v any) []byte {
 	payload, _ := json.Marshal(v)
 	return payload
 }
+
+func TestRepairMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		item     mediaItem
+		policy   RepairPolicy
+		wantText string
+	}{
+		{
+			name:     "no repair needed",
+			item:     mediaItem{Title: "Existing Title", Artists: []string{"Artist"}},
+			policy:   RepairPolicyBalanced,
+			wantText: "Existing Title",
+		},
+		{
+			name:     "extract from filename",
+			item:     mediaItem{Name: "Artist - Track Name"},
+			policy:   RepairPolicyBalanced,
+			wantText: "Track Name",
+		},
+		{
+			name:     "track number prefix",
+			item:     mediaItem{Name: "01 - Track Title"},
+			policy:   RepairPolicyBalanced,
+			wantText: "Track Title",
+		},
+		{
+			name:     "clean official video suffix",
+			item:     mediaItem{Title: "Song Name (Official Video)"},
+			policy:   RepairPolicyBalanced,
+			wantText: "Song Name",
+		},
+		{
+			name:     "policy none skips repair",
+			item:     mediaItem{Name: "Artist - Track"},
+			policy:   RepairPolicyNone,
+			wantText: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := repairMetadata(tt.item, tt.policy)
+			if result.Title != tt.wantText {
+				t.Errorf("repairMetadata() title = %q, want %q", result.Title, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestParseFilename(t *testing.T) {
+	tests := []struct {
+		filename    string
+		wantTitle   string
+		wantArtists []string
+	}{
+		{"Artist - Title", "Title", []string{"Artist"}},
+		{"01 - Title", "Title", nil},
+		{"01. Title", "Title", nil},
+		{"Just A Title", "Just A Title", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.filename, func(t *testing.T) {
+			result := parseFilename(tt.filename)
+			if result.Title != tt.wantTitle {
+				t.Errorf("parseFilename(%q) title = %q, want %q", tt.filename, result.Title, tt.wantTitle)
+			}
+			if len(result.Artists) != len(tt.wantArtists) {
+				t.Errorf("parseFilename(%q) artists = %v, want %v", tt.filename, result.Artists, tt.wantArtists)
+			}
+		})
+	}
+}
+
+func TestDuplicateIndex(t *testing.T) {
+	idx := NewDuplicateIndex()
+
+	// First item is not a duplicate
+	if idx.Add("item1", "hash1") {
+		t.Error("first item should not be duplicate")
+	}
+
+	// Second item with same hash is duplicate
+	if !idx.Add("item2", "hash1") {
+		t.Error("second item with same hash should be duplicate")
+	}
+
+	// Different hash is not duplicate
+	if idx.Add("item3", "hash2") {
+		t.Error("item with different hash should not be duplicate")
+	}
+
+	// Check IsDuplicate
+	if !idx.IsDuplicate("item1") {
+		t.Error("item1 should be marked as having duplicates")
+	}
+	if !idx.IsDuplicate("item2") {
+		t.Error("item2 should be marked as duplicate")
+	}
+	if idx.IsDuplicate("item3") {
+		t.Error("item3 should not be duplicate")
+	}
+
+	// Check Original
+	if idx.Original("item2") != "item1" {
+		t.Errorf("Original(item2) = %q, want item1", idx.Original("item2"))
+	}
+
+	// Check GetDuplicates
+	groups := idx.GetDuplicates()
+	if len(groups) != 1 || len(groups[0]) != 2 {
+		t.Errorf("GetDuplicates() = %v, want 1 group with 2 items", groups)
+	}
+}
+
+func TestVectorIndex(t *testing.T) {
+	idx := NewVectorIndex()
+
+	// Add some vectors
+	idx.Add("item1", []float32{1, 0, 0})
+	idx.Add("item2", []float32{0.9, 0.1, 0})
+	idx.Add("item3", []float32{0, 1, 0})
+
+	// Search for similar to item1's vector
+	results := idx.Search([]float32{1, 0, 0}, 2)
+	if len(results) != 2 {
+		t.Fatalf("Search returned %d results, want 2", len(results))
+	}
+
+	// item1 should be most similar (exact match)
+	if results[0].ID != "item1" || results[0].Score < 0.99 {
+		t.Errorf("first result = %+v, want item1 with score ~1.0", results[0])
+	}
+
+	// item2 should be second (similar)
+	if results[1].ID != "item2" {
+		t.Errorf("second result = %+v, want item2", results[1])
+	}
+}
+
+func TestCosineSimilarity(t *testing.T) {
+	tests := []struct {
+		name  string
+		a, b  []float32
+		want  float32
+		delta float32
+	}{
+		{"identical", []float32{1, 0}, []float32{1, 0}, 1.0, 0.001},
+		{"orthogonal", []float32{1, 0}, []float32{0, 1}, 0.0, 0.001},
+		{"opposite", []float32{1, 0}, []float32{-1, 0}, -1.0, 0.001},
+		{"similar", []float32{1, 1}, []float32{1, 0}, 0.707, 0.01},
+		{"empty", []float32{}, []float32{}, 0.0, 0.001},
+		{"mismatched", []float32{1, 0}, []float32{1, 0, 0}, 0.0, 0.001},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cosineSimilarity(tt.a, tt.b)
+			if got < tt.want-tt.delta || got > tt.want+tt.delta {
+				t.Errorf("cosineSimilarity(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildEmbedText(t *testing.T) {
+	item := mediaItem{
+		Title:   "Song Title",
+		Artists: []string{"Artist Name"},
+		Album:   "Album Name",
+		Name:    "Song Title",
+	}
+	text := buildEmbedText(item)
+	if text != "Song Title - Artist Name - Album Name" {
+		t.Errorf("buildEmbedText() = %q, want 'Song Title - Artist Name - Album Name'", text)
+	}
+
+	// Different name should be included
+	item.Name = "Different Name"
+	text = buildEmbedText(item)
+	if text != "Song Title - Artist Name - Album Name - Different Name" {
+		t.Errorf("buildEmbedText() = %q", text)
+	}
+}
+
+func TestEmbeddingCache(t *testing.T) {
+	cache, err := NewEmbeddingCache("")
+	if err != nil {
+		t.Fatalf("NewEmbeddingCache: %v", err)
+	}
+
+	// Cache miss
+	if _, ok := cache.Get("item1", "text"); ok {
+		t.Error("expected cache miss")
+	}
+
+	// Cache put and get
+	vec := []float32{1, 2, 3}
+	cache.Put("item1", "text", vec)
+
+	got, ok := cache.Get("item1", "text")
+	if !ok {
+		t.Error("expected cache hit")
+	}
+	if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
+		t.Errorf("cache returned %v, want %v", got, vec)
+	}
+
+	// Different text is different key
+	if _, ok := cache.Get("item1", "different"); ok {
+		t.Error("expected cache miss for different text")
+	}
+}
+
+func TestEmbeddingCacheWithDir(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := NewEmbeddingCache(dir)
+	if err != nil {
+		t.Fatalf("NewEmbeddingCache: %v", err)
+	}
+
+	vec := []float32{4, 5, 6}
+	cache.Put("item2", "text2", vec)
+
+	// Create new cache instance to test persistence
+	cache2, err := NewEmbeddingCache(dir)
+	if err != nil {
+		t.Fatalf("NewEmbeddingCache second: %v", err)
+	}
+
+	got, ok := cache2.Get("item2", "text2")
+	if !ok {
+		t.Error("expected cache hit from disk")
+	}
+	if len(got) != 3 || got[0] != 4 {
+		t.Errorf("cache returned %v, want %v", got, vec)
+	}
+}

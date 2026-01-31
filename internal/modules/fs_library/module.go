@@ -64,6 +64,14 @@ type Module struct {
 	baseURL string
 	server  *http.Server
 	ln      net.Listener
+
+	// Embedding support
+	embedProvider EmbeddingProvider
+	embedCache    *EmbeddingCache
+	vectorIndex   *VectorIndex
+
+	// Deduplication
+	dupeIndex *DuplicateIndex
 }
 
 type libraryIndex struct {
@@ -142,13 +150,47 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
+
+	// Initialize embedding provider if configured
+	var embedProvider EmbeddingProvider
+	var embedCache *EmbeddingCache
+	if strings.TrimSpace(cfg.EmbeddingProvider) != "" {
+		switch strings.ToLower(cfg.EmbeddingProvider) {
+		case "ollama":
+			provider, err := NewOllamaProvider(OllamaConfig{
+				Endpoint: cfg.EmbeddingEndpoint,
+				Model:    cfg.EmbeddingModel,
+			})
+			if err != nil {
+				log.Warn("failed to create ollama provider", zap.Error(err))
+			} else {
+				embedProvider = provider
+			}
+		default:
+			log.Warn("unknown embedding provider", zap.String("provider", cfg.EmbeddingProvider))
+		}
+
+		if embedProvider != nil && strings.TrimSpace(cfg.EmbeddingCache) != "" {
+			cache, err := NewEmbeddingCache(cfg.EmbeddingCache)
+			if err != nil {
+				log.Warn("failed to create embedding cache", zap.Error(err))
+			} else {
+				embedCache = cache
+			}
+		}
+	}
+
 	return &Module{
-		log:      log,
-		client:   client,
-		config:   cfg,
-		cmdTopic: cmdTopic,
-		cmdQueue: make(chan cmdWork, 64),
-		index:    &libraryIndex{Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}},
+		log:           log,
+		client:        client,
+		config:        cfg,
+		cmdTopic:      cmdTopic,
+		cmdQueue:      make(chan cmdWork, 64),
+		index:         &libraryIndex{Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}},
+		embedProvider: embedProvider,
+		embedCache:    embedCache,
+		vectorIndex:   NewVectorIndex(),
+		dupeIndex:     NewDuplicateIndex(),
 	}, nil
 }
 
@@ -327,7 +369,6 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 		reply.Body = payload
 		return reply
 	}
-	// TODO: replace with fuzzy search, semantic embeddings, and similarity queries.
 	items, total := m.search(query, body.Start, body.Count)
 	payload, _ := json.Marshal(libraryItemsReply{
 		Items: items,
@@ -526,11 +567,21 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 }
 
 func (m *Module) search(query string, start int64, count int64) ([]libraryItem, int64) {
-	query = strings.ToLower(strings.TrimSpace(query))
+	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, 0
 	}
-	terms := strings.Fields(query)
+
+	// Try semantic search first if embeddings are available
+	if m.embedProvider != nil && m.vectorIndex != nil {
+		semanticResults := m.semanticSearch(query, start, count)
+		if len(semanticResults) > 0 {
+			return semanticResults, int64(len(semanticResults))
+		}
+	}
+
+	// Fall back to keyword search
+	terms := strings.Fields(strings.ToLower(query))
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	items := make([]libraryItem, 0)
@@ -553,6 +604,147 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 	})
 	total := int64(len(items))
 	return paginate(items, start, count), total
+}
+
+func (m *Module) semanticSearch(query string, start int64, count int64) []libraryItem {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Embed the query
+	results, err := m.embedProvider.Embed(ctx, []EmbedInput{{ID: "query", Text: query}})
+	if err != nil || len(results) == 0 || len(results[0].Vector) == 0 {
+		m.log.Debug("query embedding failed", zap.Error(err))
+		return nil
+	}
+
+	queryVec := results[0].Vector
+
+	// Search vector index
+	limit := int(count)
+	if limit <= 0 {
+		limit = 100
+	}
+	// Request more to allow for pagination
+	searchLimit := int(start) + limit + 10
+	similar := m.vectorIndex.Search(queryVec, searchLimit)
+
+	// Filter by minimum similarity threshold
+	const minSimilarity = 0.3
+	filtered := make([]SimilarityResult, 0, len(similar))
+	for _, r := range similar {
+		if r.Score >= minSimilarity {
+			filtered = append(filtered, r)
+		}
+	}
+
+	// Apply pagination
+	if int64(len(filtered)) <= start {
+		return nil
+	}
+	end := start + count
+	if end > int64(len(filtered)) {
+		end = int64(len(filtered))
+	}
+	filtered = filtered[start:end]
+
+	// Convert to library items
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	items := make([]libraryItem, 0, len(filtered))
+	for _, r := range filtered {
+		item, ok := m.index.Items[r.ID]
+		if !ok {
+			continue
+		}
+		items = append(items, libraryItem{
+			ItemID:     item.ID,
+			Name:       item.Name,
+			Type:       item.MediaType,
+			MediaType:  item.MediaType,
+			Artists:    item.Artists,
+			Album:      item.Album,
+			DurationMS: item.DurationMS,
+		})
+	}
+	return items
+}
+
+func (m *Module) buildEmbeddings(items map[string]mediaItem) {
+	if m.embedProvider == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Clear old vectors
+	m.vectorIndex.Clear()
+
+	// Collect items needing embeddings
+	var inputs []EmbedInput
+	cached := 0
+
+	for id, item := range items {
+		text := buildEmbedText(item)
+		if text == "" {
+			continue
+		}
+
+		// Check cache first
+		if m.embedCache != nil {
+			if vec, ok := m.embedCache.Get(id, text); ok {
+				m.vectorIndex.Add(id, vec)
+				cached++
+				continue
+			}
+		}
+
+		inputs = append(inputs, EmbedInput{ID: id, Text: text})
+	}
+
+	if cached > 0 {
+		m.log.Debug("loaded embeddings from cache", zap.Int("count", cached))
+	}
+
+	if len(inputs) == 0 {
+		return
+	}
+
+	m.log.Info("building embeddings", zap.Int("count", len(inputs)))
+
+	// Batch embed
+	const batchSize = 32
+	for i := 0; i < len(inputs); i += batchSize {
+		end := i + batchSize
+		if end > len(inputs) {
+			end = len(inputs)
+		}
+		batch := inputs[i:end]
+
+		results, err := m.embedProvider.Embed(ctx, batch)
+		if err != nil {
+			m.log.Warn("embedding batch failed", zap.Error(err), zap.Int("batch", i/batchSize))
+			continue
+		}
+
+		for j, result := range results {
+			if len(result.Vector) == 0 {
+				continue
+			}
+			m.vectorIndex.Add(result.ID, result.Vector)
+
+			// Cache the embedding
+			if m.embedCache != nil && j < len(batch) {
+				m.embedCache.Put(result.ID, batch[j].Text, result.Vector)
+			}
+		}
+	}
+
+	m.log.Info("embeddings built",
+		zap.Int("total", len(inputs)+cached),
+		zap.Int("new", len(inputs)),
+		zap.Int("cached", cached))
 }
 
 func containsAllTerms(item mediaItem, terms []string) bool {
@@ -632,10 +824,63 @@ func (m *Module) scan() error {
 	}
 	sort.Strings(next.Video)
 
-	// TODO: hook metadata repair, dedupe, and embedding pipelines here.
+	// Apply metadata repair pipeline
+	repairPolicy := RepairPolicy(strings.ToLower(strings.TrimSpace(m.config.RepairPolicy)))
+	if repairPolicy != RepairPolicyNone && repairPolicy != "" {
+		for id, item := range next.Items {
+			repaired := repairMetadata(item, repairPolicy)
+			if repaired.Source != "original" {
+				item.Title = repaired.Title
+				item.Artists = repaired.Artists
+				item.Album = repaired.Album
+				item.Name = repaired.Title
+				next.Items[id] = item
+				m.log.Debug("repaired metadata",
+					zap.String("id", id),
+					zap.String("source", repaired.Source),
+					zap.Float32("confidence", repaired.Confidence))
+			}
+		}
+	}
+
+	// Deduplication detection
+	dedupePolicy := DedupePolicy(strings.ToLower(strings.TrimSpace(m.config.DedupePolicy)))
+	m.dupeIndex.Clear()
+	if dedupePolicy != DedupePolicyNone && dedupePolicy != "" {
+		dupeCount := 0
+		for id, item := range next.Items {
+			hash, err := computeFileHash(item.Path)
+			if err != nil {
+				m.log.Debug("hash failed", zap.String("path", item.Path), zap.Error(err))
+				continue
+			}
+			if m.dupeIndex.Add(id, hash) {
+				dupeCount++
+				original := m.dupeIndex.Original(id)
+				m.log.Debug("duplicate detected",
+					zap.String("id", id),
+					zap.String("original", original),
+					zap.String("path", item.Path))
+
+				// Apply policy
+				if dedupePolicy == DedupePolicyFirst {
+					delete(next.Items, id)
+				}
+			}
+		}
+		if dupeCount > 0 {
+			m.log.Info("duplicates found", zap.Int("count", dupeCount))
+		}
+	}
+
 	m.mu.Lock()
 	m.index = next
 	m.mu.Unlock()
+
+	// Build embeddings asynchronously
+	if m.embedProvider != nil {
+		go m.buildEmbeddings(next.Items)
+	}
 
 	if err := m.saveIndex(); err != nil {
 		m.log.Debug("index save failed", zap.Error(err))
