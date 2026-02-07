@@ -1672,11 +1672,36 @@ func (s Service) resolveLibraryMetadataBatchByNodeID(ctx context.Context, nodeID
 }
 
 func (s Service) isContainerRef(ctx context.Context, nodeID string, itemID string) bool {
+	// Skip resolve for item IDs that obviously aren't containers.
+	// Known media prefixes (legacy format).
+	lower := strings.ToLower(itemID)
+	if strings.HasPrefix(lower, "audio:") || strings.HasPrefix(lower, "video:") {
+		return false
+	}
+	// Pure hex hashes are media items (fs_library format), not containers.
+	// Containers have prefixes like container:, artist:, album:.
+	if looksLikeHexHash(itemID) {
+		return false
+	}
+
 	meta := s.resolveLibraryMetadataByNodeID(ctx, nodeID, itemID)
 	if meta == nil {
 		return false
 	}
 	return isContainerMetadata(meta)
+}
+
+// looksLikeHexHash returns true if s appears to be a hex hash (32+ hex chars, no colons).
+func looksLikeHexHash(s string) bool {
+	if len(s) < 32 || strings.Contains(s, ":") {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func isContainerMetadata(meta map[string]any) bool {

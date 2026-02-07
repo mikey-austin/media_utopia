@@ -138,7 +138,7 @@ package fslibrary
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -292,6 +292,17 @@ type libraryIndex struct {
 
 	// Video lists video item IDs in the order they were scanned.
 	Video []string `json:"video"`
+
+	// Containers maps hashed container IDs to container info.
+	// This enables opaque IDs while preserving fast lookups.
+	Containers map[string]containerInfo `json:"containers,omitempty"`
+}
+
+// containerInfo stores the data needed to resolve a container by its hash ID.
+type containerInfo struct {
+	Type   string `json:"type"`   // "artist" or "album"
+	Artist string `json:"artist"` // Artist name
+	Album  string `json:"album"`  // Album name (only for album type)
 }
 
 // artistEntry groups albums under an artist.
@@ -302,8 +313,10 @@ type artistEntry struct {
 
 // albumEntry groups tracks under an album.
 type albumEntry struct {
-	Name   string   `json:"name"`
-	Tracks []string `json:"tracks"` // Item IDs, e.g., "audio:abc123"
+	Name        string   `json:"name"`
+	Tracks      []string `json:"tracks"`      // Item IDs
+	CoverArt    string   `json:"coverArt"`    // Path to cover art file or audio file with embedded art
+	CoverArtExt string   `json:"coverArtExt"` // Extension for cover art URL (e.g., ".jpg", ".png")
 }
 
 // mediaItem represents a single media file in the library.
@@ -370,8 +383,9 @@ type libraryItem struct {
 
 	// ContainerID is the parent container (for media items).
 	ContainerID string `json:"containerId,omitempty"`
-	Overview    string   `json:"overview,omitempty"`
-	DurationMS  int64    `json:"durationMs,omitempty"`
+	Overview    string `json:"overview,omitempty"`
+	DurationMS  int64  `json:"durationMs,omitempty"`
+	ImageURL    string `json:"imageUrl,omitempty"`
 }
 
 // NewModule creates a filesystem library module.
@@ -438,7 +452,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		config:        cfg,
 		cmdTopic:      cmdTopic,
 		cmdQueue:      make(chan cmdWork, 64),
-		index:         &libraryIndex{Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}},
+		index:         &libraryIndex{Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}, Containers: map[string]containerInfo{}},
 		embedProvider: embedProvider,
 		embedCache:    embedCache,
 		vectorIndex:   NewVectorIndex(),
@@ -640,24 +654,52 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
+
+	// Try container resolution first (artist:, album:, container:)
+	if meta, ok := m.resolveContainerMetadata(body.ItemID); ok {
+		payload, _ := json.Marshal(mu.LibraryResolveReply{
+			ItemID:   body.ItemID,
+			Metadata: meta,
+			Sources:  []mu.ResolvedSource{}, // Containers have no playable sources
+		})
+		reply.Body = payload
+		return reply
+	}
+
+	// Fall back to media item resolution
 	item, ok := m.getItem(body.ItemID)
 	if !ok {
 		return errorReply(cmd, "NOT_FOUND", "item not found")
 	}
+
+	metadata := map[string]any{
+		"title":     item.Title,
+		"artists":   item.Artists,
+		"album":     item.Album,
+		"duration":  item.DurationMS,
+		"type":      item.MediaType,
+		"mediaType": item.MediaType,
+	}
+
+	// If metadataOnly, skip source URL generation
+	if body.MetadataOnly {
+		payload, _ := json.Marshal(mu.LibraryResolveReply{
+			ItemID:   item.ID,
+			Metadata: metadata,
+			Sources:  []mu.ResolvedSource{},
+		})
+		reply.Body = payload
+		return reply
+	}
+
 	sourceURL, err := m.sourceURL(item.ID)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	payload, _ := json.Marshal(mu.LibraryResolveReply{
-		ItemID: item.ID,
-		Metadata: map[string]any{
-			"title":    item.Title,
-			"artists":  item.Artists,
-			"album":    item.Album,
-			"duration": item.DurationMS,
-			"type":     item.MediaType,
-		},
-		Sources: []mu.ResolvedSource{{URL: sourceURL, ByteRange: true}},
+		ItemID:   item.ID,
+		Metadata: metadata,
+		Sources:  []mu.ResolvedSource{{URL: sourceURL, ByteRange: true}},
 	})
 	reply.Body = payload
 	return reply
@@ -670,6 +712,17 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 	}
 	items := make([]mu.LibraryResolveBatchItem, 0, len(body.ItemIDs))
 	for _, itemID := range body.ItemIDs {
+		// Try container resolution first
+		if meta, ok := m.resolveContainerMetadata(itemID); ok {
+			items = append(items, mu.LibraryResolveBatchItem{
+				ItemID:   itemID,
+				Metadata: meta,
+				Sources:  []mu.ResolvedSource{},
+			})
+			continue
+		}
+
+		// Fall back to media item resolution
 		item, ok := m.getItem(itemID)
 		if !ok {
 			items = append(items, mu.LibraryResolveBatchItem{
@@ -678,6 +731,26 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 			})
 			continue
 		}
+
+		metadata := map[string]any{
+			"title":     item.Title,
+			"artists":   item.Artists,
+			"album":     item.Album,
+			"duration":  item.DurationMS,
+			"type":      item.MediaType,
+			"mediaType": item.MediaType,
+		}
+
+		// If metadataOnly, skip source URL generation
+		if body.MetadataOnly {
+			items = append(items, mu.LibraryResolveBatchItem{
+				ItemID:   item.ID,
+				Metadata: metadata,
+				Sources:  []mu.ResolvedSource{},
+			})
+			continue
+		}
+
 		sourceURL, err := m.sourceURL(item.ID)
 		if err != nil {
 			items = append(items, mu.LibraryResolveBatchItem{
@@ -687,15 +760,9 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 			continue
 		}
 		items = append(items, mu.LibraryResolveBatchItem{
-			ItemID: item.ID,
-			Metadata: map[string]any{
-				"title":    item.Title,
-				"artists":  item.Artists,
-				"album":    item.Album,
-				"duration": item.DurationMS,
-				"type":     item.MediaType,
-			},
-			Sources: []mu.ResolvedSource{{URL: sourceURL, ByteRange: true}},
+			ItemID:   item.ID,
+			Metadata: metadata,
+			Sources:  []mu.ResolvedSource{{URL: sourceURL, ByteRange: true}},
 		})
 	}
 	payload, _ := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
@@ -755,14 +822,16 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Root: list audio and video containers
 	if containerID == "" {
 		items := []libraryItem{
-			{ItemID: "container:audio", Name: "Audio", Type: "Folder", MediaType: "Audio"},
-			{ItemID: "container:video", Name: "Video", Type: "Folder", MediaType: "Video"},
+			{ItemID: "container:audio", Name: "Audio", Type: "Folder"},
+			{ItemID: "container:video", Name: "Video", Type: "Folder"},
 		}
 		return paginate(items, start, count), int64(len(items)), nil
 	}
 
+	// Audio root: list artists
 	if containerID == "container:audio" {
 		artists := make([]string, 0, len(m.index.Audio))
 		for artist := range m.index.Audio {
@@ -770,23 +839,47 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 		}
 		sort.Strings(artists)
 		items := make([]libraryItem, 0, len(artists))
-		for _, artist := range artists {
+		for _, artistName := range artists {
+			artistHash := containerHash("artist", artistName, "")
 			items = append(items, libraryItem{
-				ItemID:    "artist:" + url.PathEscape(artist),
-				Name:      artist,
-				Type:      "Folder",
-				MediaType: "Audio",
+				ItemID:      artistHash,
+				Name:        artistName,
+				Type:        "Folder",
+				ContainerID: "container:audio",
 			})
 		}
 		return paginate(items, start, count), int64(len(items)), nil
 	}
 
-	if strings.HasPrefix(containerID, "artist:") {
-		artistName, err := url.PathUnescape(strings.TrimPrefix(containerID, "artist:"))
-		if err != nil {
-			return nil, 0, errors.New("invalid artist container")
+	// Video root: list videos
+	if containerID == "container:video" {
+		items := make([]libraryItem, 0, len(m.index.Video))
+		for _, itemID := range m.index.Video {
+			item, ok := m.index.Items[itemID]
+			if !ok {
+				continue
+			}
+			items = append(items, libraryItem{
+				ItemID:      item.ID,
+				Name:        item.Name,
+				Type:        item.MediaType,
+				MediaType:   item.MediaType,
+				DurationMS:  item.DurationMS,
+				ContainerID: "container:video",
+			})
 		}
-		artist, ok := m.index.Audio[artistName]
+		return paginate(items, start, count), int64(len(items)), nil
+	}
+
+	// Look up container by hash
+	info, ok := m.index.Containers[containerID]
+	if !ok {
+		return nil, 0, errors.New("container not found")
+	}
+
+	// Artist container: list albums
+	if info.Type == "artist" {
+		artist, ok := m.index.Audio[info.Artist]
 		if !ok {
 			return nil, 0, errors.New("artist not found")
 		}
@@ -796,38 +889,32 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 		}
 		sort.Strings(albums)
 		items := make([]libraryItem, 0, len(albums))
-		for _, album := range albums {
-			albumID := "album:" + url.PathEscape(artistName) + ":" + url.PathEscape(album)
+		for _, albumName := range albums {
+			albumHash := containerHash("album", info.Artist, albumName)
 			items = append(items, libraryItem{
-				ItemID:    albumID,
-				Name:      album,
-				Type:      "Folder",
-				MediaType: "Audio",
+				ItemID:      albumHash,
+				Name:        albumName,
+				Type:        "Folder",
+				ContainerID: containerID,
 			})
 		}
 		return paginate(items, start, count), int64(len(items)), nil
 	}
 
-	if strings.HasPrefix(containerID, "album:") {
-		parts := strings.SplitN(strings.TrimPrefix(containerID, "album:"), ":", 2)
-		if len(parts) != 2 {
-			return nil, 0, errors.New("invalid album container")
-		}
-		artistName, err := url.PathUnescape(parts[0])
-		if err != nil {
-			return nil, 0, errors.New("invalid artist name")
-		}
-		albumName, err := url.PathUnescape(parts[1])
-		if err != nil {
-			return nil, 0, errors.New("invalid album name")
-		}
-		artist, ok := m.index.Audio[artistName]
+	// Album container: list tracks
+	if info.Type == "album" {
+		artist, ok := m.index.Audio[info.Artist]
 		if !ok {
 			return nil, 0, errors.New("artist not found")
 		}
-		album, ok := artist.Albums[albumName]
+		album, ok := artist.Albums[info.Album]
 		if !ok {
 			return nil, 0, errors.New("album not found")
+		}
+		// Get art URL if available
+		var imageURL string
+		if album.CoverArt != "" {
+			imageURL = m.artURLUnlocked(containerID)
 		}
 		items := make([]libraryItem, 0, len(album.Tracks))
 		for _, itemID := range album.Tracks {
@@ -836,31 +923,15 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 				continue
 			}
 			items = append(items, libraryItem{
-				ItemID:     item.ID,
-				Name:       item.Name,
-				Type:       item.MediaType,
-				MediaType:  item.MediaType,
-				Artists:    item.Artists,
-				Album:      item.Album,
-				DurationMS: item.DurationMS,
-			})
-		}
-		return paginate(items, start, count), int64(len(items)), nil
-	}
-
-	if containerID == "container:video" {
-		items := make([]libraryItem, 0, len(m.index.Video))
-		for _, itemID := range m.index.Video {
-			item, ok := m.index.Items[itemID]
-			if !ok {
-				continue
-			}
-			items = append(items, libraryItem{
-				ItemID:     item.ID,
-				Name:       item.Name,
-				Type:       item.MediaType,
-				MediaType:  item.MediaType,
-				DurationMS: item.DurationMS,
+				ItemID:      item.ID,
+				Name:        item.Name,
+				Type:        item.MediaType,
+				MediaType:   item.MediaType,
+				Artists:     item.Artists,
+				Album:       item.Album,
+				DurationMS:  item.DurationMS,
+				ContainerID: containerID,
+				ImageURL:    imageURL,
 			})
 		}
 		return paginate(items, start, count), int64(len(items)), nil
@@ -1068,7 +1139,11 @@ func (m *Module) scan() error {
 	audioExts := defaultAudioExts()
 	videoExts := defaultVideoExts()
 
-	next := &libraryIndex{Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}}
+	next := &libraryIndex{
+		Items:      map[string]mediaItem{},
+		Audio:      map[string]artistEntry{},
+		Containers: map[string]containerInfo{},
+	}
 
 	for _, root := range m.config.Roots {
 		root = strings.TrimSpace(root)
@@ -1121,11 +1196,38 @@ func (m *Module) scan() error {
 	for artistName, artist := range next.Audio {
 		for albumName, album := range artist.Albums {
 			sort.Strings(album.Tracks)
+			// Look for cover art in the album directory or embedded in tracks
+			if len(album.Tracks) > 0 {
+				if item, ok := next.Items[album.Tracks[0]]; ok {
+					dir := filepath.Dir(item.Path)
+					// First try external cover art files
+					album.CoverArt = findCoverArt(dir)
+					if album.CoverArt != "" {
+						album.CoverArtExt = strings.ToLower(filepath.Ext(album.CoverArt))
+					} else {
+						// Fall back to embedded art in the first track
+						if ext := getEmbeddedArtExt(item.Path); ext != "" {
+							album.CoverArt = item.Path // Store track path; serveArt will extract
+							album.CoverArtExt = ext
+						}
+					}
+				}
+			}
 			artist.Albums[albumName] = album
 		}
 		next.Audio[artistName] = artist
 	}
 	sort.Strings(next.Video)
+
+	// Build container ID mappings for artists and albums
+	for artistName, artist := range next.Audio {
+		artistHash := containerHash("artist", artistName, "")
+		next.Containers[artistHash] = containerInfo{Type: "artist", Artist: artistName}
+		for albumName := range artist.Albums {
+			albumHash := containerHash("album", artistName, albumName)
+			next.Containers[albumHash] = containerInfo{Type: "album", Artist: artistName, Album: albumName}
+		}
+	}
 
 	// Apply metadata repair pipeline
 	repairPolicy := RepairPolicy(strings.ToLower(strings.TrimSpace(m.config.RepairPolicy)))
@@ -1222,7 +1324,7 @@ func (m *Module) buildItem(path string, audioExts map[string]bool, videoExts map
 		name = filepath.Base(path)
 	}
 	return mediaItem{
-		ID:         fmt.Sprintf("%s:%s", strings.ToLower(mediaType), itemID),
+		ID:         itemID, // Use hash only, no prefix - avoids lib: ref parsing ambiguity
 		Path:       path,
 		Name:       name,
 		Title:      meta.Title,
@@ -1323,6 +1425,51 @@ func (m *Module) getItem(itemID string) (mediaItem, bool) {
 	return item, ok
 }
 
+// resolveContainerMetadata returns metadata for container IDs.
+// Handles both fixed containers (container:audio, container:video) and
+// hashed container IDs for artists and albums.
+// Returns nil, false if the itemID is not a container.
+func (m *Module) resolveContainerMetadata(itemID string) (map[string]any, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Fixed root containers
+	switch itemID {
+	case "container:audio":
+		return map[string]any{
+			"title": "Audio",
+			"type":  "Folder",
+		}, true
+	case "container:video":
+		return map[string]any{
+			"title": "Video",
+			"type":  "Folder",
+		}, true
+	}
+
+	// Look up hashed container ID
+	info, ok := m.index.Containers[itemID]
+	if !ok {
+		return nil, false
+	}
+
+	switch info.Type {
+	case "artist":
+		return map[string]any{
+			"title": info.Artist,
+			"type":  "MusicArtist",
+		}, true
+	case "album":
+		return map[string]any{
+			"title":   info.Album,
+			"artists": []string{info.Artist},
+			"type":    "MusicAlbum",
+		}, true
+	}
+
+	return nil, false
+}
+
 func (m *Module) sourceURL(itemID string) (string, error) {
 	m.mu.RLock()
 	baseURL := m.baseURL
@@ -1349,6 +1496,7 @@ func (m *Module) startHTTPServer() error {
 	baseURL := fmt.Sprintf("http://%s:%s", host, port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/files/", m.serveFile)
+	mux.HandleFunc("/art/", m.serveArt)
 	server := &http.Server{Handler: mux}
 
 	m.mu.Lock()
@@ -1404,6 +1552,115 @@ func (m *Module) serveFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, filepath.Base(item.Path), time.Now(), f)
 }
 
+func (m *Module) serveArt(w http.ResponseWriter, r *http.Request) {
+	albumHash := strings.TrimPrefix(r.URL.Path, "/art/")
+	albumHash, err := url.PathUnescape(albumHash)
+	if err != nil {
+		http.Error(w, "invalid album id", http.StatusBadRequest)
+		return
+	}
+	// Strip image extension if present (e.g., ".jpg", ".png")
+	if ext := filepath.Ext(albumHash); ext != "" {
+		albumHash = strings.TrimSuffix(albumHash, ext)
+	}
+
+	m.mu.RLock()
+	info, ok := m.index.Containers[albumHash]
+	if !ok || info.Type != "album" {
+		m.mu.RUnlock()
+		http.NotFound(w, r)
+		return
+	}
+	artist, ok := m.index.Audio[info.Artist]
+	if !ok {
+		m.mu.RUnlock()
+		http.NotFound(w, r)
+		return
+	}
+	album, ok := artist.Albums[info.Album]
+	if !ok || album.CoverArt == "" {
+		m.mu.RUnlock()
+		http.NotFound(w, r)
+		return
+	}
+	coverPath := album.CoverArt
+	m.mu.RUnlock()
+
+	// Check if coverPath is an audio file (embedded art) or image file
+	ext := strings.ToLower(filepath.Ext(coverPath))
+	audioExts := defaultAudioExts()
+	if audioExts[ext] {
+		// Extract embedded art from audio file
+		data, mime, err := extractEmbeddedArt(coverPath)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", mime)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+		w.Write(data)
+		return
+	}
+
+	// Serve external image file with proper Content-Type
+	mime := extToMime(ext)
+	f, err := os.Open(coverPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	info2, err := f.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", mime)
+	http.ServeContent(w, r, filepath.Base(coverPath), info2.ModTime(), f)
+}
+
+// extToMime converts a file extension to a MIME type.
+func extToMime(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "image/jpeg"
+	}
+}
+
+// artURLUnlocked returns the URL for album art when caller already holds the lock.
+// The albumHash is used to look up the extension from the album entry.
+func (m *Module) artURLUnlocked(albumHash string) string {
+	if m.baseURL == "" {
+		return ""
+	}
+	// Look up the extension from the container info
+	info, ok := m.index.Containers[albumHash]
+	if !ok || info.Type != "album" {
+		return ""
+	}
+	artist, ok := m.index.Audio[info.Artist]
+	if !ok {
+		return ""
+	}
+	album, ok := artist.Albums[info.Album]
+	if !ok || album.CoverArt == "" {
+		return ""
+	}
+	ext := album.CoverArtExt
+	if ext == "" {
+		ext = ".jpg"
+	}
+	return fmt.Sprintf("%s/art/%s%s", strings.TrimRight(m.baseURL, "/"), url.PathEscape(albumHash), ext)
+}
+
 func (m *Module) indexFilePath() (string, error) {
 	mode := strings.ToLower(strings.TrimSpace(m.config.IndexMode))
 	switch mode {
@@ -1450,6 +1707,9 @@ func (m *Module) loadIndex() error {
 	if idx.Audio == nil {
 		idx.Audio = map[string]artistEntry{}
 	}
+	if idx.Containers == nil {
+		idx.Containers = map[string]containerInfo{}
+	}
 	m.mu.Lock()
 	m.index = &idx
 	m.mu.Unlock()
@@ -1474,9 +1734,22 @@ func (m *Module) saveIndex() error {
 }
 
 func hashID(path string, size int64, mod time.Time) string {
-	h := sha1.New()
+	h := md5.New()
 	_, _ = io.WriteString(h, path)
 	_, _ = io.WriteString(h, fmt.Sprintf("|%d|%d", size, mod.UnixNano()))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// containerHash generates a stable hash ID for a container (artist or album).
+func containerHash(containerType, artist, album string) string {
+	h := md5.New()
+	_, _ = io.WriteString(h, containerType)
+	_, _ = io.WriteString(h, "|")
+	_, _ = io.WriteString(h, artist)
+	if album != "" {
+		_, _ = io.WriteString(h, "|")
+		_, _ = io.WriteString(h, album)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -1515,4 +1788,94 @@ func errorReply(cmd mu.CommandEnvelope, code string, message string) mu.ReplyEnv
 		TS:   time.Now().Unix(),
 		Err:  &mu.ReplyError{Code: code, Message: message},
 	}
+}
+
+// coverArtNames lists common cover art filenames in priority order.
+var coverArtNames = []string{
+	"cover.jpg", "cover.jpeg", "cover.png",
+	"folder.jpg", "folder.jpeg", "folder.png",
+	"album.jpg", "album.jpeg", "album.png",
+	"front.jpg", "front.jpeg", "front.png",
+	"albumart.jpg", "albumart.jpeg", "albumart.png",
+}
+
+// findCoverArt looks for a cover art file in the given directory.
+// Returns the full path if found, empty string otherwise.
+func findCoverArt(dir string) string {
+	for _, name := range coverArtNames {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+		// Try case-insensitive match
+		upper := filepath.Join(dir, strings.ToUpper(name))
+		if _, err := os.Stat(upper); err == nil {
+			return upper
+		}
+	}
+	return ""
+}
+
+// getEmbeddedArtExt checks if an audio file has embedded album art and returns the file extension.
+// Returns empty string if no embedded art is found.
+func getEmbeddedArtExt(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	metadata, err := tag.ReadFrom(f)
+	if err != nil {
+		return ""
+	}
+	pic := metadata.Picture()
+	if pic == nil {
+		return ""
+	}
+	return mimeToExt(pic.MIMEType)
+}
+
+// mimeToExt converts a MIME type to a file extension.
+func mimeToExt(mime string) string {
+	switch strings.ToLower(mime) {
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ".jpg" // Default to jpg for unknown types
+	}
+}
+
+// extractEmbeddedArt extracts album art from an audio file.
+// Returns the image data, MIME type, and any error.
+func extractEmbeddedArt(path string) ([]byte, string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	defer f.Close()
+
+	metadata, err := tag.ReadFrom(f)
+	if err != nil {
+		return nil, "", err
+	}
+
+	pic := metadata.Picture()
+	if pic == nil {
+		return nil, "", errors.New("no embedded art")
+	}
+
+	mime := pic.MIMEType
+	if mime == "" {
+		// Guess from extension field or default to JPEG
+		mime = "image/jpeg"
+	}
+
+	return pic.Data, mime, nil
 }
