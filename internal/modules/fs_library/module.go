@@ -256,6 +256,7 @@ func (m *Module) publishPresence() error {
 			"resolveBatch": true,
 			"browse":       true,
 			"search":       true,
+			"rescan":       true,
 		},
 		TS: time.Now().Unix(),
 	}
@@ -333,6 +334,8 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.libraryResolve(cmd, reply)
 	case "library.resolveBatch":
 		return m.libraryResolveBatch(cmd, reply)
+	case "library.rescan":
+		return m.libraryRescan(cmd, reply)
 	default:
 		return errorReply(cmd, "INVALID", "unsupported command")
 	}
@@ -444,6 +447,54 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 		})
 	}
 	payload, _ := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
+	reply.Body = payload
+	return reply
+}
+
+// rescanReply is the response for library.rescan.
+type rescanReply struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+	Items   int    `json:"items,omitempty"`
+}
+
+func (m *Module) libraryRescan(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	// Parse optional body for sync mode
+	var body struct {
+		Async bool `json:"async"`
+	}
+	if len(cmd.Body) > 0 {
+		_ = json.Unmarshal(cmd.Body, &body)
+	}
+
+	if body.Async {
+		// Run scan asynchronously
+		go func() {
+			if err := m.scan(); err != nil {
+				m.log.Warn("async rescan failed", zap.Error(err))
+			}
+		}()
+		payload, _ := json.Marshal(rescanReply{
+			Status:  "started",
+			Message: "rescan started in background",
+		})
+		reply.Body = payload
+		return reply
+	}
+
+	// Run scan synchronously
+	if err := m.scan(); err != nil {
+		return errorReply(cmd, "SCAN_FAILED", err.Error())
+	}
+
+	m.mu.RLock()
+	itemCount := len(m.index.Items)
+	m.mu.RUnlock()
+
+	payload, _ := json.Marshal(rescanReply{
+		Status: "complete",
+		Items:  itemCount,
+	})
 	reply.Body = payload
 	return reply
 }
