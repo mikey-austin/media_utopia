@@ -997,6 +997,11 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	m.log.Debug("semantic search started",
+		zap.String("query", query),
+		zap.Int64("start", start),
+		zap.Int64("count", count))
+
 	// Embed the query
 	results, err := m.embedProvider.Embed(ctx, []EmbedInput{{ID: "query", Text: query}})
 	if err != nil || len(results) == 0 || len(results[0].Vector) == 0 {
@@ -1005,6 +1010,8 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 	}
 
 	queryVec := results[0].Vector
+	m.log.Debug("query embedded successfully",
+		zap.Int("vector_dimension", len(queryVec)))
 
 	// Search vector index
 	limit := int(count)
@@ -1015,8 +1022,54 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 	searchLimit := int(start) + limit + 10
 	similar := m.vectorIndex.Search(queryVec, searchLimit)
 
+	m.log.Debug("vector search complete",
+		zap.Int("results_count", len(similar)),
+		zap.Int("search_limit", searchLimit))
+
+	// Log score distribution for debugging
+	if len(similar) > 0 {
+		var minScore, maxScore float32 = similar[0].Score, similar[0].Score
+		var totalScore float64
+		for _, r := range similar {
+			if r.Score < minScore {
+				minScore = r.Score
+			}
+			if r.Score > maxScore {
+				maxScore = r.Score
+			}
+			totalScore += float64(r.Score)
+		}
+		avgScore := totalScore / float64(len(similar))
+		m.log.Debug("similarity score distribution",
+			zap.Float32("max_score", maxScore),
+			zap.Float32("min_score", minScore),
+			zap.Float64("avg_score", avgScore))
+
+		// Log top 5 results with their scores
+		topN := 5
+		if len(similar) < topN {
+			topN = len(similar)
+		}
+		m.mu.RLock()
+		for i := 0; i < topN; i++ {
+			r := similar[i]
+			if item, ok := m.index.Items[r.ID]; ok {
+				m.log.Debug("top semantic result",
+					zap.Int("rank", i+1),
+					zap.Float32("score", r.Score),
+					zap.String("title", item.Title),
+					zap.Strings("artists", item.Artists),
+					zap.String("album", item.Album))
+			}
+		}
+		m.mu.RUnlock()
+	}
+
 	// Filter by minimum similarity threshold
-	const minSimilarity = 0.3
+	// Note: Cosine similarity ranges from -1 to 1, where 1 is identical.
+	// A threshold of 0.5 is a reasonable cutoff for "somewhat related" content.
+	// Higher values (0.6-0.7) would be more strict.
+	const minSimilarity = 0.5
 	filtered := make([]SimilarityResult, 0, len(similar))
 	for _, r := range similar {
 		if r.Score >= minSimilarity {
@@ -1024,8 +1077,16 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 		}
 	}
 
+	m.log.Debug("similarity threshold applied",
+		zap.Float32("threshold", minSimilarity),
+		zap.Int("before_filter", len(similar)),
+		zap.Int("after_filter", len(filtered)))
+
 	// Apply pagination
 	if int64(len(filtered)) <= start {
+		m.log.Debug("no results after pagination offset",
+			zap.Int64("start", start),
+			zap.Int("filtered_count", len(filtered)))
 		return nil
 	}
 	end := start + count
@@ -1033,6 +1094,11 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 		end = int64(len(filtered))
 	}
 	filtered = filtered[start:end]
+
+	m.log.Debug("pagination applied",
+		zap.Int64("start", start),
+		zap.Int64("end", end),
+		zap.Int("page_size", len(filtered)))
 
 	// Convert to library items
 	m.mu.RLock()
@@ -1054,6 +1120,11 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 			DurationMS: item.DurationMS,
 		})
 	}
+
+	m.log.Debug("semantic search complete",
+		zap.String("query", query),
+		zap.Int("results_returned", len(items)))
+
 	return items
 }
 
@@ -1065,6 +1136,10 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	m.log.Debug("starting embedding build",
+		zap.Int("total_items", len(items)),
+		zap.String("provider", m.embedProvider.Name()))
+
 	// Clear old vectors
 	m.vectorIndex.Clear()
 
@@ -1075,6 +1150,7 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 	for id, item := range items {
 		text := buildEmbedText(item)
 		if text == "" {
+			m.log.Debug("skipping item with empty embed text", zap.String("id", id))
 			continue
 		}
 
@@ -1095,10 +1171,25 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 	}
 
 	if len(inputs) == 0 {
+		m.log.Debug("all embeddings loaded from cache, nothing to compute")
 		return
 	}
 
-	m.log.Info("building embeddings", zap.Int("count", len(inputs)))
+	m.log.Info("building embeddings",
+		zap.Int("to_compute", len(inputs)),
+		zap.Int("from_cache", cached))
+
+	// Log sample of texts being embedded
+	sampleSize := 3
+	if len(inputs) < sampleSize {
+		sampleSize = len(inputs)
+	}
+	for i := 0; i < sampleSize; i++ {
+		m.log.Debug("sample embed text",
+			zap.Int("index", i),
+			zap.String("id", inputs[i].ID),
+			zap.String("text", inputs[i].Text))
+	}
 
 	// Batch embed
 	const batchSize = 32
@@ -1115,8 +1206,14 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 			continue
 		}
 
+		m.log.Debug("batch embedded",
+			zap.Int("batch_num", i/batchSize),
+			zap.Int("batch_size", len(batch)),
+			zap.Int("results", len(results)))
+
 		for j, result := range results {
 			if len(result.Vector) == 0 {
+				m.log.Debug("empty vector result", zap.String("id", result.ID))
 				continue
 			}
 			m.vectorIndex.Add(result.ID, result.Vector)
@@ -1131,7 +1228,8 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 	m.log.Info("embeddings built",
 		zap.Int("total", len(inputs)+cached),
 		zap.Int("new", len(inputs)),
-		zap.Int("cached", cached))
+		zap.Int("cached", cached),
+		zap.Int("vector_index_size", m.vectorIndex.Size()))
 }
 
 func containsAllTerms(item mediaItem, terms []string) bool {

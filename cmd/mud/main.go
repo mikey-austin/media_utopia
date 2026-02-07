@@ -88,14 +88,16 @@ func main() {
 		return
 	}
 
-	logger := mud.NewLogger(mud.LogConfig{
-		Level:     cfg.Server.LogLevel,
-		Format:    cfg.Server.LogFormat,
-		Output:    cfg.Server.LogOutput,
-		AddSource: cfg.Server.LogSource,
-		UTC:       cfg.Server.LogUTC,
-		Color:     cfg.Server.LogColor,
+	logFactory := mud.NewModuleLoggerFactory(mud.LogConfig{
+		Level:        cfg.Server.LogLevel,
+		ModuleLevels: cfg.Server.LogLevels,
+		Format:       cfg.Server.LogFormat,
+		Output:       cfg.Server.LogOutput,
+		AddSource:    cfg.Server.LogSource,
+		UTC:          cfg.Server.LogUTC,
+		Color:        cfg.Server.LogColor,
 	})
+	logger := logFactory.Logger()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -103,7 +105,7 @@ func main() {
 	skipEmbedded := false
 
 	if moduleOnly != "embedded_mqtt" && cfg.Modules.EmbeddedMQTT.Enabled && cfg.Server.Broker == embeddedURL {
-		if err := startEmbeddedBroker(ctx, cfg, logger, cancel); err != nil {
+		if err := startEmbeddedBroker(ctx, cfg, logFactory, cancel); err != nil {
 			logger.Error("embedded mqtt failed", zap.Error(err))
 			os.Exit(1)
 		}
@@ -160,7 +162,7 @@ func main() {
 		}
 	}
 
-	modules, err := buildModules(cfg, client, logger, moduleOnly, skipEmbedded)
+	modules, err := buildModules(cfg, client, logFactory, moduleOnly, skipEmbedded)
 	if err != nil {
 		logger.Error("failed to build modules", zap.Error(err))
 		os.Exit(1)
@@ -223,7 +225,7 @@ func applyOverrides(cfg *mud.Config, broker string, identity string, topicBase s
 	}
 }
 
-func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger, moduleOnly string, skipEmbedded bool) ([]mud.ModuleRunner, error) {
+func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.ModuleLoggerFactory, moduleOnly string, skipEmbedded bool) ([]mud.ModuleRunner, error) {
 	modules := []mud.ModuleRunner{}
 	nodeIDs := map[string]string{}
 	ensureUnique := func(nodeID string, name string) error {
@@ -260,7 +262,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "playlist"); err != nil {
 				return nil, err
 			}
-			pl, err := playlist.NewModule(logger.With(zap.String("module", "playlist")), client, playlist.Config{
+			pl, err := playlist.NewModule(logFactory.ModuleLogger("playlist"), client, playlist.Config{
 				NodeID:      nodeID,
 				TopicBase:   cfg.Server.TopicBase,
 				StoragePath: cfgItem.StoragePath,
@@ -295,7 +297,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "fs_library"); err != nil {
 				return nil, err
 			}
-			mod, err := fslibrary.NewModule(logger.With(zap.String("module", "fs_library")), client, fslibrary.Config{
+			mod, err := fslibrary.NewModule(logFactory.ModuleLogger("fs_library"), client, fslibrary.Config{
 				NodeID:            nodeID,
 				TopicBase:         cfg.Server.TopicBase,
 				Name:              cfgItem.Name,
@@ -341,7 +343,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "bridge_jellyfin_library"); err != nil {
 				return nil, err
 			}
-			jf, err := jellyfinlibrary.NewModule(logger.With(zap.String("module", "bridge_jellyfin_library")), client, jellyfinlibrary.Config{
+			jf, err := jellyfinlibrary.NewModule(logFactory.ModuleLogger("bridge_jellyfin_library"), client, jellyfinlibrary.Config{
 				NodeID:                 nodeID,
 				TopicBase:              cfg.Server.TopicBase,
 				Name:                   cfgItem.Name,
@@ -376,7 +378,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 				continue
 			}
 			if !upnplibrary.Enabled {
-				logger.Warn("bridge_upnp_library disabled at build time (missing upnp tag)")
+				logFactory.Logger().Warn("bridge_upnp_library disabled at build time (missing upnp tag)")
 				continue
 			}
 			timeout := time.Duration(cfgItem.TimeoutMS) * time.Millisecond
@@ -392,7 +394,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "bridge_upnp_library"); err != nil {
 				return nil, err
 			}
-			mod, err := upnplibrary.NewModule(logger.With(zap.String("module", "bridge_upnp_library")), client, upnplibrary.Config{
+			mod, err := upnplibrary.NewModule(logFactory.ModuleLogger("bridge_upnp_library"), client, upnplibrary.Config{
 				NodeID:                 nodeID,
 				TopicBase:              cfg.Server.TopicBase,
 				Name:                   cfgItem.Name,
@@ -433,7 +435,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "podcast"); err != nil {
 				return nil, err
 			}
-			mod, err := podcastlibrary.NewModule(logger.With(zap.String("module", "podcast")), client, podcastlibrary.Config{
+			mod, err := podcastlibrary.NewModule(logFactory.ModuleLogger("podcast"), client, podcastlibrary.Config{
 				NodeID:            nodeID,
 				TopicBase:         cfg.Server.TopicBase,
 				Name:              cfgItem.Name,
@@ -473,7 +475,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "go2rtc"); err != nil {
 				return nil, err
 			}
-			mod, err := go2rtclibrary.NewModule(logger.With(zap.String("module", "go2rtc")), client, go2rtclibrary.Config{
+			mod, err := go2rtclibrary.NewModule(logFactory.ModuleLogger("go2rtc"), client, go2rtclibrary.Config{
 				NodeID:          nodeID,
 				TopicBase:       cfg.Server.TopicBase,
 				Name:            cfgItem.Name,
@@ -511,7 +513,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "renderer_gstreamer"); err != nil {
 				return nil, err
 			}
-			mod, err := renderergstreamer.NewModule(logger.With(zap.String("module", "renderer_gstreamer")), client, renderergstreamer.Config{
+			mod, err := renderergstreamer.NewModule(logFactory.ModuleLogger("renderer_gstreamer"), client, renderergstreamer.Config{
 				NodeID:       nodeID,
 				TopicBase:    cfg.Server.TopicBase,
 				Name:         cfgItem.Name,
@@ -547,7 +549,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "renderer_kodi"); err != nil {
 				return nil, err
 			}
-			mod, err := rendererkodi.NewModule(logger.With(zap.String("module", "renderer_kodi")), client, rendererkodi.Config{
+			mod, err := rendererkodi.NewModule(logFactory.ModuleLogger("renderer_kodi"), client, rendererkodi.Config{
 				NodeID:       nodeID,
 				TopicBase:    cfg.Server.TopicBase,
 				Name:         cfgItem.Name,
@@ -584,7 +586,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "renderer_vlc"); err != nil {
 				return nil, err
 			}
-			mod, err := renderervlc.NewModule(logger.With(zap.String("module", "renderer_vlc")), client, renderervlc.Config{
+			mod, err := renderervlc.NewModule(logFactory.ModuleLogger("renderer_vlc"), client, renderervlc.Config{
 				NodeID:       nodeID,
 				TopicBase:    cfg.Server.TopicBase,
 				Name:         cfgItem.Name,
@@ -617,7 +619,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(cfgItem.Provider, "renderer_upnp"); err != nil {
 				return nil, err
 			}
-			mod, err := rendererupnp.NewModule(logger.With(zap.String("module", "renderer_upnp")), client, rendererupnp.Config{
+			mod, err := rendererupnp.NewModule(logFactory.ModuleLogger("renderer_upnp"), client, rendererupnp.Config{
 				TopicBase:         cfg.Server.TopicBase,
 				Provider:          cfgItem.Provider,
 				Namespace:         cfg.Server.Namespace,
@@ -650,7 +652,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if err := ensureUnique(nodeID, "zone_snapcast"); err != nil {
 				return nil, err
 			}
-			mod, err := zonesnapcast.NewModule(logger.With(zap.String("module", "zone_snapcast")), client, zonesnapcast.Config{
+			mod, err := zonesnapcast.NewModule(logFactory.ModuleLogger("zone_snapcast"), client, zonesnapcast.Config{
 				NodeID:    nodeID,
 				TopicBase: cfg.Server.TopicBase,
 				Name:      cfgItem.Name,
@@ -809,8 +811,9 @@ func embeddedBrokerURL(cfg mud.Config) string {
 	return embeddedmqtt.BrokerURL(listen, tlsEnabled)
 }
 
-func startEmbeddedBroker(ctx context.Context, cfg mud.Config, logger *zap.Logger, cancel context.CancelFunc) error {
-	mod, err := embeddedmqtt.NewModule(logger.With(zap.String("module", "embedded_mqtt")), embeddedmqtt.Config{
+func startEmbeddedBroker(ctx context.Context, cfg mud.Config, logFactory *mud.ModuleLoggerFactory, cancel context.CancelFunc) error {
+	logger := logFactory.Logger()
+	mod, err := embeddedmqtt.NewModule(logFactory.ModuleLogger("embedded_mqtt"), embeddedmqtt.Config{
 		Listen:         cfg.Modules.EmbeddedMQTT.Listen,
 		AllowAnonymous: cfg.Modules.EmbeddedMQTT.AllowAnonymous,
 		Username:       cfg.Modules.EmbeddedMQTT.Username,

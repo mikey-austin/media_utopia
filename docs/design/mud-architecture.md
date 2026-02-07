@@ -70,6 +70,11 @@ rpc_breaker_interval_ms = 0
 rpc_breaker_max_requests = 0
 rpc_breaker_failure_threshold = 5
 
+# Per-module log level overrides (optional)
+[server.log_levels]
+# fs_library = "debug"
+# renderer_gstreamer = "warn"
+
 [server.tls]
 ca = "/etc/mud/ca.pem"
 cert = "/etc/mud/cert.pem"
@@ -288,8 +293,58 @@ Authentication modes:
 ## Logging
 
 - Structured logging with `module` field.
-- Single logger instance shared by all modules.
+- Per-module log level overrides for targeted debugging.
 - Optional log file path to be added if needed.
+
+### Global Settings
+
+```toml
+[server]
+log_level = "info"      # default level for all modules
+log_format = "text"     # "text" or "json"
+log_output = "stdout"   # "stdout" or "stderr"
+log_source = false      # include source file location
+log_utc = true          # use UTC timestamps
+log_color = true        # colorized output (text format only)
+```
+
+### Per-Module Log Levels
+
+To debug a specific module without drowning in logs from other modules, use the
+`log_levels` table to override the default level for individual modules:
+
+```toml
+[server]
+log_level = "info"  # default
+
+[server.log_levels]
+fs_library = "debug"              # verbose logging for filesystem library
+renderer_gstreamer = "warn"       # quieter gstreamer logs
+bridge_jellyfin_library = "error" # only errors from jellyfin
+```
+
+Available log levels: `debug`, `info`, `warn`, `error`
+
+Module names match the config section names:
+
+| Module Name               | Description                    |
+|---------------------------|--------------------------------|
+| `playlist`                | Playlist server                |
+| `fs_library`              | Filesystem library             |
+| `bridge_jellyfin_library` | Jellyfin library bridge        |
+| `bridge_upnp_library`     | UPnP library bridge            |
+| `podcast`                 | Podcast/RSS library            |
+| `go2rtc`                  | go2rtc camera library          |
+| `renderer_gstreamer`      | GStreamer renderer             |
+| `renderer_kodi`           | Kodi renderer                  |
+| `renderer_vlc`            | VLC renderer                   |
+| `renderer_upnp`           | UPnP renderer bridge           |
+| `zone_snapcast`           | Snapcast zone controller       |
+| `embedded_mqtt`           | Embedded MQTT broker           |
+
+This is useful when debugging features like semantic search in `fs_library`
+where you want to see similarity scores and embedding details without the noise
+from other active modules.
 
 ## Future Extensions
 

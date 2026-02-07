@@ -297,6 +297,13 @@ func (idx *VectorIndex) Clear() {
 	idx.mu.Unlock()
 }
 
+// Size returns the number of vectors in the index.
+func (idx *VectorIndex) Size() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return len(idx.vectors)
+}
+
 // SimilarityResult represents a similarity search result.
 type SimilarityResult struct {
 	ID    string

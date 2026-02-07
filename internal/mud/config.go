@@ -20,25 +20,26 @@ type Config struct {
 
 // ServerConfig defines shared server settings.
 type ServerConfig struct {
-	Broker                     string     `toml:"broker"`
-	Identity                   string     `toml:"identity"`
-	TopicBase                  string     `toml:"topic_base"`
-	Namespace                  string     `toml:"namespace"`
-	LogLevel                   string     `toml:"log_level"`
-	LogFormat                  string     `toml:"log_format"`
-	LogOutput                  string     `toml:"log_output"`
-	LogSource                  bool       `toml:"log_source"`
-	LogUTC                     bool       `toml:"log_utc"`
-	LogColor                   bool       `toml:"log_color"`
-	Daemonize                  bool       `toml:"daemonize"`
-	ContinueOnError            bool       `toml:"continue_on_error"`
-	RPCBreakerEnabled          bool       `toml:"rpc_breaker_enabled"`
-	RPCBreakerTimeoutMS        int64      `toml:"rpc_breaker_timeout_ms"`
-	RPCBreakerIntervalMS       int64      `toml:"rpc_breaker_interval_ms"`
-	RPCBreakerMaxRequests      uint32     `toml:"rpc_breaker_max_requests"`
-	RPCBreakerFailureThreshold uint32     `toml:"rpc_breaker_failure_threshold"`
-	TLS                        TLSConfig  `toml:"tls"`
-	Auth                       AuthConfig `toml:"auth"`
+	Broker                     string            `toml:"broker"`
+	Identity                   string            `toml:"identity"`
+	TopicBase                  string            `toml:"topic_base"`
+	Namespace                  string            `toml:"namespace"`
+	LogLevel                   string            `toml:"log_level"`
+	LogLevels                  map[string]string `toml:"log_levels"`
+	LogFormat                  string            `toml:"log_format"`
+	LogOutput                  string            `toml:"log_output"`
+	LogSource                  bool              `toml:"log_source"`
+	LogUTC                     bool              `toml:"log_utc"`
+	LogColor                   bool              `toml:"log_color"`
+	Daemonize                  bool              `toml:"daemonize"`
+	ContinueOnError            bool              `toml:"continue_on_error"`
+	RPCBreakerEnabled          bool              `toml:"rpc_breaker_enabled"`
+	RPCBreakerTimeoutMS        int64             `toml:"rpc_breaker_timeout_ms"`
+	RPCBreakerIntervalMS       int64             `toml:"rpc_breaker_interval_ms"`
+	RPCBreakerMaxRequests      uint32            `toml:"rpc_breaker_max_requests"`
+	RPCBreakerFailureThreshold uint32            `toml:"rpc_breaker_failure_threshold"`
+	TLS                        TLSConfig         `toml:"tls"`
+	Auth                       AuthConfig        `toml:"auth"`
 }
 
 // TLSConfig holds TLS paths for MQTT.
