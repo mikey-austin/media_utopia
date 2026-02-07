@@ -314,6 +314,8 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.Mod
 				EmbeddingModel:    cfgItem.EmbeddingModel,
 				EmbeddingEndpoint: cfgItem.EmbeddingEndpoint,
 				EmbeddingCache:    cfgItem.EmbeddingCache,
+				EnrichEnabled:     cfgItem.EnrichEnabled,
+				DiscogsToken:      cfgItem.DiscogsToken,
 			})
 			if err != nil {
 				return nil, err

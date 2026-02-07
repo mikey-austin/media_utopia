@@ -20,8 +20,8 @@ func TestBuildModulesModuleOnlyFilter(t *testing.T) {
 	cfg.Server.Identity = "test"
 	cfg.Server.Namespace = "test"
 
-	logger := mud.NewLogger(mud.LogConfig{Level: "error"})
-	modules, err := buildModules(cfg, nil, logger, "playlist", false)
+	logFactory := mud.NewModuleLoggerFactory(mud.LogConfig{Level: "error"})
+	modules, err := buildModules(cfg, nil, logFactory, "playlist", false)
 	if err != nil {
 		t.Fatalf("buildModules: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestBuildModulesModuleOnlyFilter(t *testing.T) {
 		t.Fatalf("expected 1 module")
 	}
 
-	_, err = buildModules(cfg, nil, logger, "renderer_gstreamer", false)
+	_, err = buildModules(cfg, nil, logFactory, "renderer_gstreamer", false)
 	if err == nil {
 		t.Fatalf("expected error for filtered module")
 	}

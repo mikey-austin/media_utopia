@@ -361,7 +361,8 @@ func cosineSimilarity(a, b []float32) float32 {
 }
 
 // buildEmbedText creates searchable text from a media item.
-func buildEmbedText(item mediaItem) string {
+// If enrich is non-nil, genres, tags, year, styles, and credits are appended.
+func buildEmbedText(item mediaItem, enrich *AlbumMetadata) string {
 	parts := []string{}
 	if item.Title != "" {
 		parts = append(parts, item.Title)
@@ -375,5 +376,47 @@ func buildEmbedText(item mediaItem) string {
 	if item.Name != "" && item.Name != item.Title {
 		parts = append(parts, item.Name)
 	}
+
+	if enrich != nil {
+		if mb := enrich.MusicBrainz; mb != nil {
+			if len(mb.Genres) > 0 {
+				parts = append(parts, strings.Join(mb.Genres, ", "))
+			}
+			tags := mb.Tags
+			if len(tags) > 5 {
+				tags = tags[:5]
+			}
+			if len(tags) > 0 {
+				parts = append(parts, strings.Join(tags, ", "))
+			}
+			if mb.Year > 0 {
+				parts = append(parts, fmt.Sprintf("%d", mb.Year))
+			}
+			if mb.Label != "" {
+				parts = append(parts, mb.Label)
+			}
+		}
+		if dc := enrich.Discogs; dc != nil {
+			if len(dc.Styles) > 0 {
+				parts = append(parts, strings.Join(dc.Styles, ", "))
+			}
+			// Top 5 unique personnel names
+			seen := map[string]bool{}
+			var names []string
+			for _, credit := range dc.Credits {
+				if !seen[credit.Name] {
+					seen[credit.Name] = true
+					names = append(names, credit.Name)
+					if len(names) >= 5 {
+						break
+					}
+				}
+			}
+			if len(names) > 0 {
+				parts = append(parts, strings.Join(names, ", "))
+			}
+		}
+	}
+
 	return strings.Join(parts, " - ")
 }

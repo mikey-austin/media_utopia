@@ -89,6 +89,50 @@ Semantic Search (embedding_provider):
 When embeddings are enabled, search queries are vectorized and matched against
 item embeddings using cosine similarity, enabling fuzzy/semantic matching.
 
+Album Metadata Enrichment (enrich_enabled):
+
+When enabled, the module automatically enriches albums with metadata from
+MusicBrainz and Discogs during each rescan. Enrichment runs in a background
+goroutine and does not block the scan. Albums that already have a sidecar file
+are skipped, so API calls only happen once per album.
+
+Data sources:
+
+	MusicBrainz   Free, no API key required. Provides genres, tags, release
+	              year, release type, and record label.
+	Discogs       Optional personal access token (discogs_token) for higher
+	              rate limits. Provides styles, personnel credits, liner
+	              notes, and detailed label/catalog info.
+
+Enrichment data is stored as a JSON sidecar file named .mu_album_metadata.json
+in each album's directory. The sidecar schema includes:
+
+	{
+	  "version": 1,
+	  "fetched_at": "2026-02-07T12:00:00Z",
+	  "artist": "Pink Floyd",
+	  "album": "The Dark Side of the Moon",
+	  "musicbrainz": { "genres": [...], "tags": [...], "year": 1973, ... },
+	  "discogs": { "styles": [...], "credits": [...], "notes": "...", ... }
+	}
+
+The enrichment data feeds into both keyword search and semantic search:
+
+  - Keyword search matches against genres, tags, styles, and labels in
+    addition to the usual title/artist/album fields.
+  - Semantic search embeddings include genre, tag, year, label, style,
+    and personnel names, enabling queries like "progressive rock 1970s"
+    or "Abbey Road Studios" to match relevant albums.
+
+Negative caching: if neither API returns a match, a minimal sidecar is written
+so the album is not re-queried on every scan. Negative cache entries expire
+after 30 days, at which point the APIs are tried again.
+
+Rate limiting: MusicBrainz requests are spaced at 1.1 second intervals.
+Discogs requests are spaced at 2.5 seconds (unauthenticated) or 1.1 seconds
+(with a personal access token). HTTP 429 responses trigger a single retry
+after the Retry-After period.
+
 # Configuration Example
 
 The node_id is constructed automatically from provider, namespace, and resource:
@@ -123,6 +167,8 @@ Full configuration with all options:
 	embedding_model = "nomic-embed-text"
 	embedding_endpoint = "http://localhost:11434"
 	embedding_cache = "/var/lib/mud/library_fs/embeddings"
+	enrich_enabled = true                 # auto-enrich albums via MusicBrainz + Discogs
+	discogs_token = ""                    # optional Discogs personal access token
 
 # Commands
 
@@ -242,6 +288,12 @@ type Config struct {
 
 	// EmbeddingCache is the directory for caching computed embeddings.
 	EmbeddingCache string
+
+	// EnrichEnabled enables automatic album metadata enrichment during rescan.
+	EnrichEnabled bool
+
+	// DiscogsToken is an optional Discogs personal access token for higher rate limits.
+	DiscogsToken string
 }
 
 // cmdWork represents a command to be processed by a worker.
@@ -279,6 +331,9 @@ type Module struct {
 
 	// Deduplication
 	dupeIndex *DuplicateIndex
+
+	// Enrichment metadata keyed by "artist|album"
+	enrichMeta map[string]*AlbumMetadata
 }
 
 // libraryIndex is the in-memory index of all scanned media.
@@ -457,6 +512,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		embedCache:    embedCache,
 		vectorIndex:   NewVectorIndex(),
 		dupeIndex:     NewDuplicateIndex(),
+		enrichMeta:    make(map[string]*AlbumMetadata),
 	}, nil
 }
 
@@ -973,7 +1029,12 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 	defer m.mu.RUnlock()
 	items := make([]libraryItem, 0)
 	for _, item := range m.index.Items {
-		if !containsAllTerms(item, terms) {
+		var enrich *AlbumMetadata
+		if item.MediaType == "Audio" {
+			key := firstOr(item.Artists, "Unknown Artist") + "|" + item.Album
+			enrich = m.enrichMeta[key]
+		}
+		if !containsAllTerms(item, terms, enrich) {
 			continue
 		}
 		artURL := ""
@@ -1168,7 +1229,14 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 	cached := 0
 
 	for id, item := range items {
-		text := buildEmbedText(item)
+		var enrich *AlbumMetadata
+		if item.MediaType == "Audio" {
+			key := firstOr(item.Artists, "Unknown Artist") + "|" + item.Album
+			m.mu.RLock()
+			enrich = m.enrichMeta[key]
+			m.mu.RUnlock()
+		}
+		text := buildEmbedText(item, enrich)
 		if text == "" {
 			m.log.Debug("skipping item with empty embed text", zap.String("id", id))
 			continue
@@ -1252,10 +1320,21 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 		zap.Int("vector_index_size", m.vectorIndex.Size()))
 }
 
-func containsAllTerms(item mediaItem, terms []string) bool {
-	searchText := strings.ToLower(strings.Join([]string{
-		item.Name, item.Title, item.Album, strings.Join(item.Artists, " "),
-	}, " "))
+func containsAllTerms(item mediaItem, terms []string, enrich *AlbumMetadata) bool {
+	parts := []string{item.Name, item.Title, item.Album, strings.Join(item.Artists, " ")}
+	if enrich != nil {
+		if mb := enrich.MusicBrainz; mb != nil {
+			parts = append(parts, strings.Join(mb.Genres, " "))
+			parts = append(parts, strings.Join(mb.Tags, " "))
+			if mb.Label != "" {
+				parts = append(parts, mb.Label)
+			}
+		}
+		if dc := enrich.Discogs; dc != nil {
+			parts = append(parts, strings.Join(dc.Styles, " "))
+		}
+	}
+	searchText := strings.ToLower(strings.Join(parts, " "))
 	for _, term := range terms {
 		if !strings.Contains(searchText, term) {
 			return false
@@ -1409,13 +1488,48 @@ func (m *Module) scan() error {
 		}
 	}
 
+	// Load sidecar enrichment data and collect enrichment targets
+	enrichMeta := make(map[string]*AlbumMetadata)
+	var enrichTargets []enrichTarget
+	for artistName, artist := range next.Audio {
+		for albumName, album := range artist.Albums {
+			if len(album.Tracks) == 0 {
+				continue
+			}
+			item, ok := next.Items[album.Tracks[0]]
+			if !ok {
+				continue
+			}
+			dir := filepath.Dir(item.Path)
+			if meta, err := readSidecar(dir); err == nil {
+				if sidecarNeedsRefresh(meta) {
+					enrichTargets = append(enrichTargets, enrichTarget{
+						Artist: artistName, Album: albumName, Dir: dir,
+					})
+				} else {
+					enrichMeta[artistName+"|"+albumName] = meta
+				}
+			} else if m.config.EnrichEnabled && !sidecarExists(dir) {
+				enrichTargets = append(enrichTargets, enrichTarget{
+					Artist: artistName, Album: albumName, Dir: dir,
+				})
+			}
+		}
+	}
+
 	m.mu.Lock()
 	m.index = next
+	m.enrichMeta = enrichMeta
 	m.mu.Unlock()
 
 	// Build embeddings asynchronously
 	if m.embedProvider != nil {
 		go m.buildEmbeddings(next.Items)
+	}
+
+	// Launch enrichment in background
+	if m.config.EnrichEnabled && len(enrichTargets) > 0 {
+		go m.enrichAlbums(context.Background(), enrichTargets)
 	}
 
 	if err := m.saveIndex(); err != nil {

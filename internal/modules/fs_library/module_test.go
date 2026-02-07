@@ -601,14 +601,14 @@ func TestBuildEmbedText(t *testing.T) {
 		Album:   "Album Name",
 		Name:    "Song Title",
 	}
-	text := buildEmbedText(item)
+	text := buildEmbedText(item, nil)
 	if text != "Song Title - Artist Name - Album Name" {
 		t.Errorf("buildEmbedText() = %q, want 'Song Title - Artist Name - Album Name'", text)
 	}
 
 	// Different name should be included
 	item.Name = "Different Name"
-	text = buildEmbedText(item)
+	text = buildEmbedText(item, nil)
 	if text != "Song Title - Artist Name - Album Name - Different Name" {
 		t.Errorf("buildEmbedText() = %q", text)
 	}
