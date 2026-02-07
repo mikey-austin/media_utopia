@@ -920,6 +920,35 @@ func (s Service) LibrarySearch(ctx context.Context, selector string, query strin
 	return RawResult{Data: json.RawMessage(reply.Body)}, nil
 }
 
+// LibraryRescan sends library.rescan.
+func (s Service) LibraryRescan(ctx context.Context, selector string, async bool) (LibraryRescanResult, error) {
+	library, err := s.Resolver.ResolveLibrary(ctx, selector)
+	if err != nil {
+		return LibraryRescanResult{}, err
+	}
+	body := struct {
+		Async bool `json:"async"`
+	}{Async: async}
+	cmd, err := mu.NewCommand("library.rescan", body)
+	if err != nil {
+		return LibraryRescanResult{}, WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, library.NodeID, cmd)
+	if err != nil {
+		return LibraryRescanResult{}, WrapError(ExitRuntime, "publish command", err)
+	}
+	if reply.Err != nil {
+		return LibraryRescanResult{}, ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	var result LibraryRescanResult
+	if err := json.Unmarshal(reply.Body, &result); err != nil {
+		return LibraryRescanResult{}, WrapError(ExitRuntime, "decode rescan reply", err)
+	}
+	result.LibraryID = library.NodeID
+	return result, nil
+}
+
 // LibraryResolve sends library.resolve.
 func (s Service) LibraryResolve(ctx context.Context, selector string, itemID string) (LibraryResolveResult, error) {
 	if strings.HasPrefix(strings.TrimSpace(itemID), "lib:") {

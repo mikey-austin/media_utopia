@@ -69,6 +69,14 @@ type LibraryResolveResult struct {
 	Item mu.LibraryResolveReply
 }
 
+// LibraryRescanResult holds the result of a library rescan.
+type LibraryRescanResult struct {
+	LibraryID string `json:"-"`
+	Status    string `json:"status"`
+	Message   string `json:"message,omitempty"`
+	Items     int    `json:"items,omitempty"`
+}
+
 // RawResult holds arbitrary JSON data for output.
 type RawResult struct {
 	Data any

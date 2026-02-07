@@ -21,6 +21,7 @@ func libraryCommand() *cobra.Command {
 	cmd.AddCommand(libBrowseCommand())
 	cmd.AddCommand(libSearchCommand())
 	cmd.AddCommand(libResolveCommand())
+	cmd.AddCommand(libRescanCommand())
 
 	return cmd
 }
@@ -189,6 +190,47 @@ func libResolveCommand() *cobra.Command {
 			return app.printer.Print(result)
 		},
 	}
+}
+
+func libRescanCommand() *cobra.Command {
+	var async bool
+
+	cmd := &cobra.Command{
+		Use:   "rescan [library]",
+		Short: "Rescan library for new files",
+		Long: `Trigger a library rescan to index new, modified, or deleted files.
+
+By default runs synchronously and reports the number of items found.
+Use --async to start the scan in the background and return immediately.
+
+This command is only supported by libraries that implement the rescan
+capability (e.g., fs_library). Other libraries may return an error.
+
+Examples:
+  mu lib rescan                    # rescan default library
+  mu lib rescan filesystem         # rescan filesystem library
+  mu lib rescan --async            # start rescan in background
+`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			selector := ""
+			if len(args) > 0 {
+				selector = args[0]
+			}
+			result, err := app.service.LibraryRescan(ctx, selector, async)
+			if err != nil {
+				return err
+			}
+			return app.printer.Print(result)
+		},
+	}
+
+	cmd.Flags().BoolVar(&async, "async", false, "run rescan in background")
+	return cmd
 }
 
 func parseLibraryTypes(value string) ([]string, error) {

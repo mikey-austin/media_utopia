@@ -64,6 +64,8 @@ func renderHuman(v any) (string, error) {
 		return renderSuggestions(data)
 	case core.LibraryResolveResult:
 		return renderLibraryResolve(data)
+	case core.LibraryRescanResult:
+		return renderLibraryRescan(data)
 	case LibraryItemsOutput:
 		return renderLibraryItemsOutput(data)
 	case core.RawResult:
@@ -304,6 +306,13 @@ func renderLibraryResolve(result core.LibraryResolveResult) (string, error) {
 		rows = append(rows, []string{src.URL, src.Mime})
 	}
 	return renderTable([]string{"URL", "MIME"}, rows)
+}
+
+func renderLibraryRescan(result core.LibraryRescanResult) (string, error) {
+	if result.Status == "started" {
+		return fmt.Sprintf("rescan started: %s\n", result.Message), nil
+	}
+	return fmt.Sprintf("rescan complete: %d items indexed\n", result.Items), nil
 }
 
 func renderRaw(result core.RawResult) (string, error) {

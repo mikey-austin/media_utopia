@@ -213,7 +213,7 @@ func (m *Module) Run(ctx context.Context) error {
 	const numWorkers = 4
 	var wg sync.WaitGroup
 	wg.Add(numWorkers)
-	for i := 0; i < numWorkers; i++ {
+	for range numWorkers {
 		go func() {
 			defer wg.Done()
 			m.commandWorker(ctx)
