@@ -285,6 +285,9 @@ class MudBridge:
             self._notify_renderer_listeners(node_id)
         elif kind == "library":
             self._libraries[node_id] = payload
+            # Invalidate cached metadata from this library so artwork URLs
+            # are refreshed (the library's HTTP port may have changed).
+            self._invalidate_library_cache(node_id)
         elif kind == "playlist":
             self._playlist_servers[node_id] = payload
             await self._publish_playlist_server_availability(node_id, "online")
@@ -301,6 +304,27 @@ class MudBridge:
         elif kind == "zone":
             self._zones[node_id] = payload
             self._notify_zone_listeners(node_id)
+
+    def _invalidate_library_cache(self, library_id: str) -> None:
+        """Remove cached metadata for items belonging to a library.
+
+        Called when a library re-announces presence (e.g. after restart),
+        since its HTTP port may have changed making cached artwork URLs stale.
+        """
+        prefix = f"lib:{library_id}:"
+        stale = [k for k in self._metadata_cache if k.startswith(prefix)]
+        for k in stale:
+            del self._metadata_cache[k]
+        # Also clear failure tracking so items are retried immediately
+        stale_failures = [k for k in self._metadata_failures if k.startswith(prefix)]
+        for k in stale_failures:
+            del self._metadata_failures[k]
+        if stale:
+            _LOGGER.debug(
+                "invalidated %d cached metadata entries for library %s",
+                len(stale),
+                library_id,
+            )
 
     async def _on_state(self, msg) -> None:
         try:
