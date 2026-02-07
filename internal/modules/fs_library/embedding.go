@@ -415,6 +415,64 @@ func buildEmbedText(item mediaItem, enrich *AlbumMetadata) string {
 			if len(names) > 0 {
 				parts = append(parts, strings.Join(names, ", "))
 			}
+			// Top 3 unique release credits (producers, engineers)
+			seen2 := map[string]bool{}
+			var rcNames []string
+			for _, credit := range dc.ReleaseCredits {
+				if !seen2[credit.Name] {
+					seen2[credit.Name] = true
+					rcNames = append(rcNames, credit.Name)
+					if len(rcNames) >= 3 {
+						break
+					}
+				}
+			}
+			if len(rcNames) > 0 {
+				parts = append(parts, strings.Join(rcNames, ", "))
+			}
+		}
+		// Artist info
+		if ai := enrich.ArtistInfo; ai != nil {
+			if ai.Type != "" {
+				parts = append(parts, ai.Type)
+			}
+			if ai.Origin != "" {
+				parts = append(parts, ai.Origin)
+			}
+			if ai.ActiveBegin != "" {
+				parts = append(parts, ai.ActiveBegin)
+			}
+			genres := ai.Genres
+			if len(genres) > 5 {
+				genres = genres[:5]
+			}
+			if len(genres) > 0 {
+				parts = append(parts, strings.Join(genres, ", "))
+			}
+			if ai.Biography != "" {
+				bio := ai.Biography
+				if len(bio) > 200 {
+					bio = bio[:200]
+				}
+				parts = append(parts, bio)
+			}
+			members := ai.Members
+			if len(members) > 5 {
+				members = members[:5]
+			}
+			if len(members) > 0 {
+				parts = append(parts, strings.Join(members, ", "))
+			}
+		}
+		// Album description
+		if desc := enrich.Description; desc != nil {
+			if desc.WikipediaSummary != "" {
+				summary := desc.WikipediaSummary
+				if len(summary) > 200 {
+					summary = summary[:200]
+				}
+				parts = append(parts, summary)
+			}
 		}
 	}
 

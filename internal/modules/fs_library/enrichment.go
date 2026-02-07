@@ -17,15 +17,38 @@ import (
 )
 
 const sidecarFileName = ".mu_album_metadata.json"
+const currentSidecarVersion = 2
 
 // AlbumMetadata is the enrichment sidecar schema.
 type AlbumMetadata struct {
-	Version     int              `json:"version"`
-	FetchedAt   time.Time        `json:"fetched_at"`
-	Artist      string           `json:"artist"`
-	Album       string           `json:"album"`
-	MusicBrainz *MBMetadata      `json:"musicbrainz"`
-	Discogs     *DiscogsMetadata `json:"discogs"`
+	Version     int               `json:"version"`
+	FetchedAt   time.Time         `json:"fetched_at"`
+	Artist      string            `json:"artist"`
+	Album       string            `json:"album"`
+	MusicBrainz *MBMetadata       `json:"musicbrainz"`
+	Discogs     *DiscogsMetadata  `json:"discogs"`
+	ArtistInfo  *ArtistInfo       `json:"artist_info,omitempty"`
+	Description *AlbumDescription `json:"description,omitempty"`
+}
+
+// ArtistInfo holds enriched artist metadata from MusicBrainz and Discogs.
+type ArtistInfo struct {
+	Name           string   `json:"name"`
+	Type           string   `json:"type,omitempty"`
+	Origin         string   `json:"origin,omitempty"`
+	ActiveBegin    string   `json:"active_begin,omitempty"`
+	ActiveEnd      string   `json:"active_end,omitempty"`
+	Disambiguation string   `json:"disambiguation,omitempty"`
+	Biography      string   `json:"biography,omitempty"`
+	Members        []string `json:"members,omitempty"`
+	Genres         []string `json:"genres,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+}
+
+// AlbumDescription holds album-level descriptive text.
+type AlbumDescription struct {
+	MBAnnotation     string `json:"mb_annotation,omitempty"`
+	WikipediaSummary string `json:"wikipedia_summary,omitempty"`
 }
 
 // MBMetadata holds data fetched from MusicBrainz.
@@ -36,15 +59,22 @@ type MBMetadata struct {
 	Year           int      `json:"year,omitempty"`
 	ReleaseType    string   `json:"release_type,omitempty"`
 	Label          string   `json:"label,omitempty"`
+	Annotation     string   `json:"annotation,omitempty"`
+	WikipediaURL   string   `json:"wikipedia_url,omitempty"`
+	ArtistIDs      []string `json:"artist_ids,omitempty"`
 }
 
 // DiscogsMetadata holds data fetched from Discogs.
 type DiscogsMetadata struct {
-	MasterID    int             `json:"master_id,omitempty"`
-	Styles      []string        `json:"styles,omitempty"`
-	Credits     []DiscogsCredit `json:"credits,omitempty"`
-	Notes       string          `json:"notes,omitempty"`
-	LabelDetail string          `json:"label_detail,omitempty"`
+	MasterID       int             `json:"master_id,omitempty"`
+	Styles         []string        `json:"styles,omitempty"`
+	Credits        []DiscogsCredit `json:"credits,omitempty"`
+	Notes          string          `json:"notes,omitempty"`
+	LabelDetail    string          `json:"label_detail,omitempty"`
+	MainReleaseID  int             `json:"main_release_id,omitempty"`
+	ReleaseNotes   string          `json:"release_notes,omitempty"`
+	ReleaseCredits []DiscogsCredit `json:"release_credits,omitempty"`
+	ArtistID       int             `json:"artist_id,omitempty"`
 }
 
 // DiscogsCredit represents a personnel credit from Discogs.
@@ -110,14 +140,57 @@ type mbSearchResponse struct {
 }
 
 type mbReleaseGroup struct {
-	ID             string      `json:"id"`
-	Title          string      `json:"title"`
-	PrimaryType    string      `json:"primary-type"`
-	Score          int         `json:"score"`
-	Genres         []mbGenre   `json:"genres"`
-	Tags           []mbTag     `json:"tags"`
-	Releases       []mbRelease `json:"releases"`
-	FirstRelease   string      `json:"first-release-date"`
+	ID             string           `json:"id"`
+	Title          string           `json:"title"`
+	PrimaryType    string           `json:"primary-type"`
+	Score          int              `json:"score"`
+	Genres         []mbGenre        `json:"genres"`
+	Tags           []mbTag          `json:"tags"`
+	Releases       []mbRelease      `json:"releases"`
+	FirstRelease   string           `json:"first-release-date"`
+	Annotation     string           `json:"annotation"`
+	Relations      []mbRelation     `json:"relations"`
+	ArtistCredit   []mbArtistCredit `json:"artist-credit"`
+}
+
+type mbRelation struct {
+	Type string   `json:"type"`
+	URL  mbRelURL `json:"url"`
+}
+
+type mbRelURL struct {
+	Resource string `json:"resource"`
+}
+
+type mbArtistCredit struct {
+	Artist mbArtistRef `json:"artist"`
+}
+
+type mbArtistRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type mbArtistResponse struct {
+	ID             string       `json:"id"`
+	Name           string       `json:"name"`
+	Type           string       `json:"type"`
+	Disambiguation string       `json:"disambiguation"`
+	Area           mbArea       `json:"area"`
+	LifeSpan       mbLifeSpan   `json:"life-span"`
+	Genres         []mbGenre    `json:"genres"`
+	Tags           []mbTag      `json:"tags"`
+	Relations      []mbRelation `json:"relations"`
+}
+
+type mbArea struct {
+	Name string `json:"name"`
+}
+
+type mbLifeSpan struct {
+	Begin string `json:"begin"`
+	End   string `json:"end"`
+	Ended bool   `json:"ended"`
 }
 
 type mbGenre struct {
@@ -195,7 +268,7 @@ func (c *mbClient) fetchReleaseGroup(ctx context.Context, id string) (*MBMetadat
 		return nil, err
 	}
 
-	u := fmt.Sprintf("https://musicbrainz.org/ws/2/release-group/%s?inc=tags+genres+releases&fmt=json", url.PathEscape(id))
+	u := fmt.Sprintf("https://musicbrainz.org/ws/2/release-group/%s?inc=tags+genres+releases+annotation+url-rels+artist-credits&fmt=json", url.PathEscape(id))
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
@@ -257,6 +330,30 @@ func (c *mbClient) fetchReleaseGroup(ctx context.Context, id string) (*MBMetadat
 		}
 		if meta.Label != "" {
 			break
+		}
+	}
+
+	// Extract annotation (cap at 2000 chars)
+	if rg.Annotation != "" {
+		ann := rg.Annotation
+		if len(ann) > 2000 {
+			ann = ann[:2000]
+		}
+		meta.Annotation = ann
+	}
+
+	// Extract Wikipedia URL from relations
+	for _, rel := range rg.Relations {
+		if rel.Type == "wikipedia" && rel.URL.Resource != "" {
+			meta.WikipediaURL = rel.URL.Resource
+			break
+		}
+	}
+
+	// Extract artist IDs from artist credits
+	for _, ac := range rg.ArtistCredit {
+		if ac.Artist.ID != "" {
+			meta.ArtistIDs = append(meta.ArtistIDs, ac.Artist.ID)
 		}
 	}
 
@@ -325,17 +422,44 @@ type discogsSearchResult struct {
 }
 
 type discogsMasterResponse struct {
-	ID      int              `json:"id"`
-	Styles  []string         `json:"styles"`
-	Notes   string           `json:"notes"`
-	Artists []discogsArtist  `json:"artists"`
-	Labels  []discogsLabel   `json:"labels"`
-	Tracklist []discogsTrack `json:"tracklist"`
+	ID          int              `json:"id"`
+	MainRelease int              `json:"main_release"`
+	Styles      []string         `json:"styles"`
+	Notes       string           `json:"notes"`
+	Artists     []discogsArtist  `json:"artists"`
+	Labels      []discogsLabel   `json:"labels"`
+	Tracklist   []discogsTrack   `json:"tracklist"`
 }
 
 type discogsArtist struct {
+	ID   int    `json:"id"`
 	Name string `json:"name"`
 	Role string `json:"role"`
+}
+
+type discogsReleaseResponse struct {
+	ID           int                 `json:"id"`
+	Notes        string              `json:"notes"`
+	ExtraArtists []discogsExtraArtist `json:"extraartists"`
+}
+
+type discogsArtistResponse struct {
+	ID       int             `json:"id"`
+	Name     string          `json:"name"`
+	RealName string          `json:"realname"`
+	Profile  string          `json:"profile"`
+	Members  []discogsMember `json:"members"`
+}
+
+type discogsMember struct {
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+}
+
+type wikipediaSummary struct {
+	Title   string `json:"title"`
+	Extract string `json:"extract"`
 }
 
 type discogsLabel struct {
@@ -439,9 +563,15 @@ func (c *discogsClient) fetchMaster(ctx context.Context, masterID int) (*Discogs
 	}
 
 	meta := &DiscogsMetadata{
-		MasterID: master.ID,
-		Styles:   master.Styles,
-		Notes:    master.Notes,
+		MasterID:      master.ID,
+		MainReleaseID: master.MainRelease,
+		Styles:        master.Styles,
+		Notes:         master.Notes,
+	}
+
+	// Capture first artist ID
+	if len(master.Artists) > 0 && master.Artists[0].ID > 0 {
+		meta.ArtistID = master.Artists[0].ID
 	}
 
 	// Extract credits from tracklist extra artists
@@ -497,6 +627,186 @@ func (c *discogsClient) doWithRetry(ctx context.Context, req *http.Request) (*ht
 	return resp, nil
 }
 
+// fetchArtist fetches artist details from MusicBrainz.
+func (c *mbClient) fetchArtist(ctx context.Context, artistID string) (*ArtistInfo, string, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, "", err
+	}
+
+	u := fmt.Sprintf("https://musicbrainz.org/ws/2/artist/%s?inc=tags+genres+url-rels&fmt=json", url.PathEscape(artistID))
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("User-Agent", "MediaUtopia/1.0 (https://github.com/mikey-austin/media_utopia)")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.doWithRetry(ctx, req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("musicbrainz artist: status %d", resp.StatusCode)
+	}
+
+	var ar mbArtistResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&ar); err != nil {
+		return nil, "", fmt.Errorf("musicbrainz artist decode: %w", err)
+	}
+
+	info := &ArtistInfo{
+		Name:           ar.Name,
+		Type:           ar.Type,
+		Origin:         ar.Area.Name,
+		ActiveBegin:    ar.LifeSpan.Begin,
+		ActiveEnd:      ar.LifeSpan.End,
+		Disambiguation: ar.Disambiguation,
+	}
+
+	// Top 10 genres
+	for i, g := range ar.Genres {
+		if i >= 10 || g.Name == "" {
+			break
+		}
+		info.Genres = append(info.Genres, g.Name)
+	}
+
+	// Top 10 tags
+	for i, t := range ar.Tags {
+		if i >= 10 || t.Name == "" {
+			break
+		}
+		info.Tags = append(info.Tags, t.Name)
+	}
+
+	// Extract Wikipedia URL from relations
+	var wikiURL string
+	for _, rel := range ar.Relations {
+		if rel.Type == "wikipedia" && rel.URL.Resource != "" {
+			wikiURL = rel.URL.Resource
+			break
+		}
+	}
+
+	return info, wikiURL, nil
+}
+
+// fetchRelease fetches a Discogs release for fuller notes and credits.
+func (c *discogsClient) fetchRelease(ctx context.Context, releaseID int) (string, []DiscogsCredit, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return "", nil, err
+	}
+
+	u := fmt.Sprintf("https://api.discogs.com/releases/%d", releaseID)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	c.setAuth(req)
+
+	resp, err := c.doWithRetry(ctx, req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("discogs release: status %d", resp.StatusCode)
+	}
+
+	var release discogsReleaseResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&release); err != nil {
+		return "", nil, fmt.Errorf("discogs release decode: %w", err)
+	}
+
+	var credits []DiscogsCredit
+	seen := map[string]bool{}
+	for _, ea := range release.ExtraArtists {
+		key := ea.Name + "|" + ea.Role
+		if !seen[key] && ea.Name != "" {
+			seen[key] = true
+			credits = append(credits, DiscogsCredit{Name: ea.Name, Role: ea.Role})
+		}
+	}
+
+	return release.Notes, credits, nil
+}
+
+// fetchArtist fetches artist details from Discogs.
+func (c *discogsClient) fetchArtist(ctx context.Context, artistID int) (*discogsArtistResponse, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
+	u := fmt.Sprintf("https://api.discogs.com/artists/%d", artistID)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setAuth(req)
+
+	resp, err := c.doWithRetry(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("discogs artist: status %d", resp.StatusCode)
+	}
+
+	var artist discogsArtistResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&artist); err != nil {
+		return nil, fmt.Errorf("discogs artist decode: %w", err)
+	}
+
+	return &artist, nil
+}
+
+// fetchWikipediaSummary fetches a page summary from Wikipedia.
+func fetchWikipediaSummary(ctx context.Context, client *http.Client, wikiURL string) (string, error) {
+	parsed, err := url.Parse(wikiURL)
+	if err != nil {
+		return "", err
+	}
+	// Extract page title from URL path (last segment)
+	title := strings.TrimPrefix(parsed.Path, "/wiki/")
+	if title == "" {
+		return "", fmt.Errorf("no wiki title in URL: %s", wikiURL)
+	}
+
+	u := fmt.Sprintf("https://en.wikipedia.org/api/rest_v1/page/summary/%s", url.PathEscape(title))
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "MediaUtopia/1.0")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("wikipedia summary: status %d", resp.StatusCode)
+	}
+
+	var summary wikipediaSummary
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&summary); err != nil {
+		return "", fmt.Errorf("wikipedia summary decode: %w", err)
+	}
+
+	extract := summary.Extract
+	if len(extract) > 1000 {
+		extract = extract[:1000]
+	}
+	return extract, nil
+}
+
 // Sidecar I/O
 
 func sidecarPath(dir string) string {
@@ -528,12 +838,22 @@ func sidecarExists(dir string) bool {
 	return err == nil
 }
 
-// sidecarNeedsRefresh returns true if the sidecar is a negative cache entry older than 30 days.
+// sidecarNeedsRefresh returns true if the sidecar version is outdated or
+// it is a negative cache entry older than 30 days.
 func sidecarNeedsRefresh(meta *AlbumMetadata) bool {
-	if meta.MusicBrainz != nil || meta.Discogs != nil {
-		return false
+	if meta.Version < currentSidecarVersion {
+		return true
 	}
-	return time.Since(meta.FetchedAt) > 30*24*time.Hour
+	if meta.MusicBrainz == nil && meta.Discogs == nil {
+		return time.Since(meta.FetchedAt) > 30*24*time.Hour
+	}
+	return false
+}
+
+// artistCacheEntry caches artist data within an enrichment run.
+type artistCacheEntry struct {
+	Info    *ArtistInfo
+	WikiURL string
 }
 
 // enrichAlbums queries MusicBrainz and Discogs for each target, writes sidecars,
@@ -547,6 +867,13 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 	dc := newDiscogsClient(m.config.DiscogsToken)
 	defer dc.Close()
 
+	// Artist caches to avoid re-fetching for artists with multiple albums
+	mbArtistCache := map[string]*artistCacheEntry{}
+	dcArtistCache := map[int]*artistCacheEntry{}
+
+	// Shared HTTP client for Wikipedia requests
+	wikiClient := &http.Client{Timeout: 15 * time.Second}
+
 	enriched := 0
 	for _, t := range targets {
 		if ctx.Err() != nil {
@@ -554,13 +881,13 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 		}
 
 		meta := &AlbumMetadata{
-			Version:   1,
+			Version:   currentSidecarVersion,
 			FetchedAt: time.Now().UTC(),
 			Artist:    t.Artist,
 			Album:     t.Album,
 		}
 
-		// Query MusicBrainz
+		// 1. Query MusicBrainz release-group
 		mbMeta, err := mb.searchRelease(ctx, t.Artist, t.Album)
 		if err != nil {
 			m.log.Debug("musicbrainz query failed",
@@ -571,7 +898,7 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 			meta.MusicBrainz = mbMeta
 		}
 
-		// Query Discogs
+		// 2. Query Discogs master
 		dcMeta, err := dc.searchRelease(ctx, t.Artist, t.Album)
 		if err != nil {
 			m.log.Debug("discogs query failed",
@@ -581,6 +908,129 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 		} else {
 			meta.Discogs = dcMeta
 		}
+
+		// 3. Discogs: fetch main release for fuller notes + credits
+		if meta.Discogs != nil && meta.Discogs.MainReleaseID > 0 {
+			notes, credits, err := dc.fetchRelease(ctx, meta.Discogs.MainReleaseID)
+			if err != nil {
+				m.log.Debug("discogs release fetch failed",
+					zap.Int("release_id", meta.Discogs.MainReleaseID),
+					zap.Error(err))
+			} else {
+				meta.Discogs.ReleaseNotes = notes
+				meta.Discogs.ReleaseCredits = credits
+			}
+		}
+
+		// 4. Fetch artist info (with caching)
+		var artistInfo *ArtistInfo
+		var artistWikiURL string
+
+		// 4a. MusicBrainz artist
+		if meta.MusicBrainz != nil && len(meta.MusicBrainz.ArtistIDs) > 0 {
+			mbArtistID := meta.MusicBrainz.ArtistIDs[0]
+			if cached, ok := mbArtistCache[mbArtistID]; ok {
+				artistInfo = cached.Info
+				artistWikiURL = cached.WikiURL
+			} else {
+				info, wikiURL, err := mb.fetchArtist(ctx, mbArtistID)
+				if err != nil {
+					m.log.Debug("musicbrainz artist fetch failed",
+						zap.String("artist_id", mbArtistID),
+						zap.Error(err))
+				} else {
+					artistInfo = info
+					artistWikiURL = wikiURL
+				}
+				mbArtistCache[mbArtistID] = &artistCacheEntry{Info: artistInfo, WikiURL: artistWikiURL}
+			}
+		}
+
+		// 4b. Discogs artist — biography and members
+		if meta.Discogs != nil && meta.Discogs.ArtistID > 0 {
+			dcArtistID := meta.Discogs.ArtistID
+			if cached, ok := dcArtistCache[dcArtistID]; ok {
+				if artistInfo == nil {
+					artistInfo = cached.Info
+				} else {
+					// Merge Discogs data into existing MB artist info
+					if cached.Info != nil {
+						artistInfo.Biography = cached.Info.Biography
+						artistInfo.Members = cached.Info.Members
+					}
+				}
+			} else {
+				dcArtResp, err := dc.fetchArtist(ctx, dcArtistID)
+				if err != nil {
+					m.log.Debug("discogs artist fetch failed",
+						zap.Int("artist_id", dcArtistID),
+						zap.Error(err))
+					dcArtistCache[dcArtistID] = &artistCacheEntry{}
+				} else {
+					dcInfo := &ArtistInfo{
+						Name:      dcArtResp.Name,
+						Biography: dcArtResp.Profile,
+					}
+					for _, member := range dcArtResp.Members {
+						if member.Name != "" {
+							dcInfo.Members = append(dcInfo.Members, member.Name)
+						}
+					}
+					dcArtistCache[dcArtistID] = &artistCacheEntry{Info: dcInfo}
+
+					if artistInfo == nil {
+						artistInfo = dcInfo
+					} else {
+						artistInfo.Biography = dcArtResp.Profile
+						for _, member := range dcArtResp.Members {
+							if member.Name != "" {
+								artistInfo.Members = append(artistInfo.Members, member.Name)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// 5. Wikipedia summaries
+		var albumWikiSummary string
+
+		// 5a. Album Wikipedia (from MB release-group url-rels)
+		if meta.MusicBrainz != nil && meta.MusicBrainz.WikipediaURL != "" {
+			summary, err := fetchWikipediaSummary(ctx, wikiClient, meta.MusicBrainz.WikipediaURL)
+			if err != nil {
+				m.log.Debug("album wikipedia fetch failed",
+					zap.String("url", meta.MusicBrainz.WikipediaURL),
+					zap.Error(err))
+			} else {
+				albumWikiSummary = summary
+			}
+		}
+
+		// 5b. Artist Wikipedia (fallback if Discogs biography empty)
+		if artistInfo != nil && artistInfo.Biography == "" && artistWikiURL != "" {
+			summary, err := fetchWikipediaSummary(ctx, wikiClient, artistWikiURL)
+			if err != nil {
+				m.log.Debug("artist wikipedia fetch failed",
+					zap.String("url", artistWikiURL),
+					zap.Error(err))
+			} else {
+				artistInfo.Biography = summary
+			}
+		}
+
+		// 6. Build AlbumDescription
+		if (meta.MusicBrainz != nil && meta.MusicBrainz.Annotation != "") || albumWikiSummary != "" {
+			meta.Description = &AlbumDescription{
+				WikipediaSummary: albumWikiSummary,
+			}
+			if meta.MusicBrainz != nil {
+				meta.Description.MBAnnotation = meta.MusicBrainz.Annotation
+			}
+		}
+
+		// Set artist info
+		meta.ArtistInfo = artistInfo
 
 		// Write sidecar (even if both nil, as negative cache)
 		if err := writeSidecar(t.Dir, meta); err != nil {
