@@ -44,7 +44,7 @@ const styles = css`
     flex-shrink: 0;
   }
 
-  .pane-title { font-size: 22px; font-weight: 500; flex: 1; }
+  .pane-title { font-size: 16px; font-weight: 500; flex: 1; }
 
 
   .renderer-select {
@@ -53,7 +53,7 @@ const styles = css`
     border: 1px solid var(--mu-border);
     border-radius: 4px;
     padding: 6px 8px;
-    font-size: 16px;
+    font-size: 14px;
     max-width: 160px;
   }
 
@@ -98,14 +98,14 @@ const styles = css`
   .now-playing-info { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
 
   .now-playing-title {
-    font-size: 20px;
+    font-size: 16px;
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .now-playing-artist { font-size: 16px; color: var(--mu-secondary); }
+  .now-playing-artist { font-size: 14px; color: var(--mu-secondary); }
 
   .transport {
     display: flex;
@@ -209,7 +209,7 @@ const styles = css`
   .queue-item-info, .browser-item-info { flex: 1; min-width: 0; overflow: hidden; }
 
   .queue-item-title, .browser-item-title {
-    font-size: 16px;
+    font-size: 14px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -217,7 +217,7 @@ const styles = css`
   }
 
   .queue-item-artist, .browser-item-subtitle {
-    font-size: 14px;
+    font-size: 12px;
     color: var(--mu-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -349,7 +349,7 @@ const styles = css`
   }
 
   .zone-item-name {
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 500;
     color: var(--primary-text-color);
   }
@@ -1152,6 +1152,22 @@ class MuPanel extends LitElement {
     if (!this.selectedRenderer || !item.itemId) return;
     const libId = this.browserPath[0]?.id;
     if (!libId) return;
+
+    if (item.isContainer) {
+      // Containers (albums, etc.) can't be resolved directly — browse to get children
+      const r = await this._callWS('mu/library_browse', {
+        library_id: libId, container_id: item.itemId, start: 0, count: 10000
+      });
+      const children = (r?.items || [])
+        .filter(child => child.itemId && !child.isContainer && !child.isLibrary)
+        .map(child => `lib:${libId}:${child.itemId}`);
+      if (!children.length) { this._showToast('No playable items'); return; }
+      await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
+      await this._loadQueue();
+      this._showToast(mode === 'replace' ? `Playing (${children.length})` : mode === 'next' ? `Next (${children.length})` : `Added (${children.length})`);
+      return;
+    }
+
     await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: [`lib:${libId}:${item.itemId}`] });
     await this._loadQueue();
     this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');

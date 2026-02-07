@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -71,6 +72,9 @@ async def _register_panel(hass: HomeAssistant) -> None:
     ])
     
     # Register the custom panel in sidebar using direct import
+    # Compute content hash for cache busting
+    panel_js = WWW_DIR / "mu-panel.js"
+    js_hash = hashlib.md5(panel_js.read_bytes()).hexdigest()[:8]
     frontend.async_register_built_in_panel(
         hass,
         component_name="custom",
@@ -80,7 +84,7 @@ async def _register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "mu-panel",
-                "module_url": "/mu-panel-static/mu-panel.js",
+                "module_url": f"/mu-panel-static/mu-panel.js?v={js_hash}",
             }
         },
         require_admin=False,
