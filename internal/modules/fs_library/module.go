@@ -681,6 +681,11 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 		"mediaType": item.MediaType,
 	}
 
+	// Add artwork URL for audio tracks
+	if artURL := m.getItemArtworkURL(item); artURL != "" {
+		metadata["artworkUrl"] = artURL
+	}
+
 	// If metadataOnly, skip source URL generation
 	if body.MetadataOnly {
 		payload, _ := json.Marshal(mu.LibraryResolveReply{
@@ -739,6 +744,11 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 			"duration":  item.DurationMS,
 			"type":      item.MediaType,
 			"mediaType": item.MediaType,
+		}
+
+		// Add artwork URL
+		if artURL := m.getItemArtworkURL(item); artURL != "" {
+			metadata["artworkUrl"] = artURL
 		}
 
 		// If metadataOnly, skip source URL generation
@@ -1426,6 +1436,32 @@ func (m *Module) getItem(itemID string) (mediaItem, bool) {
 	defer m.mu.RUnlock()
 	item, ok := m.index.Items[itemID]
 	return item, ok
+}
+
+// getItemArtworkURL returns the artwork URL for a media item.
+// For audio items, this is the album artwork. For video or unknown items,
+// returns the default placeholder.
+func (m *Module) getItemArtworkURL(item mediaItem) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.baseURL == "" {
+		return ""
+	}
+
+	// For audio items, look up album artwork
+	if item.MediaType == "Audio" {
+		artistName := firstOr(item.Artists, "Unknown Artist")
+		albumName := item.Album
+		if albumName == "" {
+			albumName = "Unknown Album"
+		}
+		albumHash := containerHash("album", artistName, albumName)
+		return m.artURLUnlocked(albumHash)
+	}
+
+	// For video or other items, use default
+	return m.defaultArtURLUnlocked()
 }
 
 // resolveContainerMetadata returns metadata for container IDs.
