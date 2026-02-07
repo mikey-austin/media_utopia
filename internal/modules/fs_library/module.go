@@ -976,6 +976,15 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		if !containsAllTerms(item, terms) {
 			continue
 		}
+		artURL := ""
+		if item.MediaType == "Audio" {
+			artistName := firstOr(item.Artists, "Unknown Artist")
+			albumName := item.Album
+			if albumName == "" {
+				albumName = "Unknown Album"
+			}
+			artURL = m.artURLUnlocked(containerHash("album", artistName, albumName))
+		}
 		items = append(items, libraryItem{
 			ItemID:     item.ID,
 			Name:       item.Name,
@@ -984,6 +993,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 			Artists:    item.Artists,
 			Album:      item.Album,
 			DurationMS: item.DurationMS,
+			ImageURL:   artURL,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -1110,6 +1120,15 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 		if !ok {
 			continue
 		}
+		artURL := ""
+		if item.MediaType == "Audio" {
+			artistName := firstOr(item.Artists, "Unknown Artist")
+			albumName := item.Album
+			if albumName == "" {
+				albumName = "Unknown Album"
+			}
+			artURL = m.artURLUnlocked(containerHash("album", artistName, albumName))
+		}
 		items = append(items, libraryItem{
 			ItemID:     item.ID,
 			Name:       item.Name,
@@ -1118,6 +1137,7 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 			Artists:    item.Artists,
 			Album:      item.Album,
 			DurationMS: item.DurationMS,
+			ImageURL:   artURL,
 		})
 	}
 

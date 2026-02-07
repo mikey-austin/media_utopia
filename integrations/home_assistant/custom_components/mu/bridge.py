@@ -1422,6 +1422,22 @@ class MudBridge:
             return None
         return reply.get("body") or {}
 
+    async def async_search_library(
+        self, library_id: str, query: str, start: int = 0, count: int = 50
+    ) -> dict[str, Any] | None:
+        if not library_id or not query:
+            return None
+        body = {"query": query, "start": start, "count": count}
+        reply = await self._request(
+            library_id,
+            "library.search",
+            body,
+            need_lease=False,
+        )
+        if reply is None or reply.get("type") != "ack":
+            return None
+        return reply.get("body") or {}
+
     async def async_play_library_container(self, node_id: str, media_id: str) -> None:
         library_id, container_id, page = self._parse_library_media_id(media_id)
         if not library_id:

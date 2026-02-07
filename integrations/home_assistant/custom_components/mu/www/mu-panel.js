@@ -281,8 +281,14 @@ const styles = css`
   .browser-with-index { display: flex; flex: 1; overflow: hidden; position: relative; }
   .browser-list-wrapper { flex: 1; overflow-y: auto; }
 
-  /* Hidden by default, shown on mobile */
-  .folder-actions { display: none; }
+  .folder-actions {
+    display: flex;
+    gap: 6px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--mu-border);
+    background: var(--mu-card-bg);
+    flex-shrink: 0;
+  }
   
   .main-header {
     display: flex;
@@ -545,6 +551,10 @@ const styles = css`
     .zone-volume-slider { height: 8px; }
     
     .letter-index button { padding: 6px 8px; font-size: 12px; }
+
+    .search-bar { padding: 8px; }
+    .search-input { padding: 8px; }
+    .search-library-select { max-width: 100px; }
   }
 
   /* Responsive: Mobile (600px and below) */
@@ -672,16 +682,49 @@ const styles = css`
     
     /* Always show action buttons on touch devices */
     .browser-item-actions, .queue-item-actions { opacity: 1; }
-    
-    /* Folder actions header */
-    .folder-actions {
-      display: flex;
-      gap: 6px;
-      padding: 8px 10px;
-      border-bottom: 1px solid var(--mu-border);
-      background: var(--mu-card-bg);
-    }
+
+    .search-bar { padding: 8px; gap: 6px; }
+    .search-input { font-size: 14px; padding: 10px 8px; }
+    .search-library-select { font-size: 14px; padding: 10px 8px; max-width: 100px; }
+    .search-bar .action-btn { padding: 8px 12px; }
   }
+
+  .search-bar {
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--mu-border);
+    background: var(--mu-card-bg);
+    flex-shrink: 0;
+    align-items: center;
+  }
+
+  .search-input {
+    flex: 1;
+    background: var(--primary-background-color);
+    color: var(--primary-text-color);
+    border: 1px solid var(--mu-border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 14px;
+    font-family: inherit;
+    min-width: 0;
+  }
+
+  .search-input::placeholder { color: var(--mu-secondary); }
+  .search-input:focus { outline: none; border-color: var(--mu-accent); }
+
+  .search-library-select {
+    background: var(--primary-background-color);
+    color: var(--primary-text-color);
+    border: 1px solid var(--mu-border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 14px;
+    max-width: 120px;
+  }
+
+  .search-bar .action-btn svg { width: 14px; height: 14px; vertical-align: middle; }
 `;
 
 const icons = {
@@ -703,6 +746,8 @@ const icons = {
   repeat: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>`,
   repeatOne: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z"/></svg>`,
   add: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>`,
+  search: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>`,
+  clear: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`,
 };
 
 function formatTime(ms) {
@@ -739,6 +784,11 @@ class MuPanel extends LitElement {
     zoneControllers: { state: true },
     zones: { state: true },
     mobileView: { state: true },
+    searchQuery: { state: true },
+    searchResults: { state: true },
+    searchLoading: { state: true },
+    searchTotal: { state: true },
+    searchLibraryId: { state: true },
   };
 
   constructor() {
@@ -767,6 +817,11 @@ class MuPanel extends LitElement {
     this.zoneControllers = [];
     this.zones = [];
     this.mobileView = 'player'; // 'browser' or 'player'
+    this.searchQuery = '';
+    this.searchResults = null;
+    this.searchLoading = false;
+    this.searchTotal = 0;
+    this.searchLibraryId = '';
     this._refreshInterval = null;
     this._localSeekPos = null;
     this._localVolume = null;
@@ -1173,6 +1228,95 @@ class MuPanel extends LitElement {
     this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
   }
 
+  async _performSearch() {
+    const query = this.searchQuery.trim();
+    if (!query) return;
+    const libId = this.searchLibraryId || (this.libraries[0] && this.libraries[0].libraryId) || '';
+    if (!libId) return;
+    this.searchLibraryId = libId;
+    this.searchLoading = true;
+    this.searchResults = [];
+    const r = await this._callWS('mu/library_search', { library_id: libId, query, start: 0, count: 50 });
+    this.searchLoading = false;
+    if (r) {
+      this.searchResults = r.items || [];
+      this.searchTotal = r.totalCount || 0;
+    } else {
+      this.searchResults = [];
+      this.searchTotal = 0;
+    }
+  }
+
+  async _loadMoreSearchResults() {
+    if (!this.searchResults || !this.searchLibraryId || !this.searchQuery.trim()) return;
+    this.searchLoading = true;
+    const r = await this._callWS('mu/library_search', {
+      library_id: this.searchLibraryId, query: this.searchQuery.trim(),
+      start: this.searchResults.length, count: 50,
+    });
+    this.searchLoading = false;
+    if (r && r.items) {
+      this.searchResults = [...this.searchResults, ...r.items];
+      this.searchTotal = r.totalCount || this.searchTotal;
+    }
+  }
+
+  _clearSearch() {
+    this.searchQuery = '';
+    this.searchResults = null;
+    this.searchLoading = false;
+    this.searchTotal = 0;
+  }
+
+  async _addSearchResultToQueue(item, mode) {
+    if (!this.selectedRenderer || !item.itemId || !this.searchLibraryId) return;
+    const libId = this.searchLibraryId;
+
+    if (item.isContainer) {
+      const r = await this._callWS('mu/library_browse', {
+        library_id: libId, container_id: item.itemId, start: 0, count: 10000
+      });
+      const children = (r?.items || [])
+        .filter(child => child.itemId && !child.isContainer && !child.isLibrary)
+        .map(child => `lib:${libId}:${child.itemId}`);
+      if (!children.length) { this._showToast('No playable items'); return; }
+      await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
+      await this._loadQueue();
+      this._showToast(mode === 'replace' ? `Playing (${children.length})` : `Added (${children.length})`);
+      return;
+    }
+
+    await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: [`lib:${libId}:${item.itemId}`] });
+    await this._loadQueue();
+    this._showToast(mode === 'replace' ? 'Playing' : 'Added');
+  }
+
+  async _addAllSearchResultsToQueue(mode) {
+    if (!this.selectedRenderer || !this.searchResults || !this.searchLibraryId) return;
+    const libId = this.searchLibraryId;
+    const items = this.searchResults
+      .filter(item => item.isPlayable && item.itemId)
+      .map(item => `lib:${libId}:${item.itemId}`);
+    if (!items.length) { this._showToast('No playable items'); return; }
+    await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
+    await this._loadQueue();
+    this._showToast(mode === 'replace' ? `Playing (${items.length})` : `Added (${items.length})`);
+  }
+
+  _browseFromSearch(item) {
+    if (!item.isContainer) return;
+    const libId = this.searchLibraryId || (this.libraries[0] && this.libraries[0].libraryId) || '';
+    if (!libId) return;
+    const libName = (this.libraries.find(l => l.libraryId === libId) || {}).name || libId;
+    this._clearSearch();
+    this.browserPath = [{ id: libId, title: libName, isLibrary: true }, { id: item.itemId, title: item.title }];
+    this._loadBrowserItems(libId, item.itemId);
+  }
+
+  _onSearchKeydown(e) {
+    if (e.key === 'Enter') this._performSearch();
+  }
+
   async _switchTab(tab) {
     this.browserTab = tab;
     if (tab === 'playlists') await this._loadPlaylists();
@@ -1281,31 +1425,99 @@ class MuPanel extends LitElement {
 
   _renderBrowseTab() {
     const currentFolder = this.browserPath.length > 0 ? this.browserPath[this.browserPath.length - 1] : null;
+    const showSearchResults = this.searchResults !== null;
     return html`
-      <div class="breadcrumbs">
-        <button class="breadcrumb" @click=${() => this._navigateBreadcrumb(-1)}>${icons.home}</button>
-        ${this.browserPath.map((c, i) => html`<span class="breadcrumb-sep">›</span><button class="breadcrumb" @click=${() => this._navigateBreadcrumb(i)}>${c.title}</button>`)}
+      <div class="search-bar">
+        <input class="search-input" type="text" placeholder="Search library..."
+          .value=${this.searchQuery}
+          @input=${e => this.searchQuery = e.target.value}
+          @keydown=${e => this._onSearchKeydown(e)} />
+        ${this.libraries.length > 1 ? html`
+          <select class="search-library-select"
+            .value=${this.searchLibraryId || (this.libraries[0] && this.libraries[0].libraryId) || ''}
+            @change=${e => this.searchLibraryId = e.target.value}>
+            ${this.libraries.map(lib => html`<option value="${lib.libraryId}">${lib.name}</option>`)}
+          </select>
+        ` : ''}
+        ${showSearchResults ? html`
+          <button class="action-btn secondary" @click=${() => this._clearSearch()} title="Clear search">${icons.clear}</button>
+        ` : html`
+          <button class="action-btn" @click=${() => this._performSearch()} title="Search">${icons.search}</button>
+        `}
       </div>
-      ${currentFolder ? html`
-        <div class="folder-actions">
-          <button class="action-btn" @click=${() => this._addFolderToQueue('replace')} title="Play folder">▶ Play</button>
-          <button class="action-btn secondary" @click=${() => this._addFolderToQueue('append')} title="Add folder to queue">+ Add All</button>
+      ${showSearchResults ? this._renderSearchResults() : html`
+        <div class="breadcrumbs">
+          <button class="breadcrumb" @click=${() => this._navigateBreadcrumb(-1)}>${icons.home}</button>
+          ${this.browserPath.map((c, i) => html`<span class="breadcrumb-sep">›</span><button class="breadcrumb" @click=${() => this._navigateBreadcrumb(i)}>${c.title}</button>`)}
         </div>
-      ` : ''}
+        ${currentFolder ? html`
+          <div class="folder-actions">
+            <button class="action-btn" @click=${() => this._addFolderToQueue('replace')} title="Play folder">▶ Play</button>
+            <button class="action-btn secondary" @click=${() => this._addFolderToQueue('append')} title="Add folder to queue">+ Add All</button>
+          </div>
+        ` : ''}
+        <div class="browser-with-index">
+          <div class="browser-list-wrapper">
+            <div class="browser-list">
+              ${this.browserLoading ? html`<div class="loading"><div class="spinner"></div></div>` : ''}
+              ${!this.browserLoading && !this.browserItems.length ? html`<div class="empty">No items</div>` : ''}
+              ${!this.browserLoading ? this.browserItems.map((item, idx) => this._renderBrowserItemWithId(item, idx)) : ''}
+              ${!this.browserLoading && this.browserPath.length > 0 && this.browserItems.length < this.browserTotal ? html`
+                <div class="browser-item" @click=${() => this._loadMoreBrowserItems()} style="justify-content:center;cursor:pointer">
+                  <span style="font-size:11px;color:var(--mu-accent)">Load more (${this.browserItems.length}/${this.browserTotal})</span>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+          ${this._renderLetterIndex()}
+        </div>
+      `}
+    `;
+  }
+
+  _renderSearchResults() {
+    const playableCount = this.searchResults ? this.searchResults.filter(i => i.isPlayable).length : 0;
+    return html`
+      <div class="folder-actions">
+        <span style="font-size:12px;color:var(--mu-secondary);flex:1">${this.searchTotal} result${this.searchTotal !== 1 ? 's' : ''}</span>
+        ${playableCount > 0 ? html`
+          <button class="action-btn" @click=${() => this._addAllSearchResultsToQueue('replace')} title="Play all results">▶ Play All</button>
+          <button class="action-btn secondary" @click=${() => this._addAllSearchResultsToQueue('append')} title="Add all to queue">+ Add All</button>
+        ` : ''}
+      </div>
       <div class="browser-with-index">
         <div class="browser-list-wrapper">
           <div class="browser-list">
-            ${this.browserLoading ? html`<div class="loading"><div class="spinner"></div></div>` : ''}
-            ${!this.browserLoading && !this.browserItems.length ? html`<div class="empty">No items</div>` : ''}
-            ${!this.browserLoading ? this.browserItems.map((item, idx) => this._renderBrowserItemWithId(item, idx)) : ''}
-            ${!this.browserLoading && this.browserPath.length > 0 && this.browserItems.length < this.browserTotal ? html`
-              <div class="browser-item" @click=${() => this._loadMoreBrowserItems()} style="justify-content:center;cursor:pointer">
-                <span style="font-size:11px;color:var(--mu-accent)">Load more (${this.browserItems.length}/${this.browserTotal})</span>
+            ${this.searchLoading && !this.searchResults.length ? html`<div class="loading"><div class="spinner"></div></div>` : ''}
+            ${!this.searchLoading && !this.searchResults.length ? html`<div class="empty">No results</div>` : ''}
+            ${this.searchResults.map((item, idx) => this._renderSearchItem(item, idx))}
+            ${this.searchResults.length > 0 && this.searchResults.length < this.searchTotal ? html`
+              <div class="browser-item" @click=${() => this._loadMoreSearchResults()} style="justify-content:center;cursor:pointer">
+                <span style="font-size:11px;color:var(--mu-accent)">${this.searchLoading ? 'Loading...' : `Load more (${this.searchResults.length}/${this.searchTotal})`}</span>
               </div>
             ` : ''}
           </div>
         </div>
-        ${this._renderLetterIndex()}
+      </div>
+    `;
+  }
+
+  _renderSearchItem(item, idx) {
+    const icon = item.isContainer ? icons.folder : icons.music;
+    const canNavigate = item.isContainer;
+    return html`
+      <div class="browser-item" @click=${() => canNavigate ? this._browseFromSearch(item) : null} style="${canNavigate ? '' : 'cursor:default'}">
+        ${item.art_url ? html`<img class="browser-item-art" src="${item.art_url}" @error=${e => e.target.style.display = 'none'}/>` : html`<div class="browser-item-art">${icon}</div>`}
+        <div class="browser-item-info">
+          <div class="browser-item-title">${item.title}</div>
+          ${item.subtitle ? html`<div class="browser-item-subtitle">${item.subtitle}</div>` : ''}
+        </div>
+        <div class="browser-item-actions">
+          ${item.isPlayable || item.canEnqueue ? html`
+            <button class="action-btn" @click=${e => { e.stopPropagation(); this._addSearchResultToQueue(item, 'replace'); }} title="Play">▶</button>
+            <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._addSearchResultToQueue(item, 'append'); }} title="Add to queue">+</button>
+          ` : ''}
+        </div>
       </div>
     `;
   }

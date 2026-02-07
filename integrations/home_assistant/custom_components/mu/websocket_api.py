@@ -49,6 +49,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_playlist_from_snapshot)
     websocket_api.async_register_command(hass, ws_libraries_list)
     websocket_api.async_register_command(hass, ws_library_browse)
+    websocket_api.async_register_command(hass, ws_library_search)
     websocket_api.async_register_command(hass, ws_zone_controllers_list)
     websocket_api.async_register_command(hass, ws_zones_list)
     websocket_api.async_register_command(hass, ws_zone_set_volume)
@@ -1004,6 +1005,68 @@ async def ws_library_browse(
 
     connection.send_result(msg["id"], {
         "containerId": msg["container_id"],
+        "totalCount": result.get("total") or result.get("totalCount") or len(items),
+        "items": items,
+    })
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "mu/library_search",
+    vol.Required("library_id"): str,
+    vol.Required("query"): str,
+    vol.Optional("start", default=0): int,
+    vol.Optional("count", default=50): int,
+})
+@websocket_api.async_response
+async def ws_library_search(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Search library."""
+    bridge = _get_bridge(hass)
+    if bridge is None:
+        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        return
+
+    result = await bridge.async_search_library(
+        msg["library_id"],
+        msg["query"],
+        msg["start"],
+        msg["count"],
+    )
+    if result is None:
+        connection.send_error(msg["id"], "search_failed", "Failed to search library")
+        return
+
+    items = []
+    for item in result.get("items") or []:
+        item_type = (item.get("type") or "").lower()
+        media_type = (item.get("mediaType") or "").lower()
+
+        is_playable = media_type in {"audio", "video"} or item_type in {
+            "audio", "video", "movie", "episode", "musicvideo", "audiobook"
+        }
+        is_container = not is_playable
+
+        artists = item.get("artists") or []
+        artist_str = ", ".join(artists) if isinstance(artists, list) else str(artists) if artists else ""
+
+        items.append({
+            "itemId": item.get("itemId", ""),
+            "title": item.get("name") or item.get("title") or "Unknown",
+            "subtitle": artist_str or item.get("album") or "",
+            "type": item_type,
+            "mediaType": media_type,
+            "isContainer": is_container,
+            "isPlayable": is_playable,
+            "canEnqueue": True,
+            "art_url": bridge.rewrite_artwork_url(item.get("imageUrl") or item.get("artworkUrl")),
+            "childCount": item.get("childCount"),
+        })
+
+    connection.send_result(msg["id"], {
+        "query": msg["query"],
         "totalCount": result.get("total") or result.get("totalCount") or len(items),
         "items": items,
     })
