@@ -1,3 +1,121 @@
+/*
+Package fslibrary provides a filesystem-based media library for the mu system.
+
+# Overview
+
+The filesystem library module scans configured directory roots for media files,
+extracts metadata from tags (ID3, Vorbis, etc.), and exposes the content through
+the standard mu library protocol. It supports browsing by artist/album hierarchy,
+full-text search, and optional semantic search via embeddings.
+
+# Item ID Formats
+
+The library uses different ID formats for containers (folders) and media items:
+
+Container IDs (used for browsing):
+
+	container:audio              Root audio folder
+	container:video              Root video folder
+	artist:<name>                Artist folder (name is URL-escaped)
+	album:<artist>:<album>       Album folder (both URL-escaped)
+
+Media Item IDs (used for playback/resolve):
+
+	audio:<hash>                 Audio file
+	video:<hash>                 Video file
+
+The hash component is a SHA-1 of "path|size|mtime" which changes when the file
+is modified, ensuring cache invalidation. Example: "audio:a1b2c3d4e5f6..."
+
+When referenced externally (e.g., in playlists), items use the lib: prefix:
+
+	lib:<library-node-id>:<item-id>
+	lib:mu:library:filesystem:home:default:audio:a1b2c3d4...
+
+# Browse Hierarchy
+
+The browse structure organizes content as follows:
+
+	(root)
+	├── Audio/                    container:audio
+	│   ├── Artist Name/          artist:Artist%20Name
+	│   │   ├── Album One/        album:Artist%20Name:Album%20One
+	│   │   │   ├── Track 1       audio:abc123...
+	│   │   │   └── Track 2       audio:def456...
+	│   │   └── Album Two/        album:Artist%20Name:Album%20Two
+	│   └── Another Artist/       artist:Another%20Artist
+	└── Video/                    container:video
+	    ├── Movie.mkv             video:789abc...
+	    └── Show.mp4              video:cde012...
+
+Audio files are organized by Artist > Album > Track. Video files are listed
+flat under the Video container.
+
+# Supported File Types
+
+Default extensions (configurable via IncludeExts):
+
+	Audio: .mp3, .flac, .ogg, .m4a
+	Video: .mp4, .mkv
+
+# Metadata Extraction
+
+Metadata is extracted in order of preference:
+
+ 1. Embedded tags (ID3v2, Vorbis Comment, MP4 atoms) via github.com/dhowden/tag
+ 2. Filename patterns: "Artist - Title.mp3" or "01 - Title.mp3"
+ 3. Directory structure: parent folder as album, grandparent as artist
+
+# Optional Features
+
+Metadata Repair (repair_policy):
+
+	none        No repair (default)
+	strict      Only high-confidence repairs
+	balanced    Medium-confidence if no conflicts
+	aggressive  Accept most repairs, log conflicts
+
+Deduplication (dedupe_policy):
+
+	none        No deduplication (default)
+	report      Log duplicates only
+	first       Keep first occurrence, remove duplicates
+	best        Keep highest quality version
+
+Semantic Search (embedding_provider):
+
+	ollama      Use local Ollama server for embeddings
+
+When embeddings are enabled, search queries are vectorized and matched against
+item embeddings using cosine similarity, enabling fuzzy/semantic matching.
+
+# Configuration Example
+
+	[modules.fs_library.default]
+	node_id = "mu:library:filesystem:home:default"
+	name = "Home Library"
+	roots = ["/home/user/Music", "/home/user/Videos"]
+	include_exts = [".mp3", ".flac", ".m4a", ".mp4", ".mkv"]
+	http_listen = "127.0.0.1:0"
+	index_mode = "near"
+	scan_interval_ms = 900000
+	repair_policy = "balanced"
+	dedupe_policy = "report"
+	embedding_provider = "ollama"
+	embedding_model = "nomic-embed-text"
+	embedding_endpoint = "http://localhost:11434"
+	embedding_cache = "/var/lib/mud/library_fs/embeddings"
+
+# Commands
+
+The module responds to these command types:
+
+	library.browse       Browse containers, returns items with pagination
+	library.search       Full-text or semantic search
+	library.resolve      Get metadata and playback URLs for an item
+	library.resolveBatch Batch resolve multiple items
+	library.rescan       Trigger manual rescan of filesystem
+*/
 package fslibrary
 
 import (
@@ -28,22 +146,69 @@ import (
 
 // Config configures the filesystem library module.
 type Config struct {
-	NodeID            string
-	TopicBase         string
-	Name              string
-	Roots             []string
-	IncludeExts       []string
-	HTTPListen        string
-	IndexMode         string
-	IndexPath         string
-	ScanIntervalMS    int64
-	MetadataMode      string
-	RepairPolicy      string
-	DedupePolicy      string
+	// NodeID is the unique identifier for this library instance.
+	// Format: "mu:library:filesystem:<namespace>:<instance>"
+	NodeID string
+
+	// TopicBase is the MQTT topic prefix (default: "mu").
+	TopicBase string
+
+	// Name is the human-readable library name shown in listings.
+	Name string
+
+	// Roots lists directory paths to scan for media files.
+	// All paths are scanned recursively.
+	Roots []string
+
+	// IncludeExts lists file extensions to include (e.g., ".mp3", ".flac").
+	// Extensions should include the leading dot.
+	IncludeExts []string
+
+	// HTTPListen is the address for the file server (e.g., "127.0.0.1:8080").
+	// Use ":0" for automatic port assignment.
+	HTTPListen string
+
+	// IndexMode controls where the index file is stored:
+	//   "near"     - Store as .mu_fs_index.json in the first root
+	//   "separate" - Store at IndexPath
+	//   ""         - No persistence (index rebuilt on restart)
+	IndexMode string
+
+	// IndexPath is the file path for the index when IndexMode is "separate".
+	IndexPath string
+
+	// ScanIntervalMS is the interval between automatic rescans in milliseconds.
+	// Default: 900000 (15 minutes).
+	ScanIntervalMS int64
+
+	// MetadataMode is reserved for future metadata handling options.
+	MetadataMode string
+
+	// RepairPolicy controls automatic metadata repair:
+	//   "none"       - No repair
+	//   "strict"     - High-confidence repairs only
+	//   "balanced"   - Medium-confidence if no conflicts
+	//   "aggressive" - Accept most repairs
+	RepairPolicy string
+
+	// DedupePolicy controls duplicate file handling:
+	//   "none"   - No deduplication
+	//   "report" - Log duplicates only
+	//   "first"  - Keep first occurrence
+	//   "best"   - Keep highest quality
+	DedupePolicy string
+
+	// EmbeddingProvider enables semantic search. Supported: "ollama".
 	EmbeddingProvider string
-	EmbeddingModel    string
+
+	// EmbeddingModel is the model name for embeddings (e.g., "nomic-embed-text").
+	EmbeddingModel string
+
+	// EmbeddingEndpoint is the embedding API URL (e.g., "http://localhost:11434").
 	EmbeddingEndpoint string
-	EmbeddingCache    string
+
+	// EmbeddingCache is the directory for caching computed embeddings.
+	EmbeddingCache string
 }
 
 // cmdWork represents a command to be processed by a worker.
@@ -52,6 +217,15 @@ type cmdWork struct {
 }
 
 // Module exposes a filesystem library to mu.
+//
+// The module scans configured roots for media files, maintains an in-memory
+// index organized by artist/album, and serves files over HTTP. It subscribes
+// to MQTT commands for browse/search/resolve operations.
+//
+// Lifecycle:
+//  1. NewModule creates the module with configuration
+//  2. Run starts the HTTP server, performs initial scan, and processes commands
+//  3. Context cancellation triggers graceful shutdown
 type Module struct {
 	log      *zap.Logger
 	client   *mqttserver.Client
@@ -74,50 +248,95 @@ type Module struct {
 	dupeIndex *DuplicateIndex
 }
 
+// libraryIndex is the in-memory index of all scanned media.
+// It is persisted to disk based on IndexMode configuration.
 type libraryIndex struct {
-	Items map[string]mediaItem   `json:"items"`
+	// Items maps item IDs (e.g., "audio:abc123") to media items.
+	Items map[string]mediaItem `json:"items"`
+
+	// Audio organizes audio items by artist name -> albums -> track IDs.
 	Audio map[string]artistEntry `json:"audio"`
-	Video []string               `json:"video"`
+
+	// Video lists video item IDs in the order they were scanned.
+	Video []string `json:"video"`
 }
 
+// artistEntry groups albums under an artist.
 type artistEntry struct {
 	Name   string                `json:"name"`
 	Albums map[string]albumEntry `json:"albums"`
 }
 
+// albumEntry groups tracks under an album.
 type albumEntry struct {
 	Name   string   `json:"name"`
-	Tracks []string `json:"tracks"`
+	Tracks []string `json:"tracks"` // Item IDs, e.g., "audio:abc123"
 }
 
+// mediaItem represents a single media file in the library.
 type mediaItem struct {
-	ID         string   `json:"id"`
-	Path       string   `json:"path"`
-	Name       string   `json:"name"`
-	Title      string   `json:"title"`
-	Artists    []string `json:"artists,omitempty"`
-	Album      string   `json:"album,omitempty"`
-	MediaType  string   `json:"mediaType"`
-	DurationMS int64    `json:"durationMs,omitempty"`
+	// ID is the unique identifier, format: "<mediatype>:<hash>"
+	// Examples: "audio:a1b2c3d4e5f6", "video:789abcdef"
+	ID string `json:"id"`
+
+	// Path is the absolute filesystem path to the file.
+	Path string `json:"path"`
+
+	// Name is the display name (usually the title or filename).
+	Name string `json:"name"`
+
+	// Title is extracted from metadata tags or parsed from filename.
+	Title string `json:"title"`
+
+	// Artists lists performer names from metadata.
+	Artists []string `json:"artists,omitempty"`
+
+	// Album is the album name from metadata.
+	Album string `json:"album,omitempty"`
+
+	// MediaType is "Audio" or "Video".
+	MediaType string `json:"mediaType"`
+
+	// DurationMS is the track duration in milliseconds (0 if unknown).
+	DurationMS int64 `json:"durationMs,omitempty"`
 }
 
-// libraryItemsReply mirrors mu library responses.
+// libraryItemsReply is the response format for browse and search commands.
 type libraryItemsReply struct {
 	Items []libraryItem `json:"items"`
-	Start int64         `json:"start"`
-	Count int64         `json:"count"`
-	Total int64         `json:"total"`
+	Start int64         `json:"start"` // Offset of first item
+	Count int64         `json:"count"` // Number of items returned
+	Total int64         `json:"total"` // Total items available
 }
 
-// libraryItem describes a browse/search item.
+// libraryItem describes an item returned by browse or search.
+// It can represent either a container (folder) or a playable media item.
 type libraryItem struct {
-	ItemID      string   `json:"itemId"`
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	MediaType   string   `json:"mediaType"`
-	Artists     []string `json:"artists,omitempty"`
-	Album       string   `json:"album,omitempty"`
-	ContainerID string   `json:"containerId,omitempty"`
+	// ItemID is the identifier for this item.
+	// Container examples: "container:audio", "artist:Name", "album:Artist:Album"
+	// Media examples: "audio:abc123", "video:def456"
+	ItemID string `json:"itemId"`
+
+	// Name is the display name.
+	Name string `json:"name"`
+
+	// Type indicates the item kind:
+	//   "Folder" - Container that can be browsed
+	//   "Audio"  - Playable audio file
+	//   "Video"  - Playable video file
+	Type string `json:"type"`
+
+	// MediaType indicates the media category: "Audio" or "Video".
+	MediaType string `json:"mediaType"`
+
+	// Artists lists performer names (audio items only).
+	Artists []string `json:"artists,omitempty"`
+
+	// Album is the album name (audio items only).
+	Album string `json:"album,omitempty"`
+
+	// ContainerID is the parent container (for media items).
+	ContainerID string `json:"containerId,omitempty"`
 	Overview    string   `json:"overview,omitempty"`
 	DurationMS  int64    `json:"durationMs,omitempty"`
 }
