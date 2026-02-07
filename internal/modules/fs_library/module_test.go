@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 	"go.uber.org/zap"
@@ -594,6 +595,66 @@ func TestCosineSimilarity(t *testing.T) {
 	}
 }
 
+func TestSidecarNeedsRefresh(t *testing.T) {
+	tests := []struct {
+		name string
+		meta *AlbumMetadata
+		want bool
+	}{
+		{
+			name: "v1 sidecar with data triggers refresh",
+			meta: &AlbumMetadata{
+				Version:     1,
+				FetchedAt:   time.Now(),
+				MusicBrainz: &MBMetadata{Genres: []string{"rock"}},
+			},
+			want: true,
+		},
+		{
+			name: "v2 sidecar with data does not refresh",
+			meta: &AlbumMetadata{
+				Version:     2,
+				FetchedAt:   time.Now(),
+				MusicBrainz: &MBMetadata{Genres: []string{"rock"}},
+			},
+			want: false,
+		},
+		{
+			name: "v2 negative cache recent does not refresh",
+			meta: &AlbumMetadata{
+				Version:   2,
+				FetchedAt: time.Now(),
+			},
+			want: false,
+		},
+		{
+			name: "v2 negative cache old triggers refresh",
+			meta: &AlbumMetadata{
+				Version:   2,
+				FetchedAt: time.Now().Add(-31 * 24 * time.Hour),
+			},
+			want: true,
+		},
+		{
+			name: "v0 sidecar triggers refresh",
+			meta: &AlbumMetadata{
+				Version:   0,
+				FetchedAt: time.Now(),
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sidecarNeedsRefresh(tt.meta)
+			if got != tt.want {
+				t.Errorf("sidecarNeedsRefresh() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildEmbedText(t *testing.T) {
 	item := mediaItem{
 		Title:   "Song Title",
@@ -611,6 +672,163 @@ func TestBuildEmbedText(t *testing.T) {
 	text = buildEmbedText(item, nil)
 	if text != "Song Title - Artist Name - Album Name - Different Name" {
 		t.Errorf("buildEmbedText() = %q", text)
+	}
+}
+
+func TestRepairFromSidecar(t *testing.T) {
+	tests := []struct {
+		name        string
+		item        mediaItem
+		meta        *AlbumMetadata
+		policy      RepairPolicy
+		wantArtists []string
+		wantAlbum   string
+		wantSource  string
+	}{
+		{
+			name: "empty artist + ArtistInfo.Name repaired at strict",
+			item: mediaItem{Artists: nil, Album: "SomeAlbum"},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+				ArtistInfo: &ArtistInfo{
+					Name: "MB Canonical Artist",
+				},
+			},
+			policy:      RepairPolicyStrict,
+			wantArtists: []string{"MB Canonical Artist"},
+			wantAlbum:   "SomeAlbum",
+			wantSource:  "sidecar",
+		},
+		{
+			name: "empty artist + ArtistInfo.Name repaired at balanced",
+			item: mediaItem{Artists: nil, Album: "SomeAlbum"},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+				ArtistInfo: &ArtistInfo{
+					Name: "MB Canonical Artist",
+				},
+			},
+			policy:      RepairPolicyBalanced,
+			wantArtists: []string{"MB Canonical Artist"},
+			wantAlbum:   "SomeAlbum",
+			wantSource:  "sidecar",
+		},
+		{
+			name: "empty artist + ArtistInfo.Name repaired at aggressive",
+			item: mediaItem{Artists: nil, Album: "SomeAlbum"},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+				ArtistInfo: &ArtistInfo{
+					Name: "MB Canonical Artist",
+				},
+			},
+			policy:      RepairPolicyAggressive,
+			wantArtists: []string{"MB Canonical Artist"},
+			wantAlbum:   "SomeAlbum",
+			wantSource:  "sidecar",
+		},
+		{
+			name: "empty artist + only meta.Artist (no ArtistInfo) repaired at balanced",
+			item: mediaItem{Artists: nil, Album: "SomeAlbum"},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+			},
+			policy:      RepairPolicyBalanced,
+			wantArtists: []string{"Sidecar Artist"},
+			wantAlbum:   "SomeAlbum",
+			wantSource:  "sidecar",
+		},
+		{
+			name: "empty artist + only meta.Artist NOT repaired at strict",
+			item: mediaItem{Artists: nil, Album: "SomeAlbum"},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+			},
+			policy:      RepairPolicyStrict,
+			wantArtists: nil,
+			wantAlbum:   "SomeAlbum",
+			wantSource:  "original",
+		},
+		{
+			name: "existing artist not overwritten",
+			item: mediaItem{Artists: []string{"Existing Artist"}, Album: "Existing Album"},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+				ArtistInfo: &ArtistInfo{
+					Name: "MB Canonical Artist",
+				},
+			},
+			policy:      RepairPolicyAggressive,
+			wantArtists: []string{"Existing Artist"},
+			wantAlbum:   "Existing Album",
+			wantSource:  "original",
+		},
+		{
+			name: "empty album repaired from sidecar",
+			item: mediaItem{Artists: []string{"Some Artist"}, Album: ""},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+			},
+			policy:      RepairPolicyBalanced,
+			wantArtists: []string{"Some Artist"},
+			wantAlbum:   "Sidecar Album",
+			wantSource:  "sidecar",
+		},
+		{
+			name: "Unknown Album repaired from sidecar",
+			item: mediaItem{Artists: []string{"Some Artist"}, Album: "Unknown Album"},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+			},
+			policy:      RepairPolicyBalanced,
+			wantArtists: []string{"Some Artist"},
+			wantAlbum:   "Sidecar Album",
+			wantSource:  "sidecar",
+		},
+		{
+			name: "policy none returns original",
+			item: mediaItem{Artists: nil, Album: ""},
+			meta: &AlbumMetadata{
+				Artist: "Sidecar Artist",
+				Album:  "Sidecar Album",
+				ArtistInfo: &ArtistInfo{
+					Name: "MB Canonical Artist",
+				},
+			},
+			policy:      RepairPolicyNone,
+			wantArtists: nil,
+			wantAlbum:   "",
+			wantSource:  "original",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := repairFromSidecar(tt.item, tt.meta, tt.policy)
+			if result.Source != tt.wantSource {
+				t.Errorf("source = %q, want %q", result.Source, tt.wantSource)
+			}
+			if len(result.Artists) != len(tt.wantArtists) {
+				t.Errorf("artists = %v, want %v", result.Artists, tt.wantArtists)
+			} else {
+				for i, a := range result.Artists {
+					if a != tt.wantArtists[i] {
+						t.Errorf("artists[%d] = %q, want %q", i, a, tt.wantArtists[i])
+					}
+				}
+			}
+			if result.Album != tt.wantAlbum {
+				t.Errorf("album = %q, want %q", result.Album, tt.wantAlbum)
+			}
+		})
 	}
 }
 

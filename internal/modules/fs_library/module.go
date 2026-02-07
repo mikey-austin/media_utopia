@@ -92,37 +92,58 @@ item embeddings using cosine similarity, enabling fuzzy/semantic matching.
 Album Metadata Enrichment (enrich_enabled):
 
 When enabled, the module automatically enriches albums with metadata from
-MusicBrainz and Discogs during each rescan. Enrichment runs in a background
-goroutine and does not block the scan. Albums that already have a sidecar file
-are skipped, so API calls only happen once per album.
+MusicBrainz, Discogs, and Wikipedia during each rescan. Enrichment runs in a
+background goroutine and does not block the scan. Albums that already have an
+up-to-date sidecar file are skipped.
 
 Data sources:
 
 	MusicBrainz   Free, no API key required. Provides genres, tags, release
-	              year, release type, and record label.
+	              year, release type, record label, album annotation,
+	              Wikipedia URL-rels, artist credits, and artist details
+	              (type, origin, active years, artist-level genres/tags).
 	Discogs       Optional personal access token (discogs_token) for higher
 	              rate limits. Provides styles, personnel credits, liner
-	              notes, and detailed label/catalog info.
+	              notes from the main release (fuller than master notes),
+	              album-level credits (producers, engineers), artist
+	              biography (profile), and group members.
+	Wikipedia     Album and artist summaries fetched via Wikipedia REST API
+	              using URLs discovered in MusicBrainz url-rels. Artist
+	              Wikipedia is used as a biography fallback when Discogs
+	              profile is empty.
 
 Enrichment data is stored as a JSON sidecar file named .mu_album_metadata.json
-in each album's directory. The sidecar schema includes:
+in each album's directory. The v2 sidecar schema includes:
 
 	{
-	  "version": 1,
+	  "version": 2,
 	  "fetched_at": "2026-02-07T12:00:00Z",
 	  "artist": "Pink Floyd",
 	  "album": "The Dark Side of the Moon",
-	  "musicbrainz": { "genres": [...], "tags": [...], "year": 1973, ... },
-	  "discogs": { "styles": [...], "credits": [...], "notes": "...", ... }
+	  "musicbrainz": { "genres": [...], "tags": [...], "year": 1973,
+	                    "annotation": "...", "wikipedia_url": "...",
+	                    "artist_ids": [...] },
+	  "discogs": { "styles": [...], "credits": [...], "notes": "...",
+	               "release_notes": "...", "release_credits": [...] },
+	  "artist_info": { "name": "...", "type": "Group", "origin": "...",
+	                    "biography": "...", "members": [...], ... },
+	  "description": { "mb_annotation": "...", "wikipedia_summary": "..." }
 	}
+
+Existing v1 sidecars are automatically re-enriched to v2 on the next scan via
+the version check in sidecarNeedsRefresh. Artist data is cached by MB/Discogs
+artist ID within each enrichment run, so artists with multiple albums are only
+fetched once.
 
 The enrichment data feeds into both keyword search and semantic search:
 
-  - Keyword search matches against genres, tags, styles, and labels in
-    addition to the usual title/artist/album fields.
+  - Keyword search matches against genres, tags, styles, labels, artist
+    name, origin, type, and group members.
   - Semantic search embeddings include genre, tag, year, label, style,
-    and personnel names, enabling queries like "progressive rock 1970s"
-    or "Abbey Road Studios" to match relevant albums.
+    personnel names, artist info (type, origin, biography, members),
+    album description (Wikipedia summary), and release credits,
+    enabling queries like "progressive rock 1970s", "British group",
+    or "produced by Brian Eno" to match relevant albums.
 
 Negative caching: if neither API returns a match, a minimal sidecar is written
 so the album is not re-queried on every scan. Negative cache entries expire
@@ -1333,6 +1354,18 @@ func containsAllTerms(item mediaItem, terms []string, enrich *AlbumMetadata) boo
 		if dc := enrich.Discogs; dc != nil {
 			parts = append(parts, strings.Join(dc.Styles, " "))
 		}
+		if ai := enrich.ArtistInfo; ai != nil {
+			parts = append(parts, ai.Name)
+			if ai.Origin != "" {
+				parts = append(parts, ai.Origin)
+			}
+			if ai.Type != "" {
+				parts = append(parts, ai.Type)
+			}
+			if len(ai.Members) > 0 {
+				parts = append(parts, strings.Join(ai.Members, " "))
+			}
+		}
 	}
 	searchText := strings.ToLower(strings.Join(parts, " "))
 	for _, term := range terms {
@@ -1513,6 +1546,35 @@ func (m *Module) scan() error {
 				enrichTargets = append(enrichTargets, enrichTarget{
 					Artist: artistName, Album: albumName, Dir: dir,
 				})
+			}
+		}
+	}
+
+	// Sidecar-informed repair pass
+	if repairPolicy != RepairPolicyNone && repairPolicy != "" {
+		for id, item := range next.Items {
+			if item.MediaType != "Audio" {
+				continue
+			}
+			artistName := firstOr(item.Artists, "Unknown Artist")
+			albumName := item.Album
+			if albumName == "" {
+				albumName = "Unknown Album"
+			}
+			key := artistName + "|" + albumName
+			meta, ok := enrichMeta[key]
+			if !ok || meta == nil {
+				continue
+			}
+			repaired := repairFromSidecar(item, meta, repairPolicy)
+			if repaired.Source != "original" {
+				item.Artists = repaired.Artists
+				item.Album = repaired.Album
+				next.Items[id] = item
+				m.log.Debug("sidecar-repaired metadata",
+					zap.String("id", id),
+					zap.String("source", repaired.Source),
+					zap.Float32("confidence", repaired.Confidence))
 			}
 		}
 	}

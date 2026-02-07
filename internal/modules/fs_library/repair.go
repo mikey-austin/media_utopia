@@ -160,6 +160,60 @@ func cleanAlbum(album string) string {
 	return strings.TrimSpace(album)
 }
 
+// repairFromSidecar fills missing artist/album fields using sidecar enrichment data.
+// It only fills empty fields — existing non-empty values are never overwritten.
+func repairFromSidecar(item mediaItem, meta *AlbumMetadata, policy RepairPolicy) RepairResult {
+	result := RepairResult{
+		Title:      item.Title,
+		Artists:    item.Artists,
+		Album:      item.Album,
+		Confidence: 1.0,
+		Source:     "original",
+	}
+
+	if policy == RepairPolicyNone {
+		return result
+	}
+
+	var minConfidence float32
+	switch policy {
+	case RepairPolicyStrict:
+		minConfidence = 0.9
+	case RepairPolicyBalanced:
+		minConfidence = 0.8
+	case RepairPolicyAggressive:
+		minConfidence = 0.7
+	}
+
+	// Artist repair: fill if empty or "Unknown Artist"
+	artistEmpty := len(item.Artists) == 0 || (len(item.Artists) == 1 && item.Artists[0] == "Unknown Artist")
+	if artistEmpty {
+		// Prefer ArtistInfo.Name (MusicBrainz canonical, confidence 0.9)
+		if meta.ArtistInfo != nil && meta.ArtistInfo.Name != "" && 0.9 >= minConfidence {
+			result.Artists = []string{meta.ArtistInfo.Name}
+			result.Source = "sidecar"
+			result.Confidence = 0.9
+		} else if meta.Artist != "" && 0.8 >= minConfidence {
+			// Fall back to sidecar's stored artist name (confidence 0.8)
+			result.Artists = []string{meta.Artist}
+			result.Source = "sidecar"
+			result.Confidence = 0.8
+		}
+	}
+
+	// Album repair: fill if empty or "Unknown Album"
+	albumEmpty := item.Album == "" || item.Album == "Unknown Album"
+	if albumEmpty && meta.Album != "" && 0.8 >= minConfidence {
+		result.Album = meta.Album
+		result.Source = "sidecar"
+		if result.Confidence > 0.8 {
+			result.Confidence = 0.8
+		}
+	}
+
+	return result
+}
+
 // DuplicateInfo represents a potential duplicate file.
 type DuplicateInfo struct {
 	ID       string
