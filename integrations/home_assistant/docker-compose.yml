@@ -5,6 +5,7 @@ services:
     image: ghcr.io/home-assistant/home-assistant:latest
     container_name: media_utopia_ha
     restart: unless-stopped
+    network_mode: host
     ports:
       - "8123:8123"
     volumes:
