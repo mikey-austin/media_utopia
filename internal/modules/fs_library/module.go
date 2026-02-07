@@ -91,9 +91,27 @@ item embeddings using cosine similarity, enabling fuzzy/semantic matching.
 
 # Configuration Example
 
+The node_id is constructed automatically from provider, namespace, and resource:
+
+	mu:library:<provider>:<namespace>:<resource>
+
+Minimal configuration (uses defaults: provider=filesystem, resource=default):
+
+	[server]
+	namespace = "home"
+
 	[modules.fs_library.default]
-	node_id = "mu:library:filesystem:home:default"
-	name = "Home Library"
+	enabled = true
+	roots = ["/home/user/Music"]
+	# Results in node_id: mu:library:filesystem:home:default
+
+Full configuration with all options:
+
+	[modules.fs_library.media]
+	enabled = true
+	name = "Home Media Library"
+	provider = "filesystem"           # default: "filesystem"
+	resource = "media"                # default: config key ("media" here)
 	roots = ["/home/user/Music", "/home/user/Videos"]
 	include_exts = [".mp3", ".flac", ".m4a", ".mp4", ".mkv"]
 	http_listen = "127.0.0.1:0"
@@ -145,9 +163,24 @@ import (
 )
 
 // Config configures the filesystem library module.
+//
+// The NodeID is typically constructed by the mud daemon from component fields:
+//
+//	mu:library:<provider>:<namespace>:<resource>
+//
+// Where:
+//   - provider: defaults to "filesystem" if not specified
+//   - namespace: from server configuration (e.g., "home", "office")
+//   - resource: defaults to config key name or "default"
+//
+// Example node IDs:
+//
+//	mu:library:filesystem:home:default
+//	mu:library:filesystem:home:music
+//	mu:library:filesystem:office:media
 type Config struct {
 	// NodeID is the unique identifier for this library instance.
-	// Format: "mu:library:filesystem:<namespace>:<instance>"
+	// Constructed by mud from: mu:library:<provider>:<namespace>:<resource>
 	NodeID string
 
 	// TopicBase is the MQTT topic prefix (default: "mu").

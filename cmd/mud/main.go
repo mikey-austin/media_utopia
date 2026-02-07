@@ -283,8 +283,12 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logger *zap.Logger,
 			if !cfgItem.Enabled {
 				continue
 			}
+			provider := cfgItem.Provider
+			if strings.TrimSpace(provider) == "" {
+				provider = "filesystem"
+			}
 			resource := resourceFor(item.Name, cfgItem.Resource)
-			nodeID, err := buildNodeID("library", cfgItem.Provider, cfg.Server.Namespace, resource)
+			nodeID, err := buildNodeID("library", provider, cfg.Server.Namespace, resource)
 			if err != nil {
 				return nil, err
 			}
