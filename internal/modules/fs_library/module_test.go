@@ -151,6 +151,84 @@ func mustJSON(v any) []byte {
 	return payload
 }
 
+func TestLibraryRescan(t *testing.T) {
+	root := t.TempDir()
+	audioPath := filepath.Join(root, "track.mp3")
+	if err := os.WriteFile(audioPath, []byte("audio"), 0o644); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+
+	mod, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:         "mu:library:filesystem:test:rescan",
+		Roots:          []string{root},
+		IncludeExts:    []string{".mp3"},
+		HTTPListen:     "127.0.0.1:0",
+		ScanIntervalMS: 0,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	// Initial scan
+	if err := mod.scan(); err != nil {
+		t.Fatalf("initial scan: %v", err)
+	}
+
+	// Test sync rescan
+	cmd := mu.CommandEnvelope{
+		ID:   "rescan1",
+		Type: "library.rescan",
+		Body: mustJSON(map[string]bool{"async": false}),
+	}
+	reply := mod.libraryRescan(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !reply.OK {
+		t.Fatalf("rescan failed: %+v", reply)
+	}
+
+	var result rescanReply
+	if err := json.Unmarshal(reply.Body, &result); err != nil {
+		t.Fatalf("unmarshal rescan reply: %v", err)
+	}
+	if result.Status != "complete" {
+		t.Errorf("expected status 'complete', got %q", result.Status)
+	}
+	if result.Items != 1 {
+		t.Errorf("expected 1 item, got %d", result.Items)
+	}
+
+	// Add another file and rescan
+	audioPath2 := filepath.Join(root, "track2.mp3")
+	if err := os.WriteFile(audioPath2, []byte("audio2"), 0o644); err != nil {
+		t.Fatalf("write audio2: %v", err)
+	}
+
+	cmd = mu.CommandEnvelope{
+		ID:   "rescan2",
+		Type: "library.rescan",
+	}
+	reply = mod.libraryRescan(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if err := json.Unmarshal(reply.Body, &result); err != nil {
+		t.Fatalf("unmarshal rescan2 reply: %v", err)
+	}
+	if result.Items != 2 {
+		t.Errorf("expected 2 items after rescan, got %d", result.Items)
+	}
+
+	// Test async rescan
+	cmd = mu.CommandEnvelope{
+		ID:   "rescan3",
+		Type: "library.rescan",
+		Body: mustJSON(map[string]bool{"async": true}),
+	}
+	reply = mod.libraryRescan(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if err := json.Unmarshal(reply.Body, &result); err != nil {
+		t.Fatalf("unmarshal async rescan reply: %v", err)
+	}
+	if result.Status != "started" {
+		t.Errorf("expected status 'started' for async, got %q", result.Status)
+	}
+}
+
 func TestRepairMetadata(t *testing.T) {
 	tests := []struct {
 		name     string
