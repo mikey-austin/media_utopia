@@ -824,9 +824,10 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 
 	// Root: list audio and video containers
 	if containerID == "" {
+		defaultImg := m.defaultArtURLUnlocked()
 		items := []libraryItem{
-			{ItemID: "container:audio", Name: "Audio", Type: "Folder"},
-			{ItemID: "container:video", Name: "Video", Type: "Folder"},
+			{ItemID: "container:audio", Name: "Audio", Type: "Folder", ImageURL: defaultImg},
+			{ItemID: "container:video", Name: "Video", Type: "Folder", ImageURL: defaultImg},
 		}
 		return paginate(items, start, count), int64(len(items)), nil
 	}
@@ -838,6 +839,7 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 			artists = append(artists, artist)
 		}
 		sort.Strings(artists)
+		defaultImg := m.defaultArtURLUnlocked()
 		items := make([]libraryItem, 0, len(artists))
 		for _, artistName := range artists {
 			artistHash := containerHash("artist", artistName, "")
@@ -846,6 +848,7 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 				Name:        artistName,
 				Type:        "Folder",
 				ContainerID: "container:audio",
+				ImageURL:    defaultImg,
 			})
 		}
 		return paginate(items, start, count), int64(len(items)), nil
@@ -853,6 +856,7 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 
 	// Video root: list videos
 	if containerID == "container:video" {
+		defaultImg := m.defaultArtURLUnlocked()
 		items := make([]libraryItem, 0, len(m.index.Video))
 		for _, itemID := range m.index.Video {
 			item, ok := m.index.Items[itemID]
@@ -866,6 +870,7 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 				MediaType:   item.MediaType,
 				DurationMS:  item.DurationMS,
 				ContainerID: "container:video",
+				ImageURL:    defaultImg,
 			})
 		}
 		return paginate(items, start, count), int64(len(items)), nil
@@ -896,6 +901,7 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 				Name:        albumName,
 				Type:        "Folder",
 				ContainerID: containerID,
+				ImageURL:    m.artURLUnlocked(albumHash),
 			})
 		}
 		return paginate(items, start, count), int64(len(items)), nil
@@ -911,11 +917,8 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 		if !ok {
 			return nil, 0, errors.New("album not found")
 		}
-		// Get art URL if available
-		var imageURL string
-		if album.CoverArt != "" {
-			imageURL = m.artURLUnlocked(containerID)
-		}
+		// Get art URL (defaults to placeholder if no cover art)
+		imageURL := m.artURLUnlocked(containerID)
 		items := make([]libraryItem, 0, len(album.Tracks))
 		for _, itemID := range album.Tracks {
 			item, ok := m.index.Items[itemID]
@@ -1496,6 +1499,7 @@ func (m *Module) startHTTPServer() error {
 	baseURL := fmt.Sprintf("http://%s:%s", host, port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/files/", m.serveFile)
+	mux.HandleFunc("/art/default.png", m.serveDefaultArt)
 	mux.HandleFunc("/art/", m.serveArt)
 	server := &http.Server{Handler: mux}
 
@@ -1635,30 +1639,49 @@ func extToMime(ext string) string {
 	}
 }
 
+func (m *Module) serveDefaultArt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(defaultArtPNG)))
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(defaultArtPNG)
+}
+
+// defaultArtURLUnlocked returns the URL for the default placeholder image.
+// Caller must hold the read lock.
+func (m *Module) defaultArtURLUnlocked() string {
+	if m.baseURL == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/art/default.png", strings.TrimRight(m.baseURL, "/"))
+}
+
 // artURLUnlocked returns the URL for album art when caller already holds the lock.
 // The albumHash is used to look up the extension from the album entry.
+// Returns the default placeholder image URL if no cover art is available.
 func (m *Module) artURLUnlocked(albumHash string) string {
 	if m.baseURL == "" {
 		return ""
 	}
+	base := strings.TrimRight(m.baseURL, "/")
+
 	// Look up the extension from the container info
 	info, ok := m.index.Containers[albumHash]
 	if !ok || info.Type != "album" {
-		return ""
+		return fmt.Sprintf("%s/art/default.png", base)
 	}
 	artist, ok := m.index.Audio[info.Artist]
 	if !ok {
-		return ""
+		return fmt.Sprintf("%s/art/default.png", base)
 	}
 	album, ok := artist.Albums[info.Album]
 	if !ok || album.CoverArt == "" {
-		return ""
+		return fmt.Sprintf("%s/art/default.png", base)
 	}
 	ext := album.CoverArtExt
 	if ext == "" {
 		ext = ".jpg"
 	}
-	return fmt.Sprintf("%s/art/%s%s", strings.TrimRight(m.baseURL, "/"), url.PathEscape(albumHash), ext)
+	return fmt.Sprintf("%s/art/%s%s", base, url.PathEscape(albumHash), ext)
 }
 
 func (m *Module) indexFilePath() (string, error) {
