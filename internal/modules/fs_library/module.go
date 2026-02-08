@@ -235,6 +235,7 @@ import (
 	"github.com/dhowden/tag"
 	paho "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/mikey-austin/media_utopia/internal/adapters/chromaprint"
 	"github.com/mikey-austin/media_utopia/internal/adapters/mqttserver"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 	"go.uber.org/zap"
@@ -326,6 +327,12 @@ type Config struct {
 
 	// DiscogsToken is an optional Discogs personal access token for higher rate limits.
 	DiscogsToken string
+
+	// AcoustIDAPIKey is the AcoustID application API key for fingerprint lookups.
+	// Free registration at https://acoustid.org/. When set (and chromaprint build
+	// tag enabled), enables fingerprint fallback for albums where MusicBrainz
+	// text search returns no hits.
+	AcoustIDAPIKey string
 
 	// SummaryModel is the Ollama model for generating album summaries (default: "gemma3:12b").
 	SummaryModel string
@@ -626,6 +633,10 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		log.Debug("summary generator not configured",
 			zap.String("summary_model", cfg.SummaryModel),
 			zap.String("embedding_provider", cfg.EmbeddingProvider))
+	}
+
+	if cfg.AcoustIDAPIKey != "" && !chromaprint.Enabled {
+		log.Warn("acoustid_api_key is set but chromaprint build tag is not enabled; fingerprint fallback will be inactive")
 	}
 
 	return &Module{
@@ -980,15 +991,21 @@ func (m *Module) libraryRescan(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	// Parse optional body for sync mode
 	var body struct {
 		Async bool `json:"async"`
+		Force bool `json:"force"`
 	}
 	if len(cmd.Body) > 0 {
 		_ = json.Unmarshal(cmd.Body, &body)
 	}
 
+	scanFn := m.scan
+	if body.Force {
+		scanFn = m.scanForceEnrich
+	}
+
 	if body.Async {
 		// Run scan asynchronously
 		go func() {
-			if err := m.scan(); err != nil {
+			if err := scanFn(); err != nil {
 				m.log.Warn("async rescan failed", zap.Error(err))
 			}
 		}()
@@ -1001,7 +1018,7 @@ func (m *Module) libraryRescan(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	}
 
 	// Run scan synchronously
-	if err := m.scan(); err != nil {
+	if err := scanFn(); err != nil {
 		return errorReply(cmd, "SCAN_FAILED", err.Error())
 	}
 
@@ -1819,7 +1836,15 @@ func containsAllTerms(item mediaItem, terms []string) bool {
 	return true
 }
 
+func (m *Module) scanForceEnrich() error {
+	return m.scanInner(true)
+}
+
 func (m *Module) scan() error {
+	return m.scanInner(false)
+}
+
+func (m *Module) scanInner(forceEnrich bool) error {
 	started := time.Now()
 
 	// Clear embedded art cache on rescan (paths may have changed)
@@ -1986,7 +2011,7 @@ func (m *Module) scan() error {
 			dir := filepath.Dir(item.Path)
 			key := artistName + "|" + albumName
 			if meta, err := readSidecar(dir); err == nil {
-				if sidecarNeedsRefresh(meta) {
+				if forceEnrich || sidecarNeedsRefresh(meta) {
 					enrichTargets = append(enrichTargets, enrichTarget{
 						Artist: artistName, Album: albumName, Dir: dir,
 					})

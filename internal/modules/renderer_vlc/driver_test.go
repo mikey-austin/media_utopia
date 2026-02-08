@@ -53,7 +53,7 @@ func TestDriverCommands(t *testing.T) {
 	if err := driver.Resume(); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if err := driver.Seek(10 * 1000); err != nil {
+	if err := driver.SeekTo(10 * 1000); err != nil {
 		t.Fatalf("seek: %v", err)
 	}
 	if err := driver.SetVolume(0.8); err != nil {

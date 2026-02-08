@@ -99,7 +99,7 @@ func (d *Driver) Stop() error {
 	return err
 }
 
-func (d *Driver) Seek(positionMS int64) error {
+func (d *Driver) SeekTo(positionMS int64) error {
 	playerID, err := d.activePlayerID()
 	if err != nil {
 		return err

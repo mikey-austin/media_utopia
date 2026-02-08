@@ -921,14 +921,15 @@ func (s Service) LibrarySearch(ctx context.Context, selector string, query strin
 }
 
 // LibraryRescan sends library.rescan.
-func (s Service) LibraryRescan(ctx context.Context, selector string, async bool) (LibraryRescanResult, error) {
+func (s Service) LibraryRescan(ctx context.Context, selector string, async bool, force bool) (LibraryRescanResult, error) {
 	library, err := s.Resolver.ResolveLibrary(ctx, selector)
 	if err != nil {
 		return LibraryRescanResult{}, err
 	}
 	body := struct {
 		Async bool `json:"async"`
-	}{Async: async}
+		Force bool `json:"force,omitempty"`
+	}{Async: async, Force: force}
 	cmd, err := mu.NewCommand("library.rescan", body)
 	if err != nil {
 		return LibraryRescanResult{}, WrapError(ExitRuntime, "build command", err)

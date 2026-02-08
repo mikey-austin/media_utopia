@@ -316,6 +316,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.Mod
 				EmbeddingCache:    cfgItem.EmbeddingCache,
 				EnrichEnabled:     cfgItem.EnrichEnabled,
 				DiscogsToken:      cfgItem.DiscogsToken,
+				AcoustIDAPIKey:    cfgItem.AcoustIDAPIKey,
 				SummaryModel:      cfgItem.SummaryModel,
 				SummaryEndpoint:   cfgItem.SummaryEndpoint,
 			})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1835,4 +1836,137 @@ func TestResolveNewContainers(t *testing.T) {
 	if folderResolve.Metadata["type"] != "Folder" {
 		t.Errorf("expected folder type Folder, got %v", folderResolve.Metadata["type"])
 	}
+}
+
+func TestAcoustIDLookup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/lookup" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if r.PostForm.Get("client") != "test-key" {
+			t.Errorf("expected client=test-key, got %q", r.PostForm.Get("client"))
+		}
+		if r.PostForm.Get("meta") != "releasegroups" {
+			t.Errorf("expected meta=releasegroups, got %q", r.PostForm.Get("meta"))
+		}
+		resp := acoustidResponse{
+			Status: "ok",
+			Results: []acoustidResult{
+				{
+					Score: 0.8,
+					Recordings: []acoustidRecording{
+						{
+							ID: "rec-1",
+							ReleaseGroups: []acoustidReleaseGroup{
+								{ID: "rg-abc-123"},
+							},
+						},
+					},
+				},
+				{
+					Score: 0.3,
+					Recordings: []acoustidRecording{
+						{
+							ID: "rec-low",
+							ReleaseGroups: []acoustidReleaseGroup{
+								{ID: "rg-low-score"},
+							},
+						},
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	ac := newAcoustidClient("test-key")
+	defer ac.Close()
+	// Override the HTTP client to use the test server.
+	ac.http = srv.Client()
+
+	ctx := context.Background()
+	// The lookup URL needs to point at our test server, so we test via
+	// a helper that constructs the URL. We'll use a custom round-tripper instead.
+	ac.http.Transport = rewriteTransport{base: srv.Client().Transport, target: srv.URL}
+
+	rgID, err := ac.lookup(ctx, "AQAA-fake-fingerprint", 120)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if rgID != "rg-abc-123" {
+		t.Errorf("expected release-group rg-abc-123, got %q", rgID)
+	}
+}
+
+func TestAcoustIDLookupNoMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := acoustidResponse{
+			Status:  "ok",
+			Results: []acoustidResult{},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	ac := newAcoustidClient("test-key")
+	defer ac.Close()
+	ac.http = srv.Client()
+	ac.http.Transport = rewriteTransport{base: srv.Client().Transport, target: srv.URL}
+
+	ctx := context.Background()
+	rgID, err := ac.lookup(ctx, "AQAA-fake-fingerprint", 120)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if rgID != "" {
+		t.Errorf("expected empty release-group, got %q", rgID)
+	}
+}
+
+func TestFindFirstAudioFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// No audio files → empty
+	if got := findFirstAudioFile(dir); got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+
+	// Create some files (out of order).
+	for _, name := range []string{"c.flac", "a.mp3", "b.ogg", "readme.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := findFirstAudioFile(dir)
+	want := filepath.Join(dir, "a.mp3")
+	if got != want {
+		t.Errorf("findFirstAudioFile = %q, want %q", got, want)
+	}
+}
+
+// rewriteTransport redirects all requests to a test server URL.
+type rewriteTransport struct {
+	base   http.RoundTripper
+	target string
+}
+
+func (t rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Rewrite the request URL to point at the test server.
+	u, _ := url.Parse(t.target)
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	if t.base != nil {
+		return t.base.RoundTrip(req)
+	}
+	return http.DefaultTransport.RoundTrip(req)
 }

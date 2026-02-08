@@ -435,7 +435,7 @@ func (d *upnpDriver) Pause() error  { return d.avtAction("Pause", nil) }
 func (d *upnpDriver) Resume() error { return d.avtAction("Play", map[string]string{"Speed": "1"}) }
 func (d *upnpDriver) Stop() error   { return d.avtAction("Stop", nil) }
 
-func (d *upnpDriver) Seek(positionMS int64) error {
+func (d *upnpDriver) SeekTo(positionMS int64) error {
 	return d.seek(positionMS)
 }
 

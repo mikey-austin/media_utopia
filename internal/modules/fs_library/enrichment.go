@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mikey-austin/media_utopia/internal/adapters/chromaprint"
 	"go.uber.org/zap"
 )
 
@@ -630,6 +631,160 @@ func (c *discogsClient) doWithRetry(ctx context.Context, req *http.Request) (*ht
 	return resp, nil
 }
 
+// acoustidClient queries the AcoustID fingerprint lookup API.
+type acoustidClient struct {
+	http    *http.Client
+	limiter *rateLimiter
+	apiKey  string
+}
+
+type acoustidResponse struct {
+	Status  string           `json:"status"`
+	Results []acoustidResult `json:"results"`
+}
+
+type acoustidResult struct {
+	Score      float64             `json:"score"`
+	Recordings []acoustidRecording `json:"recordings"`
+}
+
+type acoustidRecording struct {
+	ID            string                 `json:"id"`
+	ReleaseGroups []acoustidReleaseGroup `json:"releasegroups"`
+}
+
+type acoustidReleaseGroup struct {
+	ID string `json:"id"`
+}
+
+func newAcoustidClient(apiKey string) *acoustidClient {
+	return &acoustidClient{
+		http: &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				MaxConnsPerHost:     2,
+				MaxIdleConnsPerHost: 2,
+				IdleConnTimeout:     60 * time.Second,
+			},
+		},
+		limiter: newRateLimiter(334 * time.Millisecond),
+		apiKey:  apiKey,
+	}
+}
+
+func (c *acoustidClient) Close() { c.limiter.Stop() }
+
+// lookup queries AcoustID for the given fingerprint and duration, returning
+// the best-matching MusicBrainz release-group ID (or "" if no match).
+func (c *acoustidClient) lookup(ctx context.Context, fingerprint string, durationSec int) (string, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return "", err
+	}
+
+	params := url.Values{}
+	params.Set("client", c.apiKey)
+	params.Set("duration", strconv.Itoa(durationSec))
+	params.Set("fingerprint", fingerprint)
+	params.Set("meta", "releasegroups")
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.acoustid.org/v2/lookup", strings.NewReader(params.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "MediaUtopia/1.0 (https://github.com/mikey-austin/media_utopia)")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.doWithRetry(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("acoustid lookup: status %d: %s", resp.StatusCode, body)
+	}
+
+	var ar acoustidResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&ar); err != nil {
+		return "", fmt.Errorf("acoustid lookup decode: %w", err)
+	}
+
+	if ar.Status != "ok" {
+		return "", fmt.Errorf("acoustid lookup: status %q", ar.Status)
+	}
+
+	// Pick result with highest score above threshold.
+	var bestResult *acoustidResult
+	for i := range ar.Results {
+		r := &ar.Results[i]
+		if r.Score > 0.5 && (bestResult == nil || r.Score > bestResult.Score) {
+			bestResult = r
+		}
+	}
+	if bestResult == nil {
+		return "", nil
+	}
+
+	// Return first release-group ID found.
+	for _, rec := range bestResult.Recordings {
+		for _, rg := range rec.ReleaseGroups {
+			if rg.ID != "" {
+				return rg.ID, nil
+			}
+		}
+	}
+
+	return "", nil
+}
+
+func (c *acoustidClient) doWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp.Body.Close()
+		retryAfter := resp.Header.Get("Retry-After")
+		wait := 2 * time.Second
+		if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 && secs <= 60 {
+			wait = time.Duration(secs) * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+		return c.http.Do(req)
+	}
+	return resp, nil
+}
+
+// findFirstAudioFile returns the first audio file (alphabetically) in dir,
+// or "" if none found. Does not recurse into subdirectories.
+func findFirstAudioFile(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".mp3", ".flac", ".ogg", ".m4a":
+			names = append(names, e.Name())
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return filepath.Join(dir, names[0])
+}
+
 // fetchArtist fetches artist details from MusicBrainz.
 func (c *mbClient) fetchArtist(ctx context.Context, artistID string) (*ArtistInfo, string, error) {
 	if err := c.limiter.Wait(ctx); err != nil {
@@ -975,6 +1130,12 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 	dc := newDiscogsClient(m.config.DiscogsToken)
 	defer dc.Close()
 
+	var acoustid *acoustidClient
+	if m.config.AcoustIDAPIKey != "" && chromaprint.Enabled {
+		acoustid = newAcoustidClient(m.config.AcoustIDAPIKey)
+		defer acoustid.Close()
+	}
+
 	// Artist caches to avoid re-fetching for artists with multiple albums
 	mbArtistCache := map[string]*artistCacheEntry{}
 	dcArtistCache := map[int]*artistCacheEntry{}
@@ -1015,6 +1176,53 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 				zap.Error(err))
 		} else {
 			meta.Discogs = dcMeta
+		}
+
+		// 2b. AcoustID fingerprint fallback (when MB text search missed)
+		if meta.MusicBrainz == nil && acoustid != nil {
+			trackPath := findFirstAudioFile(t.Dir)
+			if trackPath == "" {
+				m.log.Debug("acoustid skipped: no audio file found",
+					zap.String("artist", t.Artist),
+					zap.String("album", t.Album),
+					zap.String("dir", t.Dir))
+			} else {
+				fp, dur, fpErr := chromaprint.FingerprintFile(trackPath)
+				if fpErr != nil {
+					m.log.Debug("fingerprint failed",
+						zap.String("artist", t.Artist),
+						zap.String("album", t.Album),
+						zap.Error(fpErr))
+				} else {
+					rgID, lookupErr := acoustid.lookup(ctx, fp, dur)
+					if lookupErr != nil {
+						m.log.Debug("acoustid lookup failed",
+							zap.String("artist", t.Artist),
+							zap.String("album", t.Album),
+							zap.Error(lookupErr))
+					} else if rgID != "" {
+						mbMeta, fetchErr := mb.fetchReleaseGroup(ctx, rgID)
+						if fetchErr == nil {
+							meta.MusicBrainz = mbMeta
+							m.log.Info("acoustid matched",
+								zap.String("artist", t.Artist),
+								zap.String("album", t.Album),
+								zap.String("release_group", rgID))
+						} else {
+							m.log.Debug("acoustid release-group fetch failed",
+								zap.String("artist", t.Artist),
+								zap.String("album", t.Album),
+								zap.String("release_group", rgID),
+								zap.Error(fetchErr))
+						}
+					} else {
+						m.log.Debug("acoustid no match",
+							zap.String("artist", t.Artist),
+							zap.String("album", t.Album),
+							zap.Int("duration", dur))
+					}
+				}
+			}
 		}
 
 		// 3. Discogs: fetch main release for fuller notes + credits

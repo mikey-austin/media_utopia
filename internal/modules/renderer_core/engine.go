@@ -16,7 +16,7 @@ type Driver interface {
 	Pause() error
 	Resume() error
 	Stop() error
-	Seek(positionMS int64) error
+	SeekTo(positionMS int64) error
 	SetVolume(volume float64) error
 	SetMute(mute bool) error
 	Position() (positionMS int64, durationMS int64, ok bool)
@@ -354,7 +354,7 @@ func (e *Engine) handlePlaybackSeek(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	if err := e.Driver.Seek(body.PositionMS); err != nil {
+	if err := e.Driver.SeekTo(body.PositionMS); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 	e.State.Playback.PositionMS = body.PositionMS

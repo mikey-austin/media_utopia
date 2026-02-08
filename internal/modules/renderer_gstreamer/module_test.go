@@ -71,7 +71,7 @@ func (d stubDriver) Play(url string, positionMS int64) error { return nil }
 func (d stubDriver) Pause() error                            { return nil }
 func (d stubDriver) Resume() error                           { return nil }
 func (d stubDriver) Stop() error                             { return nil }
-func (d stubDriver) Seek(positionMS int64) error             { return nil }
+func (d stubDriver) SeekTo(positionMS int64) error           { return nil }
 func (d stubDriver) SetVolume(volume float64) error          { return nil }
 func (d stubDriver) SetMute(mute bool) error                 { return nil }
 func (d stubDriver) Position() (int64, int64, bool)          { return 0, 0, false }

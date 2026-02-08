@@ -29,7 +29,7 @@ func (d *fakeDriver) Resume() error {
 	return nil
 }
 func (d *fakeDriver) Stop() error { return nil }
-func (d *fakeDriver) Seek(positionMS int64) error {
+func (d *fakeDriver) SeekTo(positionMS int64) error {
 	d.seekMS = positionMS
 	return nil
 }

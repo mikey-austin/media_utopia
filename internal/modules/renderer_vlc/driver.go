@@ -56,7 +56,7 @@ func (d *Driver) Play(streamURL string, positionMS int64) error {
 	}
 	_, _ = d.request(url.Values{"command": []string{"pl_play"}})
 	if positionMS > 0 {
-		return d.Seek(positionMS)
+		return d.SeekTo(positionMS)
 	}
 	return nil
 }
@@ -76,7 +76,7 @@ func (d *Driver) Stop() error {
 	return err
 }
 
-func (d *Driver) Seek(positionMS int64) error {
+func (d *Driver) SeekTo(positionMS int64) error {
 	seconds := int64(0)
 	if positionMS > 0 {
 		seconds = positionMS / 1000

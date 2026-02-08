@@ -21,7 +21,7 @@ func (d *Driver) Play(url string, positionMS int64) error {
 func (d *Driver) Pause() error                { return errors.New("gstreamer build tag not enabled") }
 func (d *Driver) Resume() error               { return errors.New("gstreamer build tag not enabled") }
 func (d *Driver) Stop() error                 { return errors.New("gstreamer build tag not enabled") }
-func (d *Driver) Seek(positionMS int64) error { return errors.New("gstreamer build tag not enabled") }
+func (d *Driver) SeekTo(positionMS int64) error { return errors.New("gstreamer build tag not enabled") }
 func (d *Driver) SetVolume(volume float64) error {
 	return errors.New("gstreamer build tag not enabled")
 }

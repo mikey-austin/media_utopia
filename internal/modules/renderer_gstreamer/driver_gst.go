@@ -109,8 +109,8 @@ func (d *Driver) Stop() error {
 	return d.stopCurrentLocked()
 }
 
-// Seek seeks within the current pipeline.
-func (d *Driver) Seek(positionMS int64) error {
+// SeekTo seeks within the current pipeline.
+func (d *Driver) SeekTo(positionMS int64) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 

@@ -194,6 +194,7 @@ func libResolveCommand() *cobra.Command {
 
 func libRescanCommand() *cobra.Command {
 	var async bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "rescan [library]",
@@ -202,6 +203,8 @@ func libRescanCommand() *cobra.Command {
 
 By default runs synchronously and reports the number of items found.
 Use --async to start the scan in the background and return immediately.
+Use --force to re-enrich all albums, including negative-cache sidecars
+that would normally be skipped until they expire (30 days).
 
 This command is only supported by libraries that implement the rescan
 capability (e.g., fs_library). Other libraries may return an error.
@@ -210,6 +213,7 @@ Examples:
   mu lib rescan                    # rescan default library
   mu lib rescan filesystem         # rescan filesystem library
   mu lib rescan --async            # start rescan in background
+  mu lib rescan --force            # force re-enrichment of all albums
 `,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -221,7 +225,7 @@ Examples:
 			if len(args) > 0 {
 				selector = args[0]
 			}
-			result, err := app.service.LibraryRescan(ctx, selector, async)
+			result, err := app.service.LibraryRescan(ctx, selector, async, force)
 			if err != nil {
 				return err
 			}
@@ -230,6 +234,7 @@ Examples:
 	}
 
 	cmd.Flags().BoolVar(&async, "async", false, "run rescan in background")
+	cmd.Flags().BoolVar(&force, "force", false, "force re-enrichment of all albums")
 	return cmd
 }
 
