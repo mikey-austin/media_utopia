@@ -376,6 +376,16 @@ type Module struct {
 
 	// Summary generator (Ollama)
 	summaryGen *OllamaGenerator
+
+	// Embedded art cache keyed by file path
+	artCache   map[string]*artCacheEntry
+	artCacheMu sync.RWMutex
+}
+
+// artCacheEntry holds cached embedded album art data.
+type artCacheEntry struct {
+	data []byte
+	mime string
 }
 
 // libraryIndex is the in-memory index of all scanned media.
@@ -442,6 +452,10 @@ type mediaItem struct {
 
 	// DurationMS is the track duration in milliseconds (0 if unknown).
 	DurationMS int64 `json:"durationMs,omitempty"`
+
+	// SearchText is the precomputed lowercased search text for keyword matching.
+	// Built at scan time to avoid per-query recomputation.
+	SearchText string `json:"-"`
 }
 
 // libraryItemsReply is the response format for browse and search commands.
@@ -580,6 +594,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		dupeIndex:     NewDuplicateIndex(),
 		enrichMeta:    make(map[string]*AlbumMetadata),
 		summaryGen:    summaryGen,
+		artCache:      make(map[string]*artCacheEntry),
 	}, nil
 }
 
@@ -953,11 +968,11 @@ func (m *Module) libraryRescan(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 
 func (m *Module) browse(containerID string, start int64, count int64) ([]libraryItem, int64, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 
 	// Root: list audio and video containers
 	if containerID == "" {
 		defaultImg := m.defaultArtURLUnlocked()
+		m.mu.RUnlock()
 		items := []libraryItem{
 			{ItemID: "container:audio", Name: "Audio", Type: "Folder", ImageURL: defaultImg},
 			{ItemID: "container:video", Name: "Video", Type: "Folder", ImageURL: defaultImg},
@@ -965,14 +980,16 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 		return paginate(items, start, count), int64(len(items)), nil
 	}
 
-	// Audio root: list artists
+	// Audio root: list artists — copy names under lock, sort outside
 	if containerID == "container:audio" {
 		artists := make([]string, 0, len(m.index.Audio))
 		for artist := range m.index.Audio {
 			artists = append(artists, artist)
 		}
-		sort.Strings(artists)
 		defaultImg := m.defaultArtURLUnlocked()
+		m.mu.RUnlock()
+
+		sort.Strings(artists)
 		items := make([]libraryItem, 0, len(artists))
 		for _, artistName := range artists {
 			artistHash := containerHash("artist", artistName, "")
@@ -1006,35 +1023,50 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 				ImageURL:    defaultImg,
 			})
 		}
+		m.mu.RUnlock()
 		return paginate(items, start, count), int64(len(items)), nil
 	}
 
 	// Look up container by hash
 	info, ok := m.index.Containers[containerID]
 	if !ok {
+		m.mu.RUnlock()
 		return nil, 0, errors.New("container not found")
 	}
 
-	// Artist container: list albums
+	// Artist container: list albums — copy names + art URLs under lock, sort outside
 	if info.Type == "artist" {
 		artist, ok := m.index.Audio[info.Artist]
 		if !ok {
+			m.mu.RUnlock()
 			return nil, 0, errors.New("artist not found")
 		}
-		albums := make([]string, 0, len(artist.Albums))
-		for album := range artist.Albums {
-			albums = append(albums, album)
+		type albumItem struct {
+			name     string
+			imageURL string
 		}
-		sort.Strings(albums)
-		items := make([]libraryItem, 0, len(albums))
-		for _, albumName := range albums {
+		albumItems := make([]albumItem, 0, len(artist.Albums))
+		for albumName := range artist.Albums {
 			albumHash := containerHash("album", info.Artist, albumName)
+			albumItems = append(albumItems, albumItem{
+				name:     albumName,
+				imageURL: m.artURLUnlocked(albumHash),
+			})
+		}
+		m.mu.RUnlock()
+
+		sort.Slice(albumItems, func(i, j int) bool {
+			return albumItems[i].name < albumItems[j].name
+		})
+		items := make([]libraryItem, 0, len(albumItems))
+		for _, ai := range albumItems {
+			albumHash := containerHash("album", info.Artist, ai.name)
 			items = append(items, libraryItem{
 				ItemID:      albumHash,
-				Name:        albumName,
+				Name:        ai.name,
 				Type:        "Folder",
 				ContainerID: containerID,
-				ImageURL:    m.artURLUnlocked(albumHash),
+				ImageURL:    ai.imageURL,
 			})
 		}
 		return paginate(items, start, count), int64(len(items)), nil
@@ -1044,10 +1076,12 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 	if info.Type == "album" {
 		artist, ok := m.index.Audio[info.Artist]
 		if !ok {
+			m.mu.RUnlock()
 			return nil, 0, errors.New("artist not found")
 		}
 		album, ok := artist.Albums[info.Album]
 		if !ok {
+			m.mu.RUnlock()
 			return nil, 0, errors.New("album not found")
 		}
 		// Get art URL (defaults to placeholder if no cover art)
@@ -1070,9 +1104,11 @@ func (m *Module) browse(containerID string, start int64, count int64) ([]library
 				ImageURL:    imageURL,
 			})
 		}
+		m.mu.RUnlock()
 		return paginate(items, start, count), int64(len(items)), nil
 	}
 
+	m.mu.RUnlock()
 	return nil, 0, errors.New("unsupported container")
 }
 
@@ -1096,12 +1132,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 	defer m.mu.RUnlock()
 	items := make([]libraryItem, 0)
 	for _, item := range m.index.Items {
-		var enrich *AlbumMetadata
-		if item.MediaType == "Audio" {
-			key := firstOr(item.Artists, "Unknown Artist") + "|" + item.Album
-			enrich = m.enrichMeta[key]
-		}
-		if !containsAllTerms(item, terms, enrich) {
+		if !containsAllTerms(item, terms) {
 			continue
 		}
 		artURL := ""
@@ -1408,7 +1439,9 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 		zap.Int("vector_index_size", m.vectorIndex.Size()))
 }
 
-func containsAllTerms(item mediaItem, terms []string, enrich *AlbumMetadata) bool {
+// buildSearchText creates the lowercased search text for a media item.
+// Called once at scan time to precompute the searchable string.
+func buildSearchText(item mediaItem, enrich *AlbumMetadata) string {
 	parts := []string{item.Name, item.Title, item.Album, strings.Join(item.Artists, " ")}
 	if enrich != nil {
 		if mb := enrich.MusicBrainz; mb != nil {
@@ -1434,9 +1467,12 @@ func containsAllTerms(item mediaItem, terms []string, enrich *AlbumMetadata) boo
 			}
 		}
 	}
-	searchText := strings.ToLower(strings.Join(parts, " "))
+	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func containsAllTerms(item mediaItem, terms []string) bool {
 	for _, term := range terms {
-		if !strings.Contains(searchText, term) {
+		if !strings.Contains(item.SearchText, term) {
 			return false
 		}
 	}
@@ -1445,6 +1481,12 @@ func containsAllTerms(item mediaItem, terms []string, enrich *AlbumMetadata) boo
 
 func (m *Module) scan() error {
 	started := time.Now()
+
+	// Clear embedded art cache on rescan (paths may have changed)
+	m.artCacheMu.Lock()
+	m.artCache = make(map[string]*artCacheEntry)
+	m.artCacheMu.Unlock()
+
 	exts := buildExtMap(m.config.IncludeExts)
 	audioExts := defaultAudioExts()
 	videoExts := defaultVideoExts()
@@ -1472,7 +1514,7 @@ func (m *Module) scan() error {
 			if !exts[ext] {
 				return nil
 			}
-			item, err := m.buildItem(path, audioExts, videoExts)
+			item, err := m.buildItem(path, d, audioExts, videoExts)
 			if err != nil {
 				m.log.Debug("item build failed", zap.Error(err), zap.String("path", path))
 				return nil
@@ -1663,6 +1705,17 @@ func (m *Module) scan() error {
 		}
 	}
 
+	// Precompute search text for each item using enrichment metadata
+	for id, item := range next.Items {
+		var enrich *AlbumMetadata
+		if item.MediaType == "Audio" {
+			key := firstOr(item.Artists, "Unknown Artist") + "|" + item.Album
+			enrich = enrichMeta[key]
+		}
+		item.SearchText = buildSearchText(item, enrich)
+		next.Items[id] = item
+	}
+
 	m.mu.Lock()
 	m.index = next
 	m.enrichMeta = enrichMeta
@@ -1690,8 +1743,8 @@ func (m *Module) scan() error {
 	return nil
 }
 
-func (m *Module) buildItem(path string, audioExts map[string]bool, videoExts map[string]bool) (mediaItem, error) {
-	info, err := os.Stat(path)
+func (m *Module) buildItem(path string, d os.DirEntry, audioExts map[string]bool, videoExts map[string]bool) (mediaItem, error) {
+	info, err := d.Info()
 	if err != nil {
 		return mediaItem{}, err
 	}
@@ -2009,12 +2062,15 @@ func (m *Module) serveArt(w http.ResponseWriter, r *http.Request) {
 	coverPath := album.CoverArt
 	m.mu.RUnlock()
 
+	// Album art URLs are hash-based and effectively immutable; cache aggressively.
+	w.Header().Set("Cache-Control", "public, max-age=604800, immutable")
+
 	// Check if coverPath is an audio file (embedded art) or image file
 	ext := strings.ToLower(filepath.Ext(coverPath))
 	audioExts := defaultAudioExts()
 	if audioExts[ext] {
-		// Extract embedded art from audio file
-		data, mime, err := extractEmbeddedArt(coverPath)
+		// Extract embedded art from audio file (with in-memory cache)
+		data, mime, err := m.getEmbeddedArt(coverPath)
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -2292,6 +2348,33 @@ func mimeToExt(mime string) string {
 	default:
 		return ".jpg" // Default to jpg for unknown types
 	}
+}
+
+// getEmbeddedArt returns embedded album art, using an in-memory cache to avoid
+// re-parsing audio files on every HTTP request.
+func (m *Module) getEmbeddedArt(path string) ([]byte, string, error) {
+	m.artCacheMu.RLock()
+	if entry, ok := m.artCache[path]; ok {
+		m.artCacheMu.RUnlock()
+		return entry.data, entry.mime, nil
+	}
+	m.artCacheMu.RUnlock()
+
+	data, mime, err := extractEmbeddedArt(path)
+	if err != nil {
+		return nil, "", err
+	}
+
+	m.artCacheMu.Lock()
+	// Cap cache at 200 entries to bound memory usage
+	if len(m.artCache) >= 200 {
+		// Evict all entries (simple reset; albums are re-cached on demand)
+		m.artCache = make(map[string]*artCacheEntry)
+	}
+	m.artCache[path] = &artCacheEntry{data: data, mime: mime}
+	m.artCacheMu.Unlock()
+
+	return data, mime, nil
 }
 
 // extractEmbeddedArt extracts album art from an audio file.
