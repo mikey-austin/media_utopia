@@ -63,10 +63,42 @@ func TestBrowseSearchResolve(t *testing.T) {
 	}
 
 	audioContainer := browse.Items[0].ItemID
+	// Browse Audio → expect 4 sub-categories
 	cmd = mu.CommandEnvelope{
 		ID:   "c2",
 		Type: "library.browse",
 		Body: mustJSON(mu.LibraryBrowseBody{ContainerID: audioContainer, Start: 0, Count: 10}),
+	}
+	reply = mod.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if err := json.Unmarshal(reply.Body, &browse); err != nil {
+		t.Fatalf("browse audio root unmarshal: %v", err)
+	}
+	if len(browse.Items) != 4 {
+		t.Fatalf("expected 4 audio sub-categories, got %d", len(browse.Items))
+	}
+
+	// Browse By Artist → expect letter folders
+	byArtistContainer := browse.Items[1].ItemID // "By Artist"
+	cmd = mu.CommandEnvelope{
+		ID:   "c2a",
+		Type: "library.browse",
+		Body: mustJSON(mu.LibraryBrowseBody{ContainerID: byArtistContainer, Start: 0, Count: 10}),
+	}
+	reply = mod.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if err := json.Unmarshal(reply.Body, &browse); err != nil {
+		t.Fatalf("browse letters unmarshal: %v", err)
+	}
+	if len(browse.Items) == 0 {
+		t.Fatalf("expected at least one letter folder")
+	}
+	// Pick the letter "A" for "Artist"
+	letterContainer := browse.Items[0].ItemID
+
+	// Browse letter → expect artist
+	cmd = mu.CommandEnvelope{
+		ID:   "c2b",
+		Type: "library.browse",
+		Body: mustJSON(mu.LibraryBrowseBody{ContainerID: letterContainer, Start: 0, Count: 10}),
 	}
 	reply = mod.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 	if err := json.Unmarshal(reply.Body, &browse); err != nil {
@@ -77,6 +109,7 @@ func TestBrowseSearchResolve(t *testing.T) {
 	}
 	albumContainer := browse.Items[0].ItemID
 
+	// Browse artist → expect album
 	cmd = mu.CommandEnvelope{
 		ID:   "c3",
 		Type: "library.browse",
@@ -207,7 +240,7 @@ func TestContainerResolveAndMetadataOnly(t *testing.T) {
 		t.Errorf("expected no sources for container, got %d", len(resolve.Sources))
 	}
 
-	// Browse container:audio to get artist IDs (now hashed)
+	// Browse container:audio → 4 sub-categories
 	browseCmd := mu.CommandEnvelope{
 		ID:   "b0",
 		Type: "library.browse",
@@ -216,7 +249,36 @@ func TestContainerResolveAndMetadataOnly(t *testing.T) {
 	browseReply := mod.libraryBrowse(browseCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 	var browse libraryItemsReply
 	if err := json.Unmarshal(browseReply.Body, &browse); err != nil {
-		t.Fatalf("browse artists unmarshal: %v", err)
+		t.Fatalf("browse audio root unmarshal: %v", err)
+	}
+	if len(browse.Items) != 4 {
+		t.Fatalf("expected 4 audio sub-categories, got %d", len(browse.Items))
+	}
+
+	// Browse By Artist → letters
+	byArtistCmd := mu.CommandEnvelope{
+		ID:   "b0a",
+		Type: "library.browse",
+		Body: mustJSON(mu.LibraryBrowseBody{ContainerID: "container:audio:byartist", Start: 0, Count: 10}),
+	}
+	browseReply = mod.libraryBrowse(byArtistCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if err := json.Unmarshal(browseReply.Body, &browse); err != nil {
+		t.Fatalf("browse letters unmarshal: %v", err)
+	}
+	if len(browse.Items) == 0 {
+		t.Fatal("expected at least one letter")
+	}
+	letterID := browse.Items[0].ItemID
+
+	// Browse letter → artists
+	letterCmd := mu.CommandEnvelope{
+		ID:   "b0b",
+		Type: "library.browse",
+		Body: mustJSON(mu.LibraryBrowseBody{ContainerID: letterID, Start: 0, Count: 10}),
+	}
+	browseReply = mod.libraryBrowse(letterCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if err := json.Unmarshal(browseReply.Body, &browse); err != nil {
+		t.Fatalf("browse letter artists unmarshal: %v", err)
 	}
 	if len(browse.Items) == 0 {
 		t.Fatal("expected at least one artist")
@@ -1435,5 +1497,342 @@ func TestOllamaGeneratorError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("expected 404 in error, got: %v", err)
+	}
+}
+
+// newTestModule creates a module, scans, and starts the HTTP server.
+func newTestModule(t *testing.T, root string, exts []string) *Module {
+	t.Helper()
+	if exts == nil {
+		exts = []string{".mp3", ".mkv"}
+	}
+	mod, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:         "mu:library:filesystem:test:browse",
+		Roots:          []string{root},
+		IncludeExts:    exts,
+		HTTPListen:     "127.0.0.1:0",
+		ScanIntervalMS: 0,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+	if err := mod.scan(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	return mod
+}
+
+func browseContainer(t *testing.T, mod *Module, containerID string) libraryItemsReply {
+	t.Helper()
+	cmd := mu.CommandEnvelope{
+		ID:   "b",
+		Type: "library.browse",
+		Body: mustJSON(mu.LibraryBrowseBody{ContainerID: containerID, Start: 0, Count: 100}),
+	}
+	reply := mod.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var result libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &result); err != nil {
+		t.Fatalf("browse unmarshal: %v", err)
+	}
+	return result
+}
+
+func resolveItem(t *testing.T, mod *Module, itemID string) mu.LibraryResolveReply {
+	t.Helper()
+	cmd := mu.CommandEnvelope{
+		ID:   "r",
+		Type: "library.resolve",
+		Body: mustJSON(mu.LibraryResolveBody{ItemID: itemID}),
+	}
+	reply := mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var result mu.LibraryResolveReply
+	if err := json.Unmarshal(reply.Body, &result); err != nil {
+		t.Fatalf("resolve unmarshal: %v", err)
+	}
+	return result
+}
+
+func TestBrowseGenreHierarchy(t *testing.T) {
+	root := t.TempDir()
+	// Create two albums
+	dir1 := filepath.Join(root, "ArtistA", "AlbumX")
+	dir2 := filepath.Join(root, "ArtistB", "AlbumY")
+	if err := os.MkdirAll(dir1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir1, "ArtistA - Track1.mp3"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(dir2, "ArtistB - Track2.mp3"), []byte(""), 0o644)
+
+	mod := newTestModule(t, root, []string{".mp3"})
+
+	// Write a sidecar file for ArtistA/AlbumX with genres
+	sidecar := AlbumMetadata{
+		Version:   3,
+		FetchedAt: time.Now(),
+		Artist:    "ArtistA",
+		Album:     "AlbumX",
+		MusicBrainz: &MBMetadata{
+			Genres: []string{"Rock", "Blues"},
+		},
+	}
+	sidecarData, _ := json.Marshal(sidecar)
+	os.WriteFile(filepath.Join(dir1, ".mu_album_metadata.json"), sidecarData, 0o644)
+
+	// Re-scan to pick up sidecar and rebuild indexes
+	if err := mod.scan(); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+
+	// Browse genre list
+	genres := browseContainer(t, mod, "container:audio:bygenre")
+	if genres.Total < 2 {
+		t.Fatalf("expected at least 2 genres (Rock, Blues, Unknown), got %d", genres.Total)
+	}
+
+	// Find "Rock" genre and browse it
+	var rockID string
+	for _, g := range genres.Items {
+		if g.Name == "Rock" {
+			rockID = g.ItemID
+		}
+	}
+	if rockID == "" {
+		t.Fatal("expected to find Rock genre")
+	}
+
+	albums := browseContainer(t, mod, rockID)
+	if albums.Total != 1 {
+		t.Fatalf("expected 1 album in Rock, got %d", albums.Total)
+	}
+	if !strings.Contains(albums.Items[0].Name, "ArtistA") {
+		t.Errorf("expected ArtistA in album name, got %q", albums.Items[0].Name)
+	}
+
+	// Verify "Unknown" exists for unenriched album
+	var unknownID string
+	for _, g := range genres.Items {
+		if g.Name == "Unknown" {
+			unknownID = g.ItemID
+		}
+	}
+	if unknownID == "" {
+		t.Fatal("expected to find Unknown genre for unenriched album")
+	}
+	unknownAlbums := browseContainer(t, mod, unknownID)
+	if unknownAlbums.Total != 1 {
+		t.Fatalf("expected 1 album in Unknown, got %d", unknownAlbums.Total)
+	}
+}
+
+func TestBrowseLetterHierarchy(t *testing.T) {
+	root := t.TempDir()
+	// Create artists starting with different letters
+	for _, name := range []string{"Alpha", "Beta", "123Band"} {
+		dir := filepath.Join(root, name, "Album")
+		os.MkdirAll(dir, 0o755)
+		os.WriteFile(filepath.Join(dir, name+" - Track.mp3"), []byte(""), 0o644)
+	}
+
+	mod := newTestModule(t, root, []string{".mp3"})
+
+	// Browse letter list
+	letters := browseContainer(t, mod, "container:audio:byartist")
+	if letters.Total < 3 {
+		t.Fatalf("expected at least 3 letters (A, B, #), got %d", letters.Total)
+	}
+
+	// Verify A-Z sorted first, # at end
+	lastItem := letters.Items[len(letters.Items)-1]
+	if lastItem.Name != "#" {
+		t.Errorf("expected # at end, got %q", lastItem.Name)
+	}
+
+	// Browse letter "A" → should have "Alpha"
+	var aLetterID string
+	for _, l := range letters.Items {
+		if l.Name == "A" {
+			aLetterID = l.ItemID
+		}
+	}
+	if aLetterID == "" {
+		t.Fatal("expected to find letter A")
+	}
+	artists := browseContainer(t, mod, aLetterID)
+	if artists.Total != 1 || artists.Items[0].Name != "Alpha" {
+		t.Fatalf("expected Alpha under A, got %+v", artists.Items)
+	}
+
+	// Browse "#" → should have "123Band"
+	var hashLetterID string
+	for _, l := range letters.Items {
+		if l.Name == "#" {
+			hashLetterID = l.ItemID
+		}
+	}
+	if hashLetterID == "" {
+		t.Fatal("expected to find letter #")
+	}
+	hashArtists := browseContainer(t, mod, hashLetterID)
+	if hashArtists.Total != 1 || hashArtists.Items[0].Name != "123Band" {
+		t.Fatalf("expected 123Band under #, got %+v", hashArtists.Items)
+	}
+}
+
+func TestBrowseRecentAudio(t *testing.T) {
+	root := t.TempDir()
+	// Create albums with different mtimes
+	for i, name := range []string{"OldArtist", "NewArtist", "NewestArtist"} {
+		dir := filepath.Join(root, name, "Album")
+		os.MkdirAll(dir, 0o755)
+		fpath := filepath.Join(dir, name+" - Track.mp3")
+		os.WriteFile(fpath, []byte("data"), 0o644)
+		// Set different mtimes: oldest first
+		mtime := time.Now().Add(time.Duration(i-3) * time.Hour)
+		os.Chtimes(fpath, mtime, mtime)
+	}
+
+	mod := newTestModule(t, root, []string{".mp3"})
+
+	recent := browseContainer(t, mod, "container:audio:recent")
+	if recent.Total != 3 {
+		t.Fatalf("expected 3 recent albums, got %d", recent.Total)
+	}
+	// Newest should be first
+	if !strings.Contains(recent.Items[0].Name, "NewestArtist") {
+		t.Errorf("expected newest album first, got %q", recent.Items[0].Name)
+	}
+	// Oldest should be last
+	if !strings.Contains(recent.Items[2].Name, "OldArtist") {
+		t.Errorf("expected oldest album last, got %q", recent.Items[2].Name)
+	}
+}
+
+func TestBrowseRecentVideo(t *testing.T) {
+	root := t.TempDir()
+	// Create videos with different mtimes
+	for i, name := range []string{"old.mkv", "new.mkv", "newest.mkv"} {
+		fpath := filepath.Join(root, name)
+		os.WriteFile(fpath, []byte("data"), 0o644)
+		mtime := time.Now().Add(time.Duration(i-3) * time.Hour)
+		os.Chtimes(fpath, mtime, mtime)
+	}
+
+	mod := newTestModule(t, root, []string{".mkv"})
+
+	// Browse video root → 2 sub-categories
+	videoRoot := browseContainer(t, mod, "container:video")
+	if videoRoot.Total != 2 {
+		t.Fatalf("expected 2 video sub-categories, got %d", videoRoot.Total)
+	}
+
+	recent := browseContainer(t, mod, "container:video:recent")
+	if recent.Total != 3 {
+		t.Fatalf("expected 3 recent videos, got %d", recent.Total)
+	}
+	// Newest should be first
+	if recent.Items[0].Name != "newest" {
+		t.Errorf("expected newest video first, got %q", recent.Items[0].Name)
+	}
+}
+
+func TestBrowseFolderTree(t *testing.T) {
+	root := t.TempDir()
+	// Create nested directory structure
+	subDir := filepath.Join(root, "sub")
+	subSubDir := filepath.Join(root, "sub", "deep")
+	os.MkdirAll(subSubDir, 0o755)
+	os.WriteFile(filepath.Join(root, "root_track.mp3"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(subDir, "sub_track.mp3"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(subSubDir, "deep_track.mp3"), []byte(""), 0o644)
+
+	mod := newTestModule(t, root, []string{".mp3"})
+
+	// Browse folder roots
+	roots := browseContainer(t, mod, "container:audio:byfolder")
+	if roots.Total == 0 {
+		t.Fatal("expected at least one folder root")
+	}
+
+	// Browse root folder → should have sub-dir + root_track
+	rootFolderID := roots.Items[0].ItemID
+	rootContents := browseContainer(t, mod, rootFolderID)
+	hasFolder := false
+	hasTrack := false
+	for _, item := range rootContents.Items {
+		if item.Type == "Folder" {
+			hasFolder = true
+		}
+		if item.Type == "Audio" {
+			hasTrack = true
+		}
+	}
+	if !hasFolder {
+		t.Error("expected folder in root dir contents")
+	}
+	if !hasTrack {
+		t.Error("expected track in root dir contents")
+	}
+}
+
+func TestResolveNewContainers(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "TestArtist", "TestAlbum")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "TestArtist - Track.mp3"), []byte(""), 0o644)
+
+	mod := newTestModule(t, root, []string{".mp3"})
+
+	// Resolve new fixed containers
+	for _, tc := range []struct {
+		id    string
+		title string
+	}{
+		{"container:audio:bygenre", "By Genre"},
+		{"container:audio:byartist", "By Artist"},
+		{"container:audio:recent", "Recently Added"},
+		{"container:audio:byfolder", "By Folder"},
+		{"container:video:recent", "Recently Added"},
+		{"container:video:byfolder", "By Folder"},
+	} {
+		r := resolveItem(t, mod, tc.id)
+		if r.Metadata["title"] != tc.title {
+			t.Errorf("resolve %s: expected title %q, got %v", tc.id, tc.title, r.Metadata["title"])
+		}
+		if r.Metadata["type"] != "Folder" {
+			t.Errorf("resolve %s: expected type Folder, got %v", tc.id, r.Metadata["type"])
+		}
+	}
+
+	// Resolve genre container
+	genres := browseContainer(t, mod, "container:audio:bygenre")
+	if genres.Total == 0 {
+		t.Fatal("expected at least one genre")
+	}
+	genreResolve := resolveItem(t, mod, genres.Items[0].ItemID)
+	if genreResolve.Metadata["type"] != "MusicGenre" {
+		t.Errorf("expected genre type MusicGenre, got %v", genreResolve.Metadata["type"])
+	}
+
+	// Resolve letter container
+	letters := browseContainer(t, mod, "container:audio:byartist")
+	if letters.Total == 0 {
+		t.Fatal("expected at least one letter")
+	}
+	letterResolve := resolveItem(t, mod, letters.Items[0].ItemID)
+	if letterResolve.Metadata["type"] != "Folder" {
+		t.Errorf("expected letter type Folder, got %v", letterResolve.Metadata["type"])
+	}
+
+	// Resolve folder container
+	folders := browseContainer(t, mod, "container:audio:byfolder")
+	if folders.Total == 0 {
+		t.Fatal("expected at least one folder root")
+	}
+	folderResolve := resolveItem(t, mod, folders.Items[0].ItemID)
+	if folderResolve.Metadata["type"] != "Folder" {
+		t.Errorf("expected folder type Folder, got %v", folderResolve.Metadata["type"])
 	}
 }

@@ -403,13 +403,57 @@ type libraryIndex struct {
 	// Containers maps hashed container IDs to container info.
 	// This enables opaque IDs while preserving fast lookups.
 	Containers map[string]containerInfo `json:"containers,omitempty"`
+
+	// GenreAlbums maps genre name → album refs for genre browsing.
+	GenreAlbums map[string][]genreAlbumRef `json:"-"`
+
+	// ArtistLetters maps uppercase letter (or "#") → sorted artist names.
+	ArtistLetters map[string][]string `json:"-"`
+
+	// RecentAudioAlbums holds up to 50 recently added albums sorted by newest first.
+	RecentAudioAlbums []recentAlbumRef `json:"-"`
+
+	// RecentVideos holds up to 50 recently added video IDs sorted by newest first.
+	RecentVideos []string `json:"-"`
+
+	// AudioFolderTree maps directory path → folder node for audio filesystem browsing.
+	AudioFolderTree map[string]*folderNode `json:"-"`
+
+	// VideoFolderTree maps directory path → folder node for video filesystem browsing.
+	VideoFolderTree map[string]*folderNode `json:"-"`
 }
 
 // containerInfo stores the data needed to resolve a container by its hash ID.
+// The Artist field is overloaded to store the type-specific key:
+//   - "artist"/"album": artist name
+//   - "genre": genre name
+//   - "letter": letter ("A"-"Z" or "#")
+//   - "audiodir"/"videodir": directory path
 type containerInfo struct {
-	Type   string `json:"type"`   // "artist" or "album"
-	Artist string `json:"artist"` // Artist name
+	Type   string `json:"type"`   // "artist", "album", "genre", "letter", "audiodir", "videodir"
+	Artist string `json:"artist"` // Artist name (or genre/letter/dir path depending on Type)
 	Album  string `json:"album"`  // Album name (only for album type)
+}
+
+// genreAlbumRef references an album within a genre index.
+type genreAlbumRef struct {
+	Artist string
+	Album  string
+}
+
+// recentAlbumRef references a recently added album with its newest track mtime.
+type recentAlbumRef struct {
+	Artist   string
+	Album    string
+	MaxMtime time.Time
+}
+
+// folderNode represents a directory in the folder browse tree.
+type folderNode struct {
+	Path    string
+	Name    string
+	SubDirs []string // sorted child directory paths
+	Items   []string // sorted item IDs in this directory
 }
 
 // artistEntry groups albums under an artist.
@@ -452,6 +496,9 @@ type mediaItem struct {
 
 	// DurationMS is the track duration in milliseconds (0 if unknown).
 	DurationMS int64 `json:"durationMs,omitempty"`
+
+	// Mtime is the file modification time, used for "recently added" sorting.
+	Mtime time.Time `json:"-"`
 
 	// SearchText is the precomputed lowercased search text for keyword matching.
 	// Built at scan time to avoid per-query recomputation.
@@ -587,7 +634,11 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		config:        cfg,
 		cmdTopic:      cmdTopic,
 		cmdQueue:      make(chan cmdWork, 64),
-		index:         &libraryIndex{Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}, Containers: map[string]containerInfo{}},
+		index: &libraryIndex{
+			Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}, Containers: map[string]containerInfo{},
+			GenreAlbums: map[string][]genreAlbumRef{}, ArtistLetters: map[string][]string{},
+			AudioFolderTree: map[string]*folderNode{}, VideoFolderTree: map[string]*folderNode{},
+		},
 		embedProvider: embedProvider,
 		embedCache:    embedCache,
 		vectorIndex:   NewVectorIndex(),
@@ -967,149 +1018,438 @@ func (m *Module) libraryRescan(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 }
 
 func (m *Module) browse(containerID string, start int64, count int64) ([]libraryItem, int64, error) {
+	switch containerID {
+	case "":
+		return m.browseRoot(start, count)
+	case "container:audio":
+		return m.browseAudioRoot(start, count)
+	case "container:video":
+		return m.browseVideoRoot(start, count)
+	case "container:audio:bygenre":
+		return m.browseGenreList(start, count)
+	case "container:audio:byartist":
+		return m.browseLetterList(start, count)
+	case "container:audio:recent":
+		return m.browseRecentAudio(start, count)
+	case "container:audio:byfolder":
+		return m.browseFolderRoots(start, count, "audiodir")
+	case "container:video:recent":
+		return m.browseRecentVideo(start, count)
+	case "container:video:byfolder":
+		return m.browseFolderRoots(start, count, "videodir")
+	}
+
+	// Look up hashed container, dispatch on type
 	m.mu.RLock()
-
-	// Root: list audio and video containers
-	if containerID == "" {
-		defaultImg := m.defaultArtURLUnlocked()
-		m.mu.RUnlock()
-		items := []libraryItem{
-			{ItemID: "container:audio", Name: "Audio", Type: "Folder", ImageURL: defaultImg},
-			{ItemID: "container:video", Name: "Video", Type: "Folder", ImageURL: defaultImg},
-		}
-		return paginate(items, start, count), int64(len(items)), nil
-	}
-
-	// Audio root: list artists — copy names under lock, sort outside
-	if containerID == "container:audio" {
-		artists := make([]string, 0, len(m.index.Audio))
-		for artist := range m.index.Audio {
-			artists = append(artists, artist)
-		}
-		defaultImg := m.defaultArtURLUnlocked()
-		m.mu.RUnlock()
-
-		sort.Strings(artists)
-		items := make([]libraryItem, 0, len(artists))
-		for _, artistName := range artists {
-			artistHash := containerHash("artist", artistName, "")
-			items = append(items, libraryItem{
-				ItemID:      artistHash,
-				Name:        artistName,
-				Type:        "Folder",
-				ContainerID: "container:audio",
-				ImageURL:    defaultImg,
-			})
-		}
-		return paginate(items, start, count), int64(len(items)), nil
-	}
-
-	// Video root: list videos
-	if containerID == "container:video" {
-		defaultImg := m.defaultArtURLUnlocked()
-		items := make([]libraryItem, 0, len(m.index.Video))
-		for _, itemID := range m.index.Video {
-			item, ok := m.index.Items[itemID]
-			if !ok {
-				continue
-			}
-			items = append(items, libraryItem{
-				ItemID:      item.ID,
-				Name:        item.Name,
-				Type:        item.MediaType,
-				MediaType:   item.MediaType,
-				DurationMS:  item.DurationMS,
-				ContainerID: "container:video",
-				ImageURL:    defaultImg,
-			})
-		}
-		m.mu.RUnlock()
-		return paginate(items, start, count), int64(len(items)), nil
-	}
-
-	// Look up container by hash
 	info, ok := m.index.Containers[containerID]
+	m.mu.RUnlock()
 	if !ok {
-		m.mu.RUnlock()
 		return nil, 0, errors.New("container not found")
 	}
 
-	// Artist container: list albums — copy names + art URLs under lock, sort outside
-	if info.Type == "artist" {
-		artist, ok := m.index.Audio[info.Artist]
-		if !ok {
-			m.mu.RUnlock()
-			return nil, 0, errors.New("artist not found")
-		}
-		type albumItem struct {
-			name     string
-			imageURL string
-		}
-		albumItems := make([]albumItem, 0, len(artist.Albums))
-		for albumName := range artist.Albums {
-			albumHash := containerHash("album", info.Artist, albumName)
-			albumItems = append(albumItems, albumItem{
-				name:     albumName,
-				imageURL: m.artURLUnlocked(albumHash),
-			})
-		}
-		m.mu.RUnlock()
-
-		sort.Slice(albumItems, func(i, j int) bool {
-			return albumItems[i].name < albumItems[j].name
-		})
-		items := make([]libraryItem, 0, len(albumItems))
-		for _, ai := range albumItems {
-			albumHash := containerHash("album", info.Artist, ai.name)
-			items = append(items, libraryItem{
-				ItemID:      albumHash,
-				Name:        ai.name,
-				Type:        "Folder",
-				ContainerID: containerID,
-				ImageURL:    ai.imageURL,
-			})
-		}
-		return paginate(items, start, count), int64(len(items)), nil
+	switch info.Type {
+	case "artist":
+		return m.browseArtist(containerID, info, start, count)
+	case "album":
+		return m.browseAlbum(containerID, info, start, count)
+	case "genre":
+		return m.browseGenreAlbums(info, start, count)
+	case "letter":
+		return m.browseLetterArtists(info, start, count)
+	case "audiodir", "videodir":
+		return m.browseFolderNode(info, start, count)
 	}
 
-	// Album container: list tracks
-	if info.Type == "album" {
-		artist, ok := m.index.Audio[info.Artist]
-		if !ok {
-			m.mu.RUnlock()
-			return nil, 0, errors.New("artist not found")
-		}
-		album, ok := artist.Albums[info.Album]
-		if !ok {
-			m.mu.RUnlock()
-			return nil, 0, errors.New("album not found")
-		}
-		// Get art URL (defaults to placeholder if no cover art)
-		imageURL := m.artURLUnlocked(containerID)
-		items := make([]libraryItem, 0, len(album.Tracks))
-		for _, itemID := range album.Tracks {
-			item, ok := m.index.Items[itemID]
-			if !ok {
-				continue
-			}
-			items = append(items, libraryItem{
-				ItemID:      item.ID,
-				Name:        item.Name,
-				Type:        item.MediaType,
-				MediaType:   item.MediaType,
-				Artists:     item.Artists,
-				Album:       item.Album,
-				DurationMS:  item.DurationMS,
-				ContainerID: containerID,
-				ImageURL:    imageURL,
-			})
-		}
-		m.mu.RUnlock()
-		return paginate(items, start, count), int64(len(items)), nil
-	}
-
-	m.mu.RUnlock()
 	return nil, 0, errors.New("unsupported container")
+}
+
+func (m *Module) browseRoot(start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	defaultImg := m.defaultArtURLUnlocked()
+	m.mu.RUnlock()
+	items := []libraryItem{
+		{ItemID: "container:audio", Name: "Audio", Type: "Folder", ImageURL: defaultImg},
+		{ItemID: "container:video", Name: "Video", Type: "Folder", ImageURL: defaultImg},
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseAudioRoot(start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	defaultImg := m.defaultArtURLUnlocked()
+	m.mu.RUnlock()
+	items := []libraryItem{
+		{ItemID: "container:audio:bygenre", Name: "By Genre", Type: "Folder", ImageURL: defaultImg},
+		{ItemID: "container:audio:byartist", Name: "By Artist", Type: "Folder", ImageURL: defaultImg},
+		{ItemID: "container:audio:recent", Name: "Recently Added", Type: "Folder", ImageURL: defaultImg},
+		{ItemID: "container:audio:byfolder", Name: "By Folder", Type: "Folder", ImageURL: defaultImg},
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseVideoRoot(start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	defaultImg := m.defaultArtURLUnlocked()
+	m.mu.RUnlock()
+	items := []libraryItem{
+		{ItemID: "container:video:recent", Name: "Recently Added", Type: "Folder", ImageURL: defaultImg},
+		{ItemID: "container:video:byfolder", Name: "By Folder", Type: "Folder", ImageURL: defaultImg},
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseGenreList(start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	genres := make([]string, 0, len(m.index.GenreAlbums))
+	for genre := range m.index.GenreAlbums {
+		genres = append(genres, genre)
+	}
+	defaultImg := m.defaultArtURLUnlocked()
+	m.mu.RUnlock()
+
+	sort.Strings(genres)
+	items := make([]libraryItem, 0, len(genres))
+	for _, genre := range genres {
+		items = append(items, libraryItem{
+			ItemID:      containerHash("genre", genre, ""),
+			Name:        genre,
+			Type:        "Folder",
+			ContainerID: "container:audio:bygenre",
+			ImageURL:    defaultImg,
+		})
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseGenreAlbums(info containerInfo, start, count int64) ([]libraryItem, int64, error) {
+	genreName := info.Artist
+	m.mu.RLock()
+	albums, ok := m.index.GenreAlbums[genreName]
+	if !ok {
+		m.mu.RUnlock()
+		return nil, 0, nil
+	}
+	// Copy and collect art URLs under lock
+	type albumRef struct {
+		artist   string
+		album    string
+		imageURL string
+	}
+	refs := make([]albumRef, 0, len(albums))
+	genreHash := containerHash("genre", genreName, "")
+	for _, a := range albums {
+		albumHash := containerHash("album", a.Artist, a.Album)
+		refs = append(refs, albumRef{
+			artist:   a.Artist,
+			album:    a.Album,
+			imageURL: m.artURLUnlocked(albumHash),
+		})
+	}
+	m.mu.RUnlock()
+
+	items := make([]libraryItem, 0, len(refs))
+	for _, r := range refs {
+		albumHash := containerHash("album", r.artist, r.album)
+		items = append(items, libraryItem{
+			ItemID:      albumHash,
+			Name:        r.artist + " - " + r.album,
+			Type:        "Folder",
+			ContainerID: genreHash,
+			ImageURL:    r.imageURL,
+		})
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseLetterList(start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	letters := make([]string, 0, len(m.index.ArtistLetters))
+	for letter := range m.index.ArtistLetters {
+		letters = append(letters, letter)
+	}
+	defaultImg := m.defaultArtURLUnlocked()
+	m.mu.RUnlock()
+
+	// Sort A-Z, then # at end
+	sort.Slice(letters, func(i, j int) bool {
+		if letters[i] == "#" {
+			return false
+		}
+		if letters[j] == "#" {
+			return true
+		}
+		return letters[i] < letters[j]
+	})
+	items := make([]libraryItem, 0, len(letters))
+	for _, letter := range letters {
+		items = append(items, libraryItem{
+			ItemID:      containerHash("letter", letter, ""),
+			Name:        letter,
+			Type:        "Folder",
+			ContainerID: "container:audio:byartist",
+			ImageURL:    defaultImg,
+		})
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseLetterArtists(info containerInfo, start, count int64) ([]libraryItem, int64, error) {
+	letter := info.Artist
+	m.mu.RLock()
+	artists, ok := m.index.ArtistLetters[letter]
+	if !ok {
+		m.mu.RUnlock()
+		return nil, 0, nil
+	}
+	// Copy under lock
+	artistsCopy := make([]string, len(artists))
+	copy(artistsCopy, artists)
+	defaultImg := m.defaultArtURLUnlocked()
+	m.mu.RUnlock()
+
+	letterHash := containerHash("letter", letter, "")
+	items := make([]libraryItem, 0, len(artistsCopy))
+	for _, artistName := range artistsCopy {
+		items = append(items, libraryItem{
+			ItemID:      containerHash("artist", artistName, ""),
+			Name:        artistName,
+			Type:        "Folder",
+			ContainerID: letterHash,
+			ImageURL:    defaultImg,
+		})
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseRecentAudio(start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	recent := m.index.RecentAudioAlbums
+	type albumRef struct {
+		artist   string
+		album    string
+		imageURL string
+	}
+	refs := make([]albumRef, 0, len(recent))
+	for _, r := range recent {
+		albumHash := containerHash("album", r.Artist, r.Album)
+		refs = append(refs, albumRef{
+			artist:   r.Artist,
+			album:    r.Album,
+			imageURL: m.artURLUnlocked(albumHash),
+		})
+	}
+	m.mu.RUnlock()
+
+	items := make([]libraryItem, 0, len(refs))
+	for _, r := range refs {
+		albumHash := containerHash("album", r.artist, r.album)
+		items = append(items, libraryItem{
+			ItemID:      albumHash,
+			Name:        r.artist + " - " + r.album,
+			Type:        "Folder",
+			ContainerID: "container:audio:recent",
+			ImageURL:    r.imageURL,
+		})
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseRecentVideo(start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	recentIDs := make([]string, len(m.index.RecentVideos))
+	copy(recentIDs, m.index.RecentVideos)
+	defaultImg := m.defaultArtURLUnlocked()
+	items := make([]libraryItem, 0, len(recentIDs))
+	for _, vid := range recentIDs {
+		item, ok := m.index.Items[vid]
+		if !ok {
+			continue
+		}
+		items = append(items, libraryItem{
+			ItemID:      item.ID,
+			Name:        item.Name,
+			Type:        item.MediaType,
+			MediaType:   item.MediaType,
+			DurationMS:  item.DurationMS,
+			ContainerID: "container:video:recent",
+			ImageURL:    defaultImg,
+		})
+	}
+	m.mu.RUnlock()
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseFolderRoots(start, count int64, containerType string) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	var tree map[string]*folderNode
+	if containerType == "audiodir" {
+		tree = m.index.AudioFolderTree
+	} else {
+		tree = m.index.VideoFolderTree
+	}
+	// Find root-level dirs (dirs whose parent is not in the tree)
+	var roots []string
+	for dirPath := range tree {
+		parent := filepath.Dir(dirPath)
+		if _, ok := tree[parent]; !ok {
+			roots = append(roots, dirPath)
+		}
+	}
+	defaultImg := m.defaultArtURLUnlocked()
+	m.mu.RUnlock()
+
+	sort.Strings(roots)
+	parentID := "container:audio:byfolder"
+	if containerType == "videodir" {
+		parentID = "container:video:byfolder"
+	}
+	items := make([]libraryItem, 0, len(roots))
+	for _, dirPath := range roots {
+		items = append(items, libraryItem{
+			ItemID:      containerHash(containerType, dirPath, ""),
+			Name:        filepath.Base(dirPath),
+			Type:        "Folder",
+			ContainerID: parentID,
+			ImageURL:    defaultImg,
+		})
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseFolderNode(info containerInfo, start, count int64) ([]libraryItem, int64, error) {
+	dirPath := info.Artist
+	m.mu.RLock()
+	var tree map[string]*folderNode
+	if info.Type == "audiodir" {
+		tree = m.index.AudioFolderTree
+	} else {
+		tree = m.index.VideoFolderTree
+	}
+	node, ok := tree[dirPath]
+	if !ok {
+		m.mu.RUnlock()
+		return nil, 0, nil
+	}
+	// Copy data under lock
+	subDirs := make([]string, len(node.SubDirs))
+	copy(subDirs, node.SubDirs)
+	itemIDs := make([]string, len(node.Items))
+	copy(itemIDs, node.Items)
+	defaultImg := m.defaultArtURLUnlocked()
+
+	// Collect items under lock
+	type itemData struct {
+		id        string
+		name      string
+		mediaType string
+		duration  int64
+	}
+	var mediaItems []itemData
+	for _, id := range itemIDs {
+		if item, found := m.index.Items[id]; found {
+			mediaItems = append(mediaItems, itemData{
+				id: item.ID, name: item.Name, mediaType: item.MediaType, duration: item.DurationMS,
+			})
+		}
+	}
+	m.mu.RUnlock()
+
+	containerID := containerHash(info.Type, dirPath, "")
+	items := make([]libraryItem, 0, len(subDirs)+len(mediaItems))
+	for _, sd := range subDirs {
+		items = append(items, libraryItem{
+			ItemID:      containerHash(info.Type, sd, ""),
+			Name:        filepath.Base(sd),
+			Type:        "Folder",
+			ContainerID: containerID,
+			ImageURL:    defaultImg,
+		})
+	}
+	for _, mi := range mediaItems {
+		items = append(items, libraryItem{
+			ItemID:      mi.id,
+			Name:        mi.name,
+			Type:        mi.mediaType,
+			MediaType:   mi.mediaType,
+			DurationMS:  mi.duration,
+			ContainerID: containerID,
+			ImageURL:    defaultImg,
+		})
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseArtist(containerID string, info containerInfo, start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	artist, ok := m.index.Audio[info.Artist]
+	if !ok {
+		m.mu.RUnlock()
+		return nil, 0, errors.New("artist not found")
+	}
+	type albumItem struct {
+		name     string
+		imageURL string
+	}
+	albumItems := make([]albumItem, 0, len(artist.Albums))
+	for albumName := range artist.Albums {
+		albumHash := containerHash("album", info.Artist, albumName)
+		albumItems = append(albumItems, albumItem{
+			name:     albumName,
+			imageURL: m.artURLUnlocked(albumHash),
+		})
+	}
+	m.mu.RUnlock()
+
+	sort.Slice(albumItems, func(i, j int) bool {
+		return albumItems[i].name < albumItems[j].name
+	})
+	items := make([]libraryItem, 0, len(albumItems))
+	for _, ai := range albumItems {
+		albumHash := containerHash("album", info.Artist, ai.name)
+		items = append(items, libraryItem{
+			ItemID:      albumHash,
+			Name:        ai.name,
+			Type:        "Folder",
+			ContainerID: containerID,
+			ImageURL:    ai.imageURL,
+		})
+	}
+	return paginate(items, start, count), int64(len(items)), nil
+}
+
+func (m *Module) browseAlbum(containerID string, info containerInfo, start, count int64) ([]libraryItem, int64, error) {
+	m.mu.RLock()
+	artist, ok := m.index.Audio[info.Artist]
+	if !ok {
+		m.mu.RUnlock()
+		return nil, 0, errors.New("artist not found")
+	}
+	album, ok := artist.Albums[info.Album]
+	if !ok {
+		m.mu.RUnlock()
+		return nil, 0, errors.New("album not found")
+	}
+	imageURL := m.artURLUnlocked(containerID)
+	items := make([]libraryItem, 0, len(album.Tracks))
+	for _, itemID := range album.Tracks {
+		item, ok := m.index.Items[itemID]
+		if !ok {
+			continue
+		}
+		items = append(items, libraryItem{
+			ItemID:      item.ID,
+			Name:        item.Name,
+			Type:        item.MediaType,
+			MediaType:   item.MediaType,
+			Artists:     item.Artists,
+			Album:       item.Album,
+			DurationMS:  item.DurationMS,
+			ContainerID: containerID,
+			ImageURL:    imageURL,
+		})
+	}
+	m.mu.RUnlock()
+	return paginate(items, start, count), int64(len(items)), nil
 }
 
 func (m *Module) search(query string, start int64, count int64) ([]libraryItem, int64) {
@@ -1716,6 +2056,12 @@ func (m *Module) scan() error {
 		next.Items[id] = item
 	}
 
+	// Build browse hierarchy indexes
+	buildGenreIndex(next, enrichMeta)
+	buildArtistLetterIndex(next)
+	buildRecentLists(next)
+	buildFolderTrees(next, m.config.Roots)
+
 	m.mu.Lock()
 	m.index = next
 	m.enrichMeta = enrichMeta
@@ -1781,6 +2127,7 @@ func (m *Module) buildItem(path string, d os.DirEntry, audioExts map[string]bool
 		Album:      meta.Album,
 		MediaType:  mediaType,
 		DurationMS: meta.DurationMS,
+		Mtime:      info.ModTime(),
 	}, nil
 }
 
@@ -1911,15 +2258,21 @@ func (m *Module) resolveContainerMetadata(itemID string) (map[string]any, bool) 
 	// Fixed root containers
 	switch itemID {
 	case "container:audio":
-		return map[string]any{
-			"title": "Audio",
-			"type":  "Folder",
-		}, true
+		return map[string]any{"title": "Audio", "type": "Folder"}, true
 	case "container:video":
-		return map[string]any{
-			"title": "Video",
-			"type":  "Folder",
-		}, true
+		return map[string]any{"title": "Video", "type": "Folder"}, true
+	case "container:audio:bygenre":
+		return map[string]any{"title": "By Genre", "type": "Folder"}, true
+	case "container:audio:byartist":
+		return map[string]any{"title": "By Artist", "type": "Folder"}, true
+	case "container:audio:recent":
+		return map[string]any{"title": "Recently Added", "type": "Folder"}, true
+	case "container:audio:byfolder":
+		return map[string]any{"title": "By Folder", "type": "Folder"}, true
+	case "container:video:recent":
+		return map[string]any{"title": "Recently Added", "type": "Folder"}, true
+	case "container:video:byfolder":
+		return map[string]any{"title": "By Folder", "type": "Folder"}, true
 	}
 
 	// Look up hashed container ID
@@ -1939,6 +2292,21 @@ func (m *Module) resolveContainerMetadata(itemID string) (map[string]any, bool) 
 			"title":   info.Album,
 			"artists": []string{info.Artist},
 			"type":    "MusicAlbum",
+		}, true
+	case "genre":
+		return map[string]any{
+			"title": info.Artist,
+			"type":  "MusicGenre",
+		}, true
+	case "letter":
+		return map[string]any{
+			"title": info.Artist,
+			"type":  "Folder",
+		}, true
+	case "audiodir", "videodir":
+		return map[string]any{
+			"title": filepath.Base(info.Artist),
+			"type":  "Folder",
 		}, true
 	}
 
@@ -2208,6 +2576,18 @@ func (m *Module) loadIndex() error {
 	if idx.Containers == nil {
 		idx.Containers = map[string]containerInfo{}
 	}
+	if idx.GenreAlbums == nil {
+		idx.GenreAlbums = map[string][]genreAlbumRef{}
+	}
+	if idx.ArtistLetters == nil {
+		idx.ArtistLetters = map[string][]string{}
+	}
+	if idx.AudioFolderTree == nil {
+		idx.AudioFolderTree = map[string]*folderNode{}
+	}
+	if idx.VideoFolderTree == nil {
+		idx.VideoFolderTree = map[string]*folderNode{}
+	}
 	m.mu.Lock()
 	m.index = &idx
 	m.mu.Unlock()
@@ -2249,6 +2629,255 @@ func containerHash(containerType, artist, album string) string {
 		_, _ = io.WriteString(h, album)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// titleCase capitalizes the first letter of each word.
+func titleCase(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		if len(w) > 0 {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// artistFirstLetter returns the uppercase first letter of a name, or "#" for non-letter starts.
+func artistFirstLetter(name string) string {
+	if name == "" {
+		return "#"
+	}
+	r := []rune(strings.ToUpper(name))[0]
+	if r >= 'A' && r <= 'Z' {
+		return string(r)
+	}
+	return "#"
+}
+
+// buildGenreIndex populates GenreAlbums from enrichment metadata.
+// Albums without enrichment genres are placed under "Unknown".
+func buildGenreIndex(idx *libraryIndex, enrichMeta map[string]*AlbumMetadata) {
+	idx.GenreAlbums = make(map[string][]genreAlbumRef)
+	for artistName, artist := range idx.Audio {
+		for albumName := range artist.Albums {
+			key := artistName + "|" + albumName
+			meta := enrichMeta[key]
+			var genres []string
+			if meta != nil && meta.MusicBrainz != nil {
+				genres = append(genres, meta.MusicBrainz.Genres...)
+			}
+			if meta != nil && meta.ArtistInfo != nil {
+				genres = append(genres, meta.ArtistInfo.Genres...)
+			}
+			// Deduplicate and normalize
+			seen := make(map[string]bool)
+			var unique []string
+			for _, g := range genres {
+				g = strings.TrimSpace(g)
+				if g == "" {
+					continue
+				}
+				low := strings.ToLower(g)
+				if !seen[low] {
+					seen[low] = true
+					// Title-case the genre for display
+					unique = append(unique, titleCase(low))
+				}
+			}
+			if len(unique) == 0 {
+				unique = []string{"Unknown"}
+			}
+			ref := genreAlbumRef{Artist: artistName, Album: albumName}
+			for _, genre := range unique {
+				idx.GenreAlbums[genre] = append(idx.GenreAlbums[genre], ref)
+			}
+		}
+	}
+	// Sort albums within each genre
+	for genre, albums := range idx.GenreAlbums {
+		sort.Slice(albums, func(i, j int) bool {
+			if albums[i].Artist != albums[j].Artist {
+				return albums[i].Artist < albums[j].Artist
+			}
+			return albums[i].Album < albums[j].Album
+		})
+		idx.GenreAlbums[genre] = albums
+		// Register genre container
+		hash := containerHash("genre", genre, "")
+		idx.Containers[hash] = containerInfo{Type: "genre", Artist: genre}
+	}
+}
+
+// buildArtistLetterIndex groups artists by first character.
+func buildArtistLetterIndex(idx *libraryIndex) {
+	idx.ArtistLetters = make(map[string][]string)
+	for artistName := range idx.Audio {
+		letter := artistFirstLetter(artistName)
+		idx.ArtistLetters[letter] = append(idx.ArtistLetters[letter], artistName)
+	}
+	for letter, artists := range idx.ArtistLetters {
+		sort.Strings(artists)
+		idx.ArtistLetters[letter] = artists
+		// Register letter container
+		hash := containerHash("letter", letter, "")
+		idx.Containers[hash] = containerInfo{Type: "letter", Artist: letter}
+	}
+}
+
+// buildRecentLists builds the recently added album and video lists.
+func buildRecentLists(idx *libraryIndex) {
+	// Audio: compute max Mtime per album, sort descending, take top 50
+	type albumMtime struct {
+		artist   string
+		album    string
+		maxMtime time.Time
+	}
+	var albumMtimes []albumMtime
+	for artistName, artist := range idx.Audio {
+		for albumName, album := range artist.Albums {
+			var maxMtime time.Time
+			for _, trackID := range album.Tracks {
+				if item, ok := idx.Items[trackID]; ok {
+					if item.Mtime.After(maxMtime) {
+						maxMtime = item.Mtime
+					}
+				}
+			}
+			albumMtimes = append(albumMtimes, albumMtime{
+				artist: artistName, album: albumName, maxMtime: maxMtime,
+			})
+		}
+	}
+	sort.Slice(albumMtimes, func(i, j int) bool {
+		return albumMtimes[i].maxMtime.After(albumMtimes[j].maxMtime)
+	})
+	if len(albumMtimes) > 50 {
+		albumMtimes = albumMtimes[:50]
+	}
+	idx.RecentAudioAlbums = make([]recentAlbumRef, len(albumMtimes))
+	for i, am := range albumMtimes {
+		idx.RecentAudioAlbums[i] = recentAlbumRef{
+			Artist: am.artist, Album: am.album, MaxMtime: am.maxMtime,
+		}
+	}
+
+	// Video: sort by Mtime descending, take top 50
+	type videoMtime struct {
+		id    string
+		mtime time.Time
+	}
+	var videoMtimes []videoMtime
+	for _, vid := range idx.Video {
+		if item, ok := idx.Items[vid]; ok {
+			videoMtimes = append(videoMtimes, videoMtime{id: vid, mtime: item.Mtime})
+		}
+	}
+	sort.Slice(videoMtimes, func(i, j int) bool {
+		return videoMtimes[i].mtime.After(videoMtimes[j].mtime)
+	})
+	if len(videoMtimes) > 50 {
+		videoMtimes = videoMtimes[:50]
+	}
+	idx.RecentVideos = make([]string, len(videoMtimes))
+	for i, vm := range videoMtimes {
+		idx.RecentVideos[i] = vm.id
+	}
+}
+
+// ensureParentChain creates parent folder nodes up to the root boundary.
+func ensureParentChain(tree map[string]*folderNode, dir string, roots map[string]bool) {
+	// Ensure this dir's node exists
+	if tree[dir] == nil {
+		tree[dir] = &folderNode{
+			Path: dir,
+			Name: filepath.Base(dir),
+		}
+	}
+	if roots[dir] {
+		return
+	}
+
+	parent := filepath.Dir(dir)
+	if parent == dir || parent == "." || parent == string(filepath.Separator) {
+		return
+	}
+
+	// Ensure parent exists
+	if tree[parent] == nil {
+		tree[parent] = &folderNode{
+			Path: parent,
+			Name: filepath.Base(parent),
+		}
+	}
+
+	// Add dir as subdir of parent (dedup)
+	found := false
+	for _, sd := range tree[parent].SubDirs {
+		if sd == dir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		tree[parent].SubDirs = append(tree[parent].SubDirs, dir)
+	}
+
+	if roots[parent] {
+		return
+	}
+
+	// Recurse up
+	ensureParentChain(tree, parent, roots)
+}
+
+// buildFolderTrees builds the audio and video folder trees.
+func buildFolderTrees(idx *libraryIndex, roots []string) {
+	idx.AudioFolderTree = make(map[string]*folderNode)
+	idx.VideoFolderTree = make(map[string]*folderNode)
+
+	rootSet := make(map[string]bool, len(roots))
+	for _, r := range roots {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			rootSet[r] = true
+		}
+	}
+
+	for _, item := range idx.Items {
+		dir := filepath.Dir(item.Path)
+		var tree map[string]*folderNode
+		var containerType string
+		if item.MediaType == "Audio" {
+			tree = idx.AudioFolderTree
+			containerType = "audiodir"
+		} else if item.MediaType == "Video" {
+			tree = idx.VideoFolderTree
+			containerType = "videodir"
+		} else {
+			continue
+		}
+
+		ensureParentChain(tree, dir, rootSet)
+		node := tree[dir]
+		node.Items = append(node.Items, item.ID)
+		_ = containerType // containers registered below
+	}
+
+	// Sort subdirs and items, register containers
+	for _, tree := range []struct {
+		t    map[string]*folderNode
+		ctyp string
+	}{
+		{idx.AudioFolderTree, "audiodir"},
+		{idx.VideoFolderTree, "videodir"},
+	} {
+		for dirPath, node := range tree.t {
+			sort.Strings(node.SubDirs)
+			sort.Strings(node.Items)
+			hash := containerHash(tree.ctyp, dirPath, "")
+			idx.Containers[hash] = containerInfo{Type: tree.ctyp, Artist: dirPath}
+		}
+	}
 }
 
 func paginate[T any](items []T, start int64, count int64) []T {
