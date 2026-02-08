@@ -1112,7 +1112,11 @@ func (m *Module) semanticSearch(query string, start int64, count int64) []librar
 	}
 	// Request more to allow for pagination
 	searchLimit := int(start) + limit + 10
-	similar := m.vectorIndex.Search(queryVec, searchLimit)
+	similar := m.vectorIndex.SearchDual(queryVec, 0.6, 0.4, searchLimit)
+	if len(similar) == 0 {
+		// Fallback for legacy index without :card/:summary suffixes
+		similar = m.vectorIndex.Search(queryVec, searchLimit)
+	}
 
 	m.log.Debug("vector search complete",
 		zap.Int("results_count", len(similar)),
@@ -1245,7 +1249,7 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 	// Clear old vectors
 	m.vectorIndex.Clear()
 
-	// Collect items needing embeddings
+	// Collect items needing embeddings (card + optional summary)
 	var inputs []EmbedInput
 	cached := 0
 
@@ -1257,22 +1261,40 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 			enrich = m.enrichMeta[key]
 			m.mu.RUnlock()
 		}
-		text := buildEmbedText(item, enrich)
-		if text == "" {
+
+		// Card vector
+		cardText := buildEmbedText(item, enrich)
+		if cardText == "" {
 			m.log.Debug("skipping item with empty embed text", zap.String("id", id))
 			continue
 		}
-
-		// Check cache first
+		cardID := id + vectorSuffixCard
 		if m.embedCache != nil {
-			if vec, ok := m.embedCache.Get(id, text); ok {
-				m.vectorIndex.Add(id, vec)
+			if vec, ok := m.embedCache.Get(cardID, cardText); ok {
+				m.vectorIndex.Add(cardID, vec)
 				cached++
-				continue
+			} else {
+				inputs = append(inputs, EmbedInput{ID: cardID, Text: cardText})
 			}
+		} else {
+			inputs = append(inputs, EmbedInput{ID: cardID, Text: cardText})
 		}
 
-		inputs = append(inputs, EmbedInput{ID: id, Text: text})
+		// Summary vector (only if non-empty)
+		summaryText := buildSummaryText(item, enrich)
+		if summaryText != "" {
+			summaryID := id + vectorSuffixSummary
+			if m.embedCache != nil {
+				if vec, ok := m.embedCache.Get(summaryID, summaryText); ok {
+					m.vectorIndex.Add(summaryID, vec)
+					cached++
+				} else {
+					inputs = append(inputs, EmbedInput{ID: summaryID, Text: summaryText})
+				}
+			} else {
+				inputs = append(inputs, EmbedInput{ID: summaryID, Text: summaryText})
+			}
+		}
 	}
 
 	if cached > 0 {
@@ -1335,9 +1357,8 @@ func (m *Module) buildEmbeddings(items map[string]mediaItem) {
 	}
 
 	m.log.Info("embeddings built",
-		zap.Int("total", len(inputs)+cached),
-		zap.Int("new", len(inputs)),
-		zap.Int("cached", cached),
+		zap.Int("to_compute", len(inputs)),
+		zap.Int("from_cache", cached),
 		zap.Int("vector_index_size", m.vectorIndex.Size()))
 }
 

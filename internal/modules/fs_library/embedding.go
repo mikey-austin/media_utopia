@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -326,18 +327,76 @@ func (idx *VectorIndex) Search(query []float32, limit int) []SimilarityResult {
 	}
 
 	// Sort by score descending
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Score > results[i].Score {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
 
 	if len(results) > limit {
 		results = results[:limit]
 	}
 
+	return results
+}
+
+const (
+	vectorSuffixCard    = ":card"
+	vectorSuffixSummary = ":summary"
+)
+
+// SearchDual performs weighted dual-vector search, combining card and summary vectors.
+// Keys ending in :card are treated as primary; the corresponding :summary key is looked up.
+// If no summary vector exists for an item, the card score is used at full weight (no penalty).
+// Returns results with base item IDs (suffixes stripped).
+func (idx *VectorIndex) SearchDual(query []float32, cardWeight, summaryWeight float32, limit int) []SimilarityResult {
+	if len(query) == 0 || limit <= 0 {
+		return nil
+	}
+
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	// Find all card vectors and compute combined scores.
+	type scored struct {
+		baseID string
+		score  float32
+	}
+	var items []scored
+
+	for id, vec := range idx.vectors {
+		if !strings.HasSuffix(id, vectorSuffixCard) {
+			continue
+		}
+		baseID := strings.TrimSuffix(id, vectorSuffixCard)
+		cardScore := cosineSimilarity(query, vec)
+
+		var total float32
+		if summaryVec, ok := idx.vectors[baseID+vectorSuffixSummary]; ok {
+			summaryScore := cosineSimilarity(query, summaryVec)
+			total = cardWeight*cardScore + summaryWeight*summaryScore
+		} else {
+			// No summary vector — use card score at full weight.
+			total = cardScore
+		}
+
+		items = append(items, scored{baseID: baseID, score: total})
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].score > items[j].score
+	})
+
+	if len(items) > limit {
+		items = items[:limit]
+	}
+
+	results := make([]SimilarityResult, len(items))
+	for i, it := range items {
+		results[i] = SimilarityResult{ID: it.baseID, Score: it.score}
+	}
 	return results
 }
 
@@ -360,110 +419,235 @@ func cosineSimilarity(a, b []float32) float32 {
 	return float32(dot / (math.Sqrt(normA) * math.Sqrt(normB)))
 }
 
-// buildEmbedText creates searchable text from a media item.
-// If enrich is non-nil, genres, tags, year, styles, and credits are appended.
-func buildEmbedText(item mediaItem, enrich *AlbumMetadata) string {
-	parts := []string{}
-	if item.Title != "" {
-		parts = append(parts, item.Title)
+// genreSynonyms maps common genre/style spelling variants to a canonical form.
+var genreSynonyms = map[string]string{
+	"rock & roll":   "rock and roll",
+	"rock 'n' roll": "rock and roll",
+	"r&b":           "rhythm and blues",
+	"r & b":         "rhythm and blues",
+	"hip hop":       "hip-hop",
+	"synth pop":     "synthpop",
+	"drum and bass": "drum n bass",
+	"post punk":     "post-punk",
+	"nu metal":      "nu-metal",
+	"lo fi":         "lo-fi",
+}
+
+// normalizeStringList lowercases, trims, applies synonyms, deduplicates, and sorts a list of strings.
+func normalizeStringList(items []string, synonyms map[string]string) []string {
+	seen := make(map[string]struct{}, len(items))
+	var out []string
+	for _, s := range items {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		if synonyms != nil {
+			if canon, ok := synonyms[s]; ok {
+				s = canon
+			}
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
 	}
-	if len(item.Artists) > 0 {
-		parts = append(parts, strings.Join(item.Artists, ", "))
+	sort.Strings(out)
+	return out
+}
+
+func normalizeGenres(genres []string) []string  { return normalizeStringList(genres, genreSynonyms) }
+func normalizeTags(tags []string) []string       { return normalizeStringList(tags, nil) }
+func normalizeStyles(styles []string) []string   { return normalizeStringList(styles, genreSynonyms) }
+
+// writeLine appends "label: value\n" to the builder if value is non-empty.
+func writeLine(b *strings.Builder, label, value string) {
+	if value == "" {
+		return
 	}
-	if item.Album != "" {
-		parts = append(parts, item.Album)
+	b.WriteString(label)
+	b.WriteString(": ")
+	b.WriteString(value)
+	b.WriteByte('\n')
+}
+
+// collectGenres merges MusicBrainz album genres and artist genres, normalizes the result.
+func collectGenres(enrich *AlbumMetadata) []string {
+	if enrich == nil {
+		return nil
 	}
-	if item.Name != "" && item.Name != item.Title {
-		parts = append(parts, item.Name)
+	var raw []string
+	if mb := enrich.MusicBrainz; mb != nil {
+		raw = append(raw, mb.Genres...)
+	}
+	if ai := enrich.ArtistInfo; ai != nil {
+		raw = append(raw, ai.Genres...)
+	}
+	return normalizeGenres(raw)
+}
+
+// collectTags merges MusicBrainz tags (top 5) and artist tags (top 5), normalizes the result.
+func collectTags(enrich *AlbumMetadata) []string {
+	if enrich == nil {
+		return nil
+	}
+	var raw []string
+	if mb := enrich.MusicBrainz; mb != nil {
+		tags := mb.Tags
+		if len(tags) > 5 {
+			tags = tags[:5]
+		}
+		raw = append(raw, tags...)
+	}
+	if ai := enrich.ArtistInfo; ai != nil {
+		tags := ai.Tags
+		if len(tags) > 5 {
+			tags = tags[:5]
+		}
+		raw = append(raw, tags...)
+	}
+	return normalizeTags(raw)
+}
+
+// uniqueNames extracts unique names from Discogs credits, capped at limit.
+func uniqueNames(credits []DiscogsCredit, limit int) []string {
+	seen := make(map[string]struct{}, limit)
+	var names []string
+	for _, c := range credits {
+		if _, dup := seen[c.Name]; dup {
+			continue
+		}
+		seen[c.Name] = struct{}{}
+		names = append(names, c.Name)
+		if len(names) >= limit {
+			break
+		}
+	}
+	return names
+}
+
+// buildAlbumContext returns a one-liner like "Kind of Blue (1959, Columbia) -- cool jazz, modal jazz".
+func buildAlbumContext(enrich *AlbumMetadata) string {
+	if enrich == nil {
+		return ""
+	}
+	album := enrich.Album
+	if album == "" {
+		return ""
 	}
 
+	var parts []string
+	if mb := enrich.MusicBrainz; mb != nil && mb.Year > 0 {
+		parts = append(parts, fmt.Sprintf("%d", mb.Year))
+	}
+	if mb := enrich.MusicBrainz; mb != nil && mb.Label != "" {
+		parts = append(parts, mb.Label)
+	}
+
+	ctx := album
+	if len(parts) > 0 {
+		ctx += " (" + strings.Join(parts, ", ") + ")"
+	}
+
+	genres := collectGenres(enrich)
+	if len(genres) > 2 {
+		genres = genres[:2]
+	}
+	if len(genres) > 0 {
+		ctx += " -- " + strings.Join(genres, ", ")
+	}
+	return ctx
+}
+
+// buildEmbedText creates structured labeled card text from a media item for embedding.
+// If enrich is non-nil, genres, tags, year, styles, credits, and artist info are included.
+func buildEmbedText(item mediaItem, enrich *AlbumMetadata) string {
+	var b strings.Builder
+
+	// Type
+	switch item.MediaType {
+	case "Audio":
+		writeLine(&b, "type", "audio")
+	case "Video":
+		writeLine(&b, "type", "video")
+	default:
+		writeLine(&b, "type", strings.ToLower(item.MediaType))
+	}
+
+	// Core fields
+	writeLine(&b, "title", item.Title)
+	if len(item.Artists) > 0 {
+		writeLine(&b, "artist", strings.Join(item.Artists, "; "))
+	}
+	writeLine(&b, "album", item.Album)
+
 	if enrich != nil {
-		if mb := enrich.MusicBrainz; mb != nil {
-			if len(mb.Genres) > 0 {
-				parts = append(parts, strings.Join(mb.Genres, ", "))
-			}
-			tags := mb.Tags
-			if len(tags) > 5 {
-				tags = tags[:5]
-			}
-			if len(tags) > 0 {
-				parts = append(parts, strings.Join(tags, ", "))
-			}
-			if mb.Year > 0 {
-				parts = append(parts, fmt.Sprintf("%d", mb.Year))
-			}
-			if mb.Label != "" {
-				parts = append(parts, mb.Label)
-			}
+		// Year
+		if mb := enrich.MusicBrainz; mb != nil && mb.Year > 0 {
+			writeLine(&b, "year", fmt.Sprintf("%d", mb.Year))
 		}
+
+		// Genres (merged MB + artist, normalized)
+		genres := collectGenres(enrich)
+		if len(genres) > 0 {
+			writeLine(&b, "genres", strings.Join(genres, "; "))
+		}
+
+		// Styles (Discogs, normalized)
 		if dc := enrich.Discogs; dc != nil {
-			if len(dc.Styles) > 0 {
-				parts = append(parts, strings.Join(dc.Styles, ", "))
-			}
-			// Top 5 unique personnel names
-			seen := map[string]bool{}
-			var names []string
-			for _, credit := range dc.Credits {
-				if !seen[credit.Name] {
-					seen[credit.Name] = true
-					names = append(names, credit.Name)
-					if len(names) >= 5 {
-						break
-					}
-				}
-			}
-			if len(names) > 0 {
-				parts = append(parts, strings.Join(names, ", "))
-			}
-			// Top 3 unique release credits (producers, engineers)
-			seen2 := map[string]bool{}
-			var rcNames []string
-			for _, credit := range dc.ReleaseCredits {
-				if !seen2[credit.Name] {
-					seen2[credit.Name] = true
-					rcNames = append(rcNames, credit.Name)
-					if len(rcNames) >= 3 {
-						break
-					}
-				}
-			}
-			if len(rcNames) > 0 {
-				parts = append(parts, strings.Join(rcNames, ", "))
+			styles := normalizeStyles(dc.Styles)
+			if len(styles) > 0 {
+				writeLine(&b, "styles", strings.Join(styles, "; "))
 			}
 		}
+
+		// Tags (merged MB + artist, normalized)
+		tags := collectTags(enrich)
+		if len(tags) > 0 {
+			writeLine(&b, "tags", strings.Join(tags, "; "))
+		}
+
+		// Label
+		if mb := enrich.MusicBrainz; mb != nil {
+			writeLine(&b, "label", mb.Label)
+			writeLine(&b, "recording_type", mb.ReleaseType)
+		}
+
+		// Personnel (Discogs credits, top 5)
+		if dc := enrich.Discogs; dc != nil {
+			personnel := uniqueNames(dc.Credits, 5)
+			if len(personnel) > 0 {
+				writeLine(&b, "personnel", strings.Join(personnel, "; "))
+			}
+			// Producers (Discogs release credits, top 3)
+			producers := uniqueNames(dc.ReleaseCredits, 3)
+			if len(producers) > 0 {
+				writeLine(&b, "producers", strings.Join(producers, "; "))
+			}
+		}
+
 		// Artist info
 		if ai := enrich.ArtistInfo; ai != nil {
-			if ai.Type != "" {
-				parts = append(parts, ai.Type)
+			writeLine(&b, "artist_type", ai.Type)
+			writeLine(&b, "artist_origin", ai.Origin)
+			writeLine(&b, "artist_active", ai.ActiveBegin)
+			members := ai.Members
+			if len(members) > 5 {
+				members = members[:5]
 			}
-			if ai.Origin != "" {
-				parts = append(parts, ai.Origin)
-			}
-			if ai.ActiveBegin != "" {
-				parts = append(parts, ai.ActiveBegin)
-			}
-			genres := ai.Genres
-			if len(genres) > 5 {
-				genres = genres[:5]
-			}
-			if len(genres) > 0 {
-				parts = append(parts, strings.Join(genres, ", "))
+			if len(members) > 0 {
+				writeLine(&b, "members", strings.Join(members, "; "))
 			}
 			if ai.Biography != "" {
 				bio := ai.Biography
 				if len(bio) > 200 {
 					bio = bio[:200]
 				}
-				parts = append(parts, bio)
-			}
-			members := ai.Members
-			if len(members) > 5 {
-				members = members[:5]
-			}
-			if len(members) > 0 {
-				parts = append(parts, strings.Join(members, ", "))
+				writeLine(&b, "biography", bio)
 			}
 		}
+
 		// Album description
 		if desc := enrich.Description; desc != nil {
 			if desc.WikipediaSummary != "" {
@@ -471,10 +655,87 @@ func buildEmbedText(item mediaItem, enrich *AlbumMetadata) string {
 				if len(summary) > 200 {
 					summary = summary[:200]
 				}
-				parts = append(parts, summary)
+				writeLine(&b, "description", summary)
 			}
+		}
+
+		// Album context (audio/track types only)
+		if item.MediaType == "Audio" {
+			ctx := buildAlbumContext(enrich)
+			writeLine(&b, "album_context", ctx)
 		}
 	}
 
-	return strings.Join(parts, " - ")
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// buildSummaryText creates summary-oriented embedding text from existing sidecar data.
+// Returns "" if no WikipediaSummary and no MBAnnotation exist — no summary vector should be generated.
+func buildSummaryText(item mediaItem, enrich *AlbumMetadata) string {
+	if enrich == nil {
+		return ""
+	}
+
+	// Determine summary text from available sources.
+	var summaryText string
+	if desc := enrich.Description; desc != nil {
+		if desc.WikipediaSummary != "" {
+			summaryText = desc.WikipediaSummary
+		} else if desc.MBAnnotation != "" {
+			summaryText = desc.MBAnnotation
+		}
+	}
+	if summaryText == "" {
+		if mb := enrich.MusicBrainz; mb != nil && mb.Annotation != "" {
+			summaryText = mb.Annotation
+		}
+	}
+	if summaryText == "" {
+		return ""
+	}
+
+	if len(summaryText) > 200 {
+		summaryText = summaryText[:200]
+	}
+
+	var b strings.Builder
+
+	// Type
+	switch item.MediaType {
+	case "Audio":
+		writeLine(&b, "type", "audio summary")
+	case "Video":
+		writeLine(&b, "type", "video summary")
+	default:
+		writeLine(&b, "type", strings.ToLower(item.MediaType)+" summary")
+	}
+
+	writeLine(&b, "title", item.Title)
+	if len(item.Artists) > 0 {
+		writeLine(&b, "artist", strings.Join(item.Artists, "; "))
+	}
+	writeLine(&b, "album", item.Album)
+
+	if mb := enrich.MusicBrainz; mb != nil && mb.Year > 0 {
+		writeLine(&b, "year", fmt.Sprintf("%d", mb.Year))
+	}
+
+	writeLine(&b, "summary", summaryText)
+
+	// Keywords = merged genres + styles + tags (normalized, deduped)
+	var kwRaw []string
+	genres := collectGenres(enrich)
+	kwRaw = append(kwRaw, genres...)
+	if dc := enrich.Discogs; dc != nil {
+		styles := normalizeStyles(dc.Styles)
+		kwRaw = append(kwRaw, styles...)
+	}
+	tags := collectTags(enrich)
+	kwRaw = append(kwRaw, tags...)
+	keywords := normalizeStringList(kwRaw, nil)
+	if len(keywords) > 0 {
+		writeLine(&b, "keywords", strings.Join(keywords, "; "))
+	}
+
+	return strings.TrimRight(b.String(), "\n")
 }

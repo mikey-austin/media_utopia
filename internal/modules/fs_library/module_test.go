@@ -2,8 +2,10 @@ package fslibrary
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -656,23 +658,343 @@ func TestSidecarNeedsRefresh(t *testing.T) {
 }
 
 func TestBuildEmbedText(t *testing.T) {
-	item := mediaItem{
-		Title:   "Song Title",
-		Artists: []string{"Artist Name"},
-		Album:   "Album Name",
-		Name:    "Song Title",
-	}
-	text := buildEmbedText(item, nil)
-	if text != "Song Title - Artist Name - Album Name" {
-		t.Errorf("buildEmbedText() = %q, want 'Song Title - Artist Name - Album Name'", text)
+	t.Run("basic without enrichment", func(t *testing.T) {
+		item := mediaItem{
+			Title:     "Song Title",
+			Artists:   []string{"Artist Name"},
+			Album:     "Album Name",
+			Name:      "Song Title",
+			MediaType: "Audio",
+		}
+		text := buildEmbedText(item, nil)
+		want := "type: audio\ntitle: Song Title\nartist: Artist Name\nalbum: Album Name"
+		if text != want {
+			t.Errorf("buildEmbedText() =\n%q\nwant:\n%q", text, want)
+		}
+	})
+
+	t.Run("full enrichment", func(t *testing.T) {
+		item := mediaItem{
+			Title:     "So What",
+			Artists:   []string{"Miles Davis"},
+			Album:     "Kind of Blue",
+			Name:      "So What",
+			MediaType: "Audio",
+		}
+		enrich := &AlbumMetadata{
+			Artist: "Miles Davis",
+			Album:  "Kind of Blue",
+			MusicBrainz: &MBMetadata{
+				Genres:      []string{"Modal Jazz", "Cool Jazz"},
+				Tags:        []string{"modal", "minimal harmony"},
+				Year:        1959,
+				Label:       "Columbia",
+				ReleaseType: "Album",
+			},
+			Discogs: &DiscogsMetadata{
+				Styles: []string{"Cool Jazz", "Post-Bop"},
+				Credits: []DiscogsCredit{
+					{Name: "John Coltrane", Role: "tenor sax"},
+					{Name: "Bill Evans", Role: "piano"},
+					{Name: "Cannonball Adderley", Role: "alto sax"},
+				},
+				ReleaseCredits: []DiscogsCredit{
+					{Name: "Teo Macero", Role: "producer"},
+				},
+			},
+			ArtistInfo: &ArtistInfo{
+				Type:        "Group",
+				Origin:      "US",
+				ActiveBegin: "1944",
+				Members:     []string{"Miles Davis", "John Coltrane"},
+				Genres:      []string{"Jazz", "Cool Jazz"},
+				Biography:   "Miles Davis was an American trumpeter and bandleader.",
+			},
+			Description: &AlbumDescription{
+				WikipediaSummary: "Kind of Blue is a studio album by Miles Davis.",
+			},
+		}
+		text := buildEmbedText(item, enrich)
+		// Verify key labeled fields are present
+		for _, want := range []string{
+			"type: audio",
+			"title: So What",
+			"artist: Miles Davis",
+			"album: Kind of Blue",
+			"year: 1959",
+			"genres: ",
+			"styles: ",
+			"tags: ",
+			"label: Columbia",
+			"recording_type: Album",
+			"personnel: John Coltrane; Bill Evans; Cannonball Adderley",
+			"producers: Teo Macero",
+			"artist_type: Group",
+			"artist_origin: US",
+			"artist_active: 1944",
+			"members: Miles Davis; John Coltrane",
+			"biography: Miles Davis was an American trumpeter",
+			"description: Kind of Blue is a studio album",
+			"album_context: Kind of Blue (1959, Columbia) --",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("buildEmbedText() missing %q in:\n%s", want, text)
+			}
+		}
+	})
+
+	t.Run("normalization dedup and sort", func(t *testing.T) {
+		item := mediaItem{
+			Title:     "Track",
+			Artists:   []string{"Artist"},
+			Album:     "Album",
+			MediaType: "Audio",
+		}
+		enrich := &AlbumMetadata{
+			Album: "Album",
+			MusicBrainz: &MBMetadata{
+				Genres: []string{"Rock", "rock", "Hip Hop"},
+				Year:   2020,
+			},
+			ArtistInfo: &ArtistInfo{
+				Genres: []string{"ROCK", "Pop"},
+			},
+		}
+		text := buildEmbedText(item, enrich)
+		// "Rock", "rock", "ROCK" should dedup to one "rock"; "Hip Hop" -> "hip-hop"
+		if !strings.Contains(text, "genres: hip-hop; pop; rock") {
+			t.Errorf("expected normalized deduped genres, got:\n%s", text)
+		}
+	})
+
+	t.Run("field capping", func(t *testing.T) {
+		item := mediaItem{
+			Title:     "Track",
+			Artists:   []string{"Artist"},
+			Album:     "Album",
+			MediaType: "Audio",
+		}
+		credits := make([]DiscogsCredit, 10)
+		for i := range credits {
+			credits[i] = DiscogsCredit{Name: fmt.Sprintf("Person%d", i)}
+		}
+		enrich := &AlbumMetadata{
+			Album: "Album",
+			Discogs: &DiscogsMetadata{
+				Credits: credits,
+			},
+			ArtistInfo: &ArtistInfo{
+				Members:   []string{"A", "B", "C", "D", "E", "F", "G"},
+				Biography: strings.Repeat("x", 300),
+			},
+		}
+		text := buildEmbedText(item, enrich)
+		// Personnel should be capped at 5
+		if strings.Contains(text, "Person5") {
+			t.Errorf("personnel should be capped at 5, got:\n%s", text)
+		}
+		// Members should be capped at 5
+		if strings.Contains(text, "members: A; B; C; D; E; F") {
+			t.Errorf("members should be capped at 5, got:\n%s", text)
+		}
+		// Biography should be capped at 200
+		for _, line := range strings.Split(text, "\n") {
+			if strings.HasPrefix(line, "biography: ") {
+				bio := strings.TrimPrefix(line, "biography: ")
+				if len(bio) > 200 {
+					t.Errorf("biography length %d > 200", len(bio))
+				}
+			}
+		}
+	})
+
+	t.Run("video type", func(t *testing.T) {
+		item := mediaItem{
+			Title:     "My Video",
+			MediaType: "Video",
+		}
+		text := buildEmbedText(item, nil)
+		if !strings.HasPrefix(text, "type: video") {
+			t.Errorf("expected type: video prefix, got:\n%s", text)
+		}
+	})
+}
+
+func TestNormalizeStringList(t *testing.T) {
+	t.Run("lowercase dedup sort", func(t *testing.T) {
+		got := normalizeStringList([]string{"Rock", "Jazz", "rock", "JAZZ", "Blues"}, nil)
+		want := []string{"blues", "jazz", "rock"}
+		if !slicesEqual(got, want) {
+			t.Errorf("normalizeStringList() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("synonyms applied", func(t *testing.T) {
+		got := normalizeStringList([]string{"Hip Hop", "R&B", "Lo Fi"}, genreSynonyms)
+		want := []string{"hip-hop", "lo-fi", "rhythm and blues"}
+		if !slicesEqual(got, want) {
+			t.Errorf("normalizeStringList() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("whitespace trim and empty filtering", func(t *testing.T) {
+		got := normalizeStringList([]string{"  rock ", "", "  ", "jazz"}, nil)
+		want := []string{"jazz", "rock"}
+		if !slicesEqual(got, want) {
+			t.Errorf("normalizeStringList() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("nil input", func(t *testing.T) {
+		got := normalizeStringList(nil, nil)
+		if len(got) != 0 {
+			t.Errorf("normalizeStringList(nil) = %v, want empty", got)
+		}
+	})
+}
+
+func TestSearchDual(t *testing.T) {
+	idx := NewVectorIndex()
+	// Add card + summary for item "a"
+	idx.Add("a"+vectorSuffixCard, []float32{1, 0, 0})
+	idx.Add("a"+vectorSuffixSummary, []float32{0, 1, 0})
+	// Add card + summary for item "b"
+	idx.Add("b"+vectorSuffixCard, []float32{0, 1, 0})
+	idx.Add("b"+vectorSuffixSummary, []float32{1, 0, 0})
+
+	// Query aligned with card of "a" and summary of "b"
+	query := []float32{1, 0, 0}
+	results := idx.SearchDual(query, 0.6, 0.4, 10)
+
+	if len(results) != 2 {
+		t.Fatalf("SearchDual() returned %d results, want 2", len(results))
 	}
 
-	// Different name should be included
-	item.Name = "Different Name"
-	text = buildEmbedText(item, nil)
-	if text != "Song Title - Artist Name - Album Name - Different Name" {
-		t.Errorf("buildEmbedText() = %q", text)
+	// "a" card=1.0 summary=0.0 => 0.6*1.0 + 0.4*0.0 = 0.6
+	// "b" card=0.0 summary=1.0 => 0.6*0.0 + 0.4*1.0 = 0.4
+	if results[0].ID != "a" {
+		t.Errorf("SearchDual() first result ID = %q, want 'a'", results[0].ID)
 	}
+	if results[1].ID != "b" {
+		t.Errorf("SearchDual() second result ID = %q, want 'b'", results[1].ID)
+	}
+	// Verify weighted scores
+	if abs32(results[0].Score-0.6) > 0.01 {
+		t.Errorf("SearchDual() first score = %f, want ~0.6", results[0].Score)
+	}
+	if abs32(results[1].Score-0.4) > 0.01 {
+		t.Errorf("SearchDual() second score = %f, want ~0.4", results[1].Score)
+	}
+}
+
+func TestSearchDualMissingSummary(t *testing.T) {
+	idx := NewVectorIndex()
+	// Item "a" has card only (no summary)
+	idx.Add("a"+vectorSuffixCard, []float32{1, 0, 0})
+	// Item "b" has card + summary
+	idx.Add("b"+vectorSuffixCard, []float32{0.7, 0.7, 0})
+	idx.Add("b"+vectorSuffixSummary, []float32{0.7, 0.7, 0})
+
+	query := []float32{1, 0, 0}
+	results := idx.SearchDual(query, 0.6, 0.4, 10)
+
+	if len(results) != 2 {
+		t.Fatalf("SearchDual() returned %d results, want 2", len(results))
+	}
+
+	// "a" has no summary, so card score used at full weight = cos({1,0,0}, {1,0,0}) = 1.0
+	// "b" card+summary both {0.7,0.7,0} => cos = 0.7071..., score = 0.6*0.707 + 0.4*0.707 ≈ 0.707
+	if results[0].ID != "a" {
+		t.Errorf("SearchDual() first result ID = %q, want 'a' (no penalty for missing summary)", results[0].ID)
+	}
+	if results[0].Score < 0.99 {
+		t.Errorf("SearchDual() missing summary score = %f, want ~1.0 (full card weight)", results[0].Score)
+	}
+}
+
+func TestBuildSummaryText(t *testing.T) {
+	item := mediaItem{
+		Title:     "So What",
+		Artists:   []string{"Miles Davis"},
+		Album:     "Kind of Blue",
+		MediaType: "Audio",
+	}
+	enrich := &AlbumMetadata{
+		Album: "Kind of Blue",
+		MusicBrainz: &MBMetadata{
+			Genres: []string{"Modal Jazz", "Cool Jazz"},
+			Tags:   []string{"modal"},
+			Year:   1959,
+		},
+		Discogs: &DiscogsMetadata{
+			Styles: []string{"Post-Bop"},
+		},
+		Description: &AlbumDescription{
+			WikipediaSummary: "Kind of Blue is a studio album by Miles Davis.",
+		},
+	}
+
+	text := buildSummaryText(item, enrich)
+	for _, want := range []string{
+		"type: audio summary",
+		"title: So What",
+		"artist: Miles Davis",
+		"album: Kind of Blue",
+		"year: 1959",
+		"summary: Kind of Blue is a studio album by Miles Davis.",
+		"keywords: ",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("buildSummaryText() missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func TestBuildSummaryTextEmpty(t *testing.T) {
+	item := mediaItem{
+		Title:     "Track",
+		Artists:   []string{"Artist"},
+		Album:     "Album",
+		MediaType: "Audio",
+	}
+
+	// No description data at all
+	text := buildSummaryText(item, nil)
+	if text != "" {
+		t.Errorf("buildSummaryText(nil enrich) = %q, want empty", text)
+	}
+
+	// Enrichment but no summary/annotation
+	enrich := &AlbumMetadata{
+		Album: "Album",
+		MusicBrainz: &MBMetadata{
+			Genres: []string{"Rock"},
+			Year:   2020,
+		},
+	}
+	text = buildSummaryText(item, enrich)
+	if text != "" {
+		t.Errorf("buildSummaryText(no description) = %q, want empty", text)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func abs32(x float32) float32 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 func TestRepairFromSidecar(t *testing.T) {
