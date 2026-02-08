@@ -187,6 +187,76 @@ func (p *OllamaProvider) embedOne(ctx context.Context, text string) ([]float32, 
 	return result.Embedding, nil
 }
 
+// OllamaGenerator calls Ollama's /api/generate endpoint to produce text.
+type OllamaGenerator struct {
+	endpoint string
+	model    string
+	http     *http.Client
+}
+
+// NewOllamaGenerator creates an OllamaGenerator.
+func NewOllamaGenerator(endpoint, model string) *OllamaGenerator {
+	return &OllamaGenerator{
+		endpoint: strings.TrimRight(endpoint, "/"),
+		model:    model,
+		http: &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				MaxConnsPerHost:     2,
+				MaxIdleConnsPerHost: 2,
+				IdleConnTimeout:     60 * time.Second,
+			},
+		},
+	}
+}
+
+type ollamaGenerateRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream"`
+}
+
+type ollamaGenerateResponse struct {
+	Response string `json:"response"`
+}
+
+// Generate sends a prompt to Ollama and returns the generated text.
+func (g *OllamaGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+	reqBody := ollamaGenerateRequest{
+		Model:  g.model,
+		Prompt: prompt,
+		Stream: false,
+	}
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", g.endpoint+"/api/generate", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("ollama generate error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result ollamaGenerateResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1*1024*1024)).Decode(&result); err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(result.Response), nil
+}
+
 // EmbeddingCache provides persistent caching for embeddings.
 type EmbeddingCache struct {
 	dir string
@@ -602,6 +672,11 @@ func buildEmbedText(item mediaItem, enrich *AlbumMetadata) string {
 			}
 		}
 
+		// Instruments (Discogs)
+		if dc := enrich.Discogs; dc != nil && len(dc.Instruments) > 0 {
+			writeLine(&b, "instruments", strings.Join(dc.Instruments, "; "))
+		}
+
 		// Tags (merged MB + artist, normalized)
 		tags := collectTags(enrich)
 		if len(tags) > 0 {
@@ -679,7 +754,9 @@ func buildSummaryText(item mediaItem, enrich *AlbumMetadata) string {
 	// Determine summary text from available sources.
 	var summaryText string
 	if desc := enrich.Description; desc != nil {
-		if desc.WikipediaSummary != "" {
+		if desc.GeneratedSummary != "" {
+			summaryText = desc.GeneratedSummary
+		} else if desc.WikipediaSummary != "" {
 			summaryText = desc.WikipediaSummary
 		} else if desc.MBAnnotation != "" {
 			summaryText = desc.MBAnnotation
@@ -722,11 +799,12 @@ func buildSummaryText(item mediaItem, enrich *AlbumMetadata) string {
 
 	writeLine(&b, "summary", summaryText)
 
-	// Keywords = merged genres + styles + tags (normalized, deduped)
+	// Keywords = merged genres + styles + instruments + tags (normalized, deduped)
 	var kwRaw []string
 	genres := collectGenres(enrich)
 	kwRaw = append(kwRaw, genres...)
 	if dc := enrich.Discogs; dc != nil {
+		kwRaw = append(kwRaw, dc.Instruments...)
 		styles := normalizeStyles(dc.Styles)
 		kwRaw = append(kwRaw, styles...)
 	}

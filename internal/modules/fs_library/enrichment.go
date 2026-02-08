@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ import (
 )
 
 const sidecarFileName = ".mu_album_metadata.json"
-const currentSidecarVersion = 2
+const currentSidecarVersion = 3
 
 // AlbumMetadata is the enrichment sidecar schema.
 type AlbumMetadata struct {
@@ -49,6 +50,7 @@ type ArtistInfo struct {
 type AlbumDescription struct {
 	MBAnnotation     string `json:"mb_annotation,omitempty"`
 	WikipediaSummary string `json:"wikipedia_summary,omitempty"`
+	GeneratedSummary string `json:"generated_summary,omitempty"`
 }
 
 // MBMetadata holds data fetched from MusicBrainz.
@@ -75,6 +77,7 @@ type DiscogsMetadata struct {
 	ReleaseNotes   string          `json:"release_notes,omitempty"`
 	ReleaseCredits []DiscogsCredit `json:"release_credits,omitempty"`
 	ArtistID       int             `json:"artist_id,omitempty"`
+	Instruments    []string        `json:"instruments,omitempty"`
 }
 
 // DiscogsCredit represents a personnel credit from Discogs.
@@ -807,6 +810,109 @@ func fetchWikipediaSummary(ctx context.Context, client *http.Client, wikiURL str
 	return extract, nil
 }
 
+// nonInstrumentRoles lists Discogs credit roles that are NOT instruments.
+var nonInstrumentRoles = map[string]bool{
+	"producer": true, "executive producer": true, "co-producer": true,
+	"engineer": true, "recording engineer": true, "mixing engineer": true, "mastering engineer": true,
+	"mixed by": true, "mastered by": true, "recorded by": true,
+	"written by": true, "composed by": true, "arranged by": true,
+	"conductor": true, "director": true, "art direction": true,
+	"photography": true, "design": true, "liner notes": true,
+	"remix": true, "remaster": true, "lacquer cut by": true,
+	"a&r": true, "management": true, "other": true,
+}
+
+// extractInstruments collects unique instrument names from Discogs tracklist credits.
+// Compound roles (e.g. "guitar, vocals") are split on comma. Non-instrument roles
+// (producer, engineer, etc.) are filtered out. Results are deduped, sorted, and capped at 15.
+func extractInstruments(credits []DiscogsCredit) []string {
+	seen := make(map[string]struct{})
+	var instruments []string
+	for _, c := range credits {
+		parts := strings.Split(c.Role, ",")
+		for _, part := range parts {
+			role := strings.ToLower(strings.TrimSpace(part))
+			if role == "" {
+				continue
+			}
+			if nonInstrumentRoles[role] {
+				continue
+			}
+			if _, dup := seen[role]; dup {
+				continue
+			}
+			seen[role] = struct{}{}
+			instruments = append(instruments, role)
+		}
+	}
+	sort.Strings(instruments)
+	if len(instruments) > 15 {
+		instruments = instruments[:15]
+	}
+	return instruments
+}
+
+// generateAlbumSummary uses the OllamaGenerator to produce a concise search-optimized
+// album summary. Returns "" if the generator is nil or if generation fails.
+func generateAlbumSummary(ctx context.Context, gen *OllamaGenerator, meta *AlbumMetadata) (string, error) {
+	if gen == nil {
+		return "", nil
+	}
+
+	var genres, styles, tags, personnel []string
+	var year int
+	var label, releaseType string
+
+	if mb := meta.MusicBrainz; mb != nil {
+		genres = append(genres, mb.Genres...)
+		tags = mb.Tags
+		year = mb.Year
+		label = mb.Label
+		releaseType = mb.ReleaseType
+	}
+	if ai := meta.ArtistInfo; ai != nil {
+		genres = append(genres, ai.Genres...)
+	}
+	if dc := meta.Discogs; dc != nil {
+		styles = dc.Styles
+		names := uniqueNames(dc.Credits, 5)
+		personnel = names
+	}
+
+	genresStr := strings.Join(genres, ", ")
+	stylesStr := strings.Join(styles, ", ")
+	tagsStr := strings.Join(tags, ", ")
+	personnelStr := strings.Join(personnel, ", ")
+
+	yearStr := ""
+	if year > 0 {
+		yearStr = fmt.Sprintf("%d", year)
+	}
+
+	prompt := fmt.Sprintf(`You write concise album summaries for semantic search.
+
+Rules:
+- Output 1-3 sentences.
+- 45-70 words total.
+- Describe overall sound and mood, instrumentation tendencies, and genre/era anchors.
+- No hype words, no quotes, no bullet points.
+
+Album:
+Title: %s
+Artist: %s
+Year: %s
+Genres: %s
+Styles: %s
+Label: %s
+Recording type: %s
+Tags: %s
+Personnel: %s
+
+Summary:`, meta.Album, meta.Artist, yearStr, genresStr, stylesStr, label, releaseType, tagsStr, personnelStr)
+
+	return gen.Generate(ctx, prompt)
+}
+
 // Sidecar I/O
 
 func sidecarPath(dir string) string {
@@ -859,7 +965,9 @@ type artistCacheEntry struct {
 // enrichAlbums queries MusicBrainz and Discogs for each target, writes sidecars,
 // and rebuilds embeddings if any albums were enriched.
 func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
-	m.log.Info("enrichment starting", zap.Int("albums", len(targets)))
+	m.log.Info("enrichment starting",
+		zap.Int("albums", len(targets)),
+		zap.Bool("summary_gen_available", m.summaryGen != nil))
 
 	mb := newMBClient()
 	defer mb.Close()
@@ -920,6 +1028,11 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 				meta.Discogs.ReleaseNotes = notes
 				meta.Discogs.ReleaseCredits = credits
 			}
+		}
+
+		// 3b. Extract instruments from Discogs tracklist credits
+		if meta.Discogs != nil && len(meta.Discogs.Credits) > 0 {
+			meta.Discogs.Instruments = extractInstruments(meta.Discogs.Credits)
 		}
 
 		// 4. Fetch artist info (with caching)
@@ -1029,6 +1142,41 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 			}
 		}
 
+		// 6b. Generate LLM summary
+		if m.summaryGen == nil {
+			m.log.Debug("summary generation skipped: generator not configured",
+				zap.String("artist", t.Artist),
+				zap.String("album", t.Album))
+		} else if meta.MusicBrainz == nil && meta.Discogs == nil {
+			m.log.Debug("summary generation skipped: no metadata sources",
+				zap.String("artist", t.Artist),
+				zap.String("album", t.Album))
+		} else {
+			m.log.Debug("generating album summary",
+				zap.String("artist", t.Artist),
+				zap.String("album", t.Album))
+			summary, err := generateAlbumSummary(ctx, m.summaryGen, meta)
+			if err != nil {
+				m.log.Warn("summary generation failed",
+					zap.String("artist", t.Artist),
+					zap.String("album", t.Album),
+					zap.Error(err))
+			} else if summary != "" {
+				if meta.Description == nil {
+					meta.Description = &AlbumDescription{}
+				}
+				meta.Description.GeneratedSummary = summary
+				m.log.Debug("album summary generated",
+					zap.String("artist", t.Artist),
+					zap.String("album", t.Album),
+					zap.Int("length", len(summary)))
+			} else {
+				m.log.Debug("summary generation returned empty",
+					zap.String("artist", t.Artist),
+					zap.String("album", t.Album))
+			}
+		}
+
 		// Set artist info
 		meta.ArtistInfo = artistInfo
 
@@ -1060,6 +1208,95 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 
 	// Rebuild embeddings if any albums were enriched
 	if enriched > 0 {
+		m.mu.RLock()
+		items := m.index.Items
+		m.mu.RUnlock()
+		m.buildEmbeddings(items)
+	}
+}
+
+// backfillSummaries generates LLM summaries for existing sidecars that have
+// metadata (MusicBrainz or Discogs) but no generated summary. This handles
+// sidecars that were written before summary generation was enabled.
+func (m *Module) backfillSummaries(ctx context.Context, metas map[string]*AlbumMetadata, dirs map[string]string) {
+	var candidates []string
+	noMetadata := 0
+	alreadyHave := 0
+	for key, meta := range metas {
+		if meta.MusicBrainz == nil && meta.Discogs == nil {
+			noMetadata++
+			continue
+		}
+		if meta.Description != nil && meta.Description.GeneratedSummary != "" {
+			alreadyHave++
+			continue
+		}
+		candidates = append(candidates, key)
+	}
+
+	m.log.Debug("summary backfill scan",
+		zap.Int("candidates", len(candidates)),
+		zap.Int("already_have_summary", alreadyHave),
+		zap.Int("no_metadata", noMetadata),
+		zap.Int("total_sidecars", len(metas)))
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	m.log.Info("summary backfill starting", zap.Int("albums", len(candidates)))
+	generated := 0
+	for _, key := range candidates {
+		if ctx.Err() != nil {
+			break
+		}
+		meta := metas[key]
+		dir := dirs[key]
+
+		m.log.Debug("backfill generating summary",
+			zap.String("artist", meta.Artist),
+			zap.String("album", meta.Album))
+
+		summary, err := generateAlbumSummary(ctx, m.summaryGen, meta)
+		if err != nil {
+			m.log.Warn("backfill summary generation failed",
+				zap.String("artist", meta.Artist),
+				zap.String("album", meta.Album),
+				zap.Error(err))
+			continue
+		}
+		if summary == "" {
+			m.log.Debug("backfill summary returned empty",
+				zap.String("artist", meta.Artist),
+				zap.String("album", meta.Album))
+			continue
+		}
+
+		if meta.Description == nil {
+			meta.Description = &AlbumDescription{}
+		}
+		meta.Description.GeneratedSummary = summary
+
+		if err := writeSidecar(dir, meta); err != nil {
+			m.log.Warn("backfill failed to write sidecar",
+				zap.String("dir", dir),
+				zap.Error(err))
+			continue
+		}
+
+		m.log.Debug("backfill summary generated",
+			zap.String("artist", meta.Artist),
+			zap.String("album", meta.Album),
+			zap.Int("length", len(summary)))
+		generated++
+	}
+
+	m.log.Info("summary backfill complete",
+		zap.Int("generated", generated),
+		zap.Int("total", len(candidates)))
+
+	// Rebuild embeddings if any summaries were added
+	if generated > 0 {
 		m.mu.RLock()
 		items := m.index.Items
 		m.mu.RUnlock()

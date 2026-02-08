@@ -475,10 +475,33 @@ Replaced the flat `" - "` joined `buildEmbedText` output with a labeled card for
 - `semanticSearch` uses `SearchDual` with automatic fallback to `Search` for legacy indexes
 - Replaced O(n²) bubble sort with `sort.Slice` in `VectorIndex.Search`
 
+### Phase 3: LLM Summary Generation — DONE
+
+- `OllamaGenerator` struct calls `/api/generate` endpoint with configurable model (default: `gemma3:12b`)
+- `generateAlbumSummary` builds a prompt from available metadata and generates a concise 45-70 word summary
+- `GeneratedSummary` field added to `AlbumDescription` in sidecar
+- `buildSummaryText` priority: `GeneratedSummary` > `WikipediaSummary` > `MBAnnotation`
+- Summary generation integrated into enrichment pipeline — generated once and persisted in sidecar
+- Config fields: `SummaryModel` (default: `gemma3:12b`), `SummaryEndpoint` (defaults to `EmbeddingEndpoint`)
+
+### Phase 4: Instruments from Discogs Credits — DONE
+
+- `extractInstruments` extracts instrument names from Discogs tracklist credits
+- Compound roles (e.g., "guitar, vocals") are split on comma
+- Non-instrument roles (producer, engineer, etc.) filtered via `nonInstrumentRoles` map
+- `Instruments` field added to `DiscogsMetadata` in sidecar
+- `instruments` line added to card embedding text (between `styles` and `tags`)
+- Instruments included in summary vector keywords
+- Deduped, sorted, capped at 15 instruments
+
+### Sidecar Version
+
+- Sidecar is now **v3** — v2 sidecars are automatically re-enriched on next scan
+
 ### Not Yet Implemented
 
-- **LLM-generated summaries** (Phase 3): Ollama generate for track/album summaries — currently using Wikipedia/MBAnnotation text directly
-- **Track-specific fields**: `moods`, `instruments`, `tempo`, `energy`, `track_number`, `disc_number` — not available in current sidecar schema
+- **Track-specific fields**: `moods`, `tempo`, `energy`, `track_number`, `disc_number` — not available in current sidecar schema
+- **Track-level instruments**: per-track instrument extraction (currently album-level only)
 - **Separate `.semantic/` output directory**: Embeddings remain in the existing `EmbeddingCache` + `VectorIndex` system
 
 ---
@@ -495,6 +518,7 @@ album: Kind of Blue
 year: 1959
 genres: cool jazz; modal jazz
 styles: cool jazz; post-bop
+instruments: alto sax; piano; tenor sax
 tags: modal; minimal harmony
 label: Columbia
 recording_type: Album
@@ -510,7 +534,7 @@ album_context: Kind of Blue (1959, Columbia) -- cool jazz, modal jazz
 ```
 
 **Fields not yet available** (require sidecar schema additions or LLM analysis):
-- `moods`, `instruments`, `tempo`, `energy` — track-level audio features
+- `moods`, `tempo`, `energy` — track-level audio features
 - `track_number`, `disc_number` — available in filesystem but not passed through to embedding
 - `featured_artists` — not extracted separately
 
@@ -541,6 +565,7 @@ The sidecar is populated by the existing enrichment pipeline (`enrichment.go`).
 
 ## Updated Roadmap
 
-- **Phase 3: LLM Summaries via Ollama Generate** — Use Ollama to generate concise 1–2 sentence summaries per track/album, replacing raw Wikipedia text. Store in sidecar or `.semantic/summaries.json`.
-- **Phase 4: Track-Specific Fields** — Extend sidecar schema with moods, instruments, tempo, energy. Potentially use audio analysis or LLM inference from track titles and album context.
-- **Phase 5: Query Classification** — Detect "vibe" vs "facet" queries and adjust card/summary weights dynamically.
+- ~~**Phase 3: LLM Summaries via Ollama Generate**~~ — DONE. Album summaries generated via configurable Ollama model, stored in sidecar v3.
+- ~~**Phase 4: Instruments from Discogs Credits**~~ — DONE. Instruments extracted from tracklist credits, added to card + summary vectors.
+- **Phase 5: Track-Specific Fields** — Extend sidecar schema with moods, tempo, energy. Potentially use audio analysis or LLM inference from track titles and album context.
+- **Phase 6: Query Classification** — Detect "vibe" vs "facet" queries and adjust card/summary weights dynamically.

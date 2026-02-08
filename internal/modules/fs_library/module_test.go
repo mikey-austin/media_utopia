@@ -1,8 +1,11 @@
 package fslibrary
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -613,26 +616,35 @@ func TestSidecarNeedsRefresh(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "v2 sidecar with data does not refresh",
+			name: "v2 sidecar triggers refresh to v3",
 			meta: &AlbumMetadata{
 				Version:     2,
+				FetchedAt:   time.Now(),
+				MusicBrainz: &MBMetadata{Genres: []string{"rock"}},
+			},
+			want: true,
+		},
+		{
+			name: "v3 sidecar with data does not refresh",
+			meta: &AlbumMetadata{
+				Version:     3,
 				FetchedAt:   time.Now(),
 				MusicBrainz: &MBMetadata{Genres: []string{"rock"}},
 			},
 			want: false,
 		},
 		{
-			name: "v2 negative cache recent does not refresh",
+			name: "v3 negative cache recent does not refresh",
 			meta: &AlbumMetadata{
-				Version:   2,
+				Version:   3,
 				FetchedAt: time.Now(),
 			},
 			want: false,
 		},
 		{
-			name: "v2 negative cache old triggers refresh",
+			name: "v3 negative cache old triggers refresh",
 			meta: &AlbumMetadata{
-				Version:   2,
+				Version:   3,
 				FetchedAt: time.Now().Add(-31 * 24 * time.Hour),
 			},
 			want: true,
@@ -701,6 +713,7 @@ func TestBuildEmbedText(t *testing.T) {
 				ReleaseCredits: []DiscogsCredit{
 					{Name: "Teo Macero", Role: "producer"},
 				},
+				Instruments: []string{"alto sax", "piano", "tenor sax"},
 			},
 			ArtistInfo: &ArtistInfo{
 				Type:        "Group",
@@ -724,6 +737,7 @@ func TestBuildEmbedText(t *testing.T) {
 			"year: 1959",
 			"genres: ",
 			"styles: ",
+			"instruments: alto sax; piano; tenor sax",
 			"tags: ",
 			"label: Columbia",
 			"recording_type: Album",
@@ -1205,5 +1219,221 @@ func TestEmbeddingCacheWithDir(t *testing.T) {
 	}
 	if len(got) != 3 || got[0] != 4 {
 		t.Errorf("cache returned %v, want %v", got, vec)
+	}
+}
+
+func TestExtractInstruments(t *testing.T) {
+	tests := []struct {
+		name    string
+		credits []DiscogsCredit
+		want    []string
+	}{
+		{
+			name: "basic roles",
+			credits: []DiscogsCredit{
+				{Name: "A", Role: "piano"},
+				{Name: "B", Role: "drums"},
+				{Name: "C", Role: "bass"},
+			},
+			want: []string{"bass", "drums", "piano"},
+		},
+		{
+			name: "compound roles split on comma",
+			credits: []DiscogsCredit{
+				{Name: "A", Role: "guitar, vocals"},
+				{Name: "B", Role: "bass, backing vocals"},
+			},
+			want: []string{"backing vocals", "bass", "guitar", "vocals"},
+		},
+		{
+			name: "filters non-instrument roles",
+			credits: []DiscogsCredit{
+				{Name: "A", Role: "piano"},
+				{Name: "B", Role: "producer"},
+				{Name: "C", Role: "engineer"},
+				{Name: "D", Role: "drums"},
+				{Name: "E", Role: "mixed by"},
+			},
+			want: []string{"drums", "piano"},
+		},
+		{
+			name: "dedup and case normalize",
+			credits: []DiscogsCredit{
+				{Name: "A", Role: "Piano"},
+				{Name: "B", Role: "piano"},
+				{Name: "C", Role: "PIANO"},
+			},
+			want: []string{"piano"},
+		},
+		{
+			name: "empty credits",
+			credits: nil,
+			want:    nil,
+		},
+		{
+			name: "capped at 15",
+			credits: func() []DiscogsCredit {
+				var credits []DiscogsCredit
+				for i := 0; i < 20; i++ {
+					credits = append(credits, DiscogsCredit{Name: "A", Role: fmt.Sprintf("instrument%02d", i)})
+				}
+				return credits
+			}(),
+			want: func() []string {
+				var out []string
+				for i := 0; i < 15; i++ {
+					out = append(out, fmt.Sprintf("instrument%02d", i))
+				}
+				return out
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractInstruments(tt.credits)
+			if !slicesEqual(got, tt.want) {
+				t.Errorf("extractInstruments() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildEmbedTextWithInstruments(t *testing.T) {
+	item := mediaItem{
+		Title:     "Track",
+		Artists:   []string{"Artist"},
+		Album:     "Album",
+		MediaType: "Audio",
+	}
+	enrich := &AlbumMetadata{
+		Album: "Album",
+		Discogs: &DiscogsMetadata{
+			Instruments: []string{"bass", "drums", "guitar"},
+		},
+	}
+	text := buildEmbedText(item, enrich)
+	if !strings.Contains(text, "instruments: bass; drums; guitar") {
+		t.Errorf("buildEmbedText() missing instruments line in:\n%s", text)
+	}
+}
+
+func TestBuildSummaryTextGeneratedSummary(t *testing.T) {
+	item := mediaItem{
+		Title:     "So What",
+		Artists:   []string{"Miles Davis"},
+		Album:     "Kind of Blue",
+		MediaType: "Audio",
+	}
+
+	t.Run("prefers GeneratedSummary over Wikipedia", func(t *testing.T) {
+		enrich := &AlbumMetadata{
+			Album: "Kind of Blue",
+			MusicBrainz: &MBMetadata{
+				Year: 1959,
+			},
+			Description: &AlbumDescription{
+				GeneratedSummary: "A cool modal jazz album with spacious arrangements.",
+				WikipediaSummary: "Kind of Blue is a studio album by Miles Davis.",
+				MBAnnotation:     "Some annotation text.",
+			},
+		}
+		text := buildSummaryText(item, enrich)
+		if !strings.Contains(text, "summary: A cool modal jazz album") {
+			t.Errorf("expected GeneratedSummary, got:\n%s", text)
+		}
+		if strings.Contains(text, "studio album by Miles Davis") {
+			t.Errorf("should not contain WikipediaSummary when GeneratedSummary exists:\n%s", text)
+		}
+	})
+
+	t.Run("falls back to Wikipedia when no GeneratedSummary", func(t *testing.T) {
+		enrich := &AlbumMetadata{
+			Album: "Kind of Blue",
+			MusicBrainz: &MBMetadata{
+				Year: 1959,
+			},
+			Description: &AlbumDescription{
+				WikipediaSummary: "Kind of Blue is a studio album by Miles Davis.",
+			},
+		}
+		text := buildSummaryText(item, enrich)
+		if !strings.Contains(text, "summary: Kind of Blue is a studio album") {
+			t.Errorf("expected WikipediaSummary fallback, got:\n%s", text)
+		}
+	})
+
+	t.Run("includes instruments in keywords", func(t *testing.T) {
+		enrich := &AlbumMetadata{
+			Album: "Kind of Blue",
+			Description: &AlbumDescription{
+				GeneratedSummary: "A modal jazz album.",
+			},
+			Discogs: &DiscogsMetadata{
+				Instruments: []string{"trumpet", "piano"},
+			},
+		}
+		text := buildSummaryText(item, enrich)
+		if !strings.Contains(text, "piano") || !strings.Contains(text, "trumpet") {
+			t.Errorf("expected instruments in keywords, got:\n%s", text)
+		}
+	})
+}
+
+func TestOllamaGenerator(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/generate" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != "POST" {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req ollamaGenerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if req.Model != "test-model" {
+			t.Errorf("unexpected model: %s", req.Model)
+		}
+		if req.Stream {
+			t.Error("expected stream=false")
+		}
+
+		resp := ollamaGenerateResponse{
+			Response: "A spacious modal jazz album featuring trumpet and saxophone.",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	gen := NewOllamaGenerator(server.URL, "test-model")
+	result, err := gen.Generate(context.Background(), "test prompt")
+	if err != nil {
+		t.Fatalf("Generate() error: %v", err)
+	}
+	if result != "A spacious modal jazz album featuring trumpet and saxophone." {
+		t.Errorf("Generate() = %q, want specific summary", result)
+	}
+}
+
+func TestOllamaGeneratorError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "model not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	gen := NewOllamaGenerator(server.URL, "missing-model")
+	_, err := gen.Generate(context.Background(), "test prompt")
+	if err == nil {
+		t.Fatal("expected error from Generate()")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("expected 404 in error, got: %v", err)
 	}
 }

@@ -106,17 +106,23 @@ Data sources:
 	              rate limits. Provides styles, personnel credits, liner
 	              notes from the main release (fuller than master notes),
 	              album-level credits (producers, engineers), artist
-	              biography (profile), and group members.
+	              biography (profile), group members, and instruments
+	              (extracted from tracklist credit roles).
 	Wikipedia     Album and artist summaries fetched via Wikipedia REST API
 	              using URLs discovered in MusicBrainz url-rels. Artist
 	              Wikipedia is used as a biography fallback when Discogs
 	              profile is empty.
+	Ollama        When embedding_provider is "ollama" (or summary_model is
+	              set), an LLM-generated album summary is produced during
+	              enrichment using the configured model (default: gemma3:12b).
+	              The summary replaces raw Wikipedia text for the summary
+	              embedding vector, improving semantic search quality.
 
 Enrichment data is stored as a JSON sidecar file named .mu_album_metadata.json
-in each album's directory. The v2 sidecar schema includes:
+in each album's directory. The v3 sidecar schema includes:
 
 	{
-	  "version": 2,
+	  "version": 3,
 	  "fetched_at": "2026-02-07T12:00:00Z",
 	  "artist": "Pink Floyd",
 	  "album": "The Dark Side of the Moon",
@@ -124,13 +130,15 @@ in each album's directory. The v2 sidecar schema includes:
 	                    "annotation": "...", "wikipedia_url": "...",
 	                    "artist_ids": [...] },
 	  "discogs": { "styles": [...], "credits": [...], "notes": "...",
-	               "release_notes": "...", "release_credits": [...] },
+	               "release_notes": "...", "release_credits": [...],
+	               "instruments": ["guitar", "drums", "bass", ...] },
 	  "artist_info": { "name": "...", "type": "Group", "origin": "...",
 	                    "biography": "...", "members": [...], ... },
-	  "description": { "mb_annotation": "...", "wikipedia_summary": "..." }
+	  "description": { "mb_annotation": "...", "wikipedia_summary": "...",
+	                    "generated_summary": "..." }
 	}
 
-Existing v1 sidecars are automatically re-enriched to v2 on the next scan via
+Existing v1/v2 sidecars are automatically re-enriched to v3 on the next scan via
 the version check in sidecarNeedsRefresh. Artist data is cached by MB/Discogs
 artist ID within each enrichment run, so artists with multiple albums are only
 fetched once.
@@ -140,9 +148,10 @@ The enrichment data feeds into both keyword search and semantic search:
   - Keyword search matches against genres, tags, styles, labels, artist
     name, origin, type, and group members.
   - Semantic search embeddings include genre, tag, year, label, style,
-    personnel names, artist info (type, origin, biography, members),
-    album description (Wikipedia summary), and release credits,
-    enabling queries like "progressive rock 1970s", "British group",
+    instruments, personnel names, artist info (type, origin, biography,
+    members), album description (LLM-generated summary preferred, with
+    Wikipedia summary fallback), and release credits, enabling queries
+    like "progressive rock 1970s", "British group", "tenor sax piano",
     or "produced by Brian Eno" to match relevant albums.
 
 Negative caching: if neither API returns a match, a minimal sidecar is written
@@ -190,6 +199,8 @@ Full configuration with all options:
 	embedding_cache = "/var/lib/mud/library_fs/embeddings"
 	enrich_enabled = true                 # auto-enrich albums via MusicBrainz + Discogs
 	discogs_token = ""                    # optional Discogs personal access token
+	summary_model = "gemma3:12b"          # Ollama model for LLM album summaries (default: gemma3:12b)
+	summary_endpoint = ""                 # Ollama API URL for summaries (default: embedding_endpoint)
 
 # Commands
 
@@ -315,6 +326,13 @@ type Config struct {
 
 	// DiscogsToken is an optional Discogs personal access token for higher rate limits.
 	DiscogsToken string
+
+	// SummaryModel is the Ollama model for generating album summaries (default: "gemma3:12b").
+	SummaryModel string
+
+	// SummaryEndpoint is the Ollama API URL for summary generation.
+	// Defaults to EmbeddingEndpoint if empty.
+	SummaryEndpoint string
 }
 
 // cmdWork represents a command to be processed by a worker.
@@ -355,6 +373,9 @@ type Module struct {
 
 	// Enrichment metadata keyed by "artist|album"
 	enrichMeta map[string]*AlbumMetadata
+
+	// Summary generator (Ollama)
+	summaryGen *OllamaGenerator
 }
 
 // libraryIndex is the in-memory index of all scanned media.
@@ -522,6 +543,30 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		}
 	}
 
+	// Initialize summary generator if configured
+	var summaryGen *OllamaGenerator
+	if cfg.SummaryModel != "" || cfg.EmbeddingProvider == "ollama" {
+		model := cfg.SummaryModel
+		if model == "" {
+			model = "gemma3:12b"
+		}
+		endpoint := cfg.SummaryEndpoint
+		if endpoint == "" {
+			endpoint = cfg.EmbeddingEndpoint
+		}
+		if endpoint == "" {
+			endpoint = "http://localhost:11434"
+		}
+		summaryGen = NewOllamaGenerator(endpoint, model)
+		log.Info("summary generator initialized",
+			zap.String("model", model),
+			zap.String("endpoint", endpoint))
+	} else {
+		log.Debug("summary generator not configured",
+			zap.String("summary_model", cfg.SummaryModel),
+			zap.String("embedding_provider", cfg.EmbeddingProvider))
+	}
+
 	return &Module{
 		log:           log,
 		client:        client,
@@ -534,6 +579,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		vectorIndex:   NewVectorIndex(),
 		dupeIndex:     NewDuplicateIndex(),
 		enrichMeta:    make(map[string]*AlbumMetadata),
+		summaryGen:    summaryGen,
 	}, nil
 }
 
@@ -1544,6 +1590,7 @@ func (m *Module) scan() error {
 
 	// Load sidecar enrichment data and collect enrichment targets
 	enrichMeta := make(map[string]*AlbumMetadata)
+	enrichDirs := make(map[string]string) // key -> album dir (for summary backfill)
 	var enrichTargets []enrichTarget
 	for artistName, artist := range next.Audio {
 		for albumName, album := range artist.Albums {
@@ -1555,13 +1602,15 @@ func (m *Module) scan() error {
 				continue
 			}
 			dir := filepath.Dir(item.Path)
+			key := artistName + "|" + albumName
 			if meta, err := readSidecar(dir); err == nil {
 				if sidecarNeedsRefresh(meta) {
 					enrichTargets = append(enrichTargets, enrichTarget{
 						Artist: artistName, Album: albumName, Dir: dir,
 					})
 				} else {
-					enrichMeta[artistName+"|"+albumName] = meta
+					enrichMeta[key] = meta
+					enrichDirs[key] = dir
 				}
 			} else if m.config.EnrichEnabled && !sidecarExists(dir) {
 				enrichTargets = append(enrichTargets, enrichTarget{
@@ -1570,6 +1619,20 @@ func (m *Module) scan() error {
 			}
 		}
 	}
+
+	// Log sidecar loading summary
+	sidecarsWithSummary := 0
+	for _, meta := range enrichMeta {
+		if meta.Description != nil && meta.Description.GeneratedSummary != "" {
+			sidecarsWithSummary++
+		}
+	}
+	m.log.Debug("sidecar loading complete",
+		zap.Int("loaded", len(enrichMeta)),
+		zap.Int("with_generated_summary", sidecarsWithSummary),
+		zap.Int("queued_for_enrichment", len(enrichTargets)),
+		zap.Bool("enrich_enabled", m.config.EnrichEnabled),
+		zap.Bool("summary_gen_available", m.summaryGen != nil))
 
 	// Sidecar-informed repair pass
 	if repairPolicy != RepairPolicyNone && repairPolicy != "" {
@@ -1613,6 +1676,11 @@ func (m *Module) scan() error {
 	// Launch enrichment in background
 	if m.config.EnrichEnabled && len(enrichTargets) > 0 {
 		go m.enrichAlbums(context.Background(), enrichTargets)
+	}
+
+	// Backfill summaries for existing sidecars that have metadata but no generated summary
+	if m.summaryGen != nil {
+		go m.backfillSummaries(context.Background(), enrichMeta, enrichDirs)
 	}
 
 	if err := m.saveIndex(); err != nil {
