@@ -98,12 +98,12 @@ func (p *OllamaProvider) Dimension() int {
 }
 
 type ollamaEmbedRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
+	Model string `json:"model"`
+	Input string `json:"input"`
 }
 
 type ollamaEmbedResponse struct {
-	Embedding []float32 `json:"embedding"`
+	Embeddings [][]float32 `json:"embeddings"`
 }
 
 func (p *OllamaProvider) Embed(ctx context.Context, inputs []EmbedInput) ([]EmbedVector, error) {
@@ -154,15 +154,15 @@ func (p *OllamaProvider) Embed(ctx context.Context, inputs []EmbedInput) ([]Embe
 
 func (p *OllamaProvider) embedOne(ctx context.Context, text string) ([]float32, error) {
 	reqBody := ollamaEmbedRequest{
-		Model:  p.model,
-		Prompt: text,
+		Model: p.model,
+		Input: text,
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", p.endpoint+"/api/embeddings", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", p.endpoint+"/api/embed", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,11 @@ func (p *OllamaProvider) embedOne(ctx context.Context, text string) ([]float32, 
 		return nil, err
 	}
 
-	return result.Embedding, nil
+	if len(result.Embeddings) == 0 {
+		return nil, fmt.Errorf("ollama returned no embeddings")
+	}
+
+	return result.Embeddings[0], nil
 }
 
 // OllamaGenerator calls Ollama's /api/generate endpoint to produce text.
