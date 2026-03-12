@@ -89,6 +89,7 @@ type FSLibraryConfig struct {
 	Roots             []string `toml:"roots"`
 	IncludeExts       []string `toml:"include_exts"`
 	HTTPListen        string   `toml:"http_listen"`
+	HTTPBaseURL       string   `toml:"http_base_url"`
 	IndexMode         string   `toml:"index_mode"`
 	IndexPath         string   `toml:"index_path"`
 	ScanIntervalMS    int64    `toml:"scan_interval_ms"`

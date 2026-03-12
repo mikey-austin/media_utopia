@@ -1,7 +1,9 @@
 GOCACHE ?= $(CURDIR)/.gocache
 BIN_DIR ?= $(CURDIR)/bin
+REGISTRY ?= registry.lan.jackiemclean.net
+DATE_TAG := $(shell date +%Y%m%d)
 
-.PHONY: build test fmt integration
+.PHONY: build test fmt integration docker-library docker-library-push
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -16,3 +18,10 @@ fmt:
 
 integration:
 	GOCACHE=$(GOCACHE) go test -count=1 -v -tags=integration ./...
+
+docker-library:
+	docker build --target mud-library --build-arg BUILD_TAGS="" --build-arg CGO=0 \
+		-t $(REGISTRY)/mud-library:$(DATE_TAG)-nogst-noupnp .
+
+docker-library-push: docker-library
+	docker push $(REGISTRY)/mud-library:$(DATE_TAG)-nogst-noupnp

@@ -479,18 +479,21 @@ func cosineSimilarity(a, b []float32) float32 {
 		return 0
 	}
 
-	var dot, normA, normB float64
+	// Stay in float32 to avoid per-element float64 conversions.
+	// Only widen to float64 for the final sqrt to avoid precision loss there.
+	var dot, normA, normB float32
 	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		normA += float64(a[i]) * float64(a[i])
-		normB += float64(b[i]) * float64(b[i])
+		ai, bi := a[i], b[i]
+		dot += ai * bi
+		normA += ai * ai
+		normB += bi * bi
 	}
 
 	if normA == 0 || normB == 0 {
 		return 0
 	}
 
-	return float32(dot / (math.Sqrt(normA) * math.Sqrt(normB)))
+	return float32(float64(dot) / (math.Sqrt(float64(normA)) * math.Sqrt(float64(normB))))
 }
 
 // genreSynonyms maps common genre/style spelling variants to a canonical form.

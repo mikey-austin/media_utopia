@@ -280,6 +280,12 @@ type Config struct {
 	// Use ":0" for automatic port assignment.
 	HTTPListen string
 
+	// HTTPBaseURL overrides the base URL advertised in resolve/browse responses.
+	// When empty, the base URL is derived from the listener address.
+	// Set this when the server is behind a proxy or in a container binding to
+	// 0.0.0.0 but reachable externally (e.g., "http://bluenote.lan:8484").
+	HTTPBaseURL string
+
 	// IndexMode controls where the index file is stored:
 	//   "near"     - Store as .mu_fs_index.json in the first root
 	//   "separate" - Store at IndexPath
@@ -387,12 +393,16 @@ type Module struct {
 	// Embedded art cache keyed by file path
 	artCache   map[string]*artCacheEntry
 	artCacheMu sync.RWMutex
+
+	// Previous scan's items for incremental scanning (skip unchanged files)
+	prevItems map[string]mediaItem // keyed by file path
 }
 
 // artCacheEntry holds cached embedded album art data.
 type artCacheEntry struct {
-	data []byte
-	mime string
+	data       []byte
+	mime       string
+	lastAccess int64 // UnixNano, for LRU eviction
 }
 
 // libraryIndex is the in-memory index of all scanned media.
@@ -510,6 +520,10 @@ type mediaItem struct {
 	// SearchText is the precomputed lowercased search text for keyword matching.
 	// Built at scan time to avoid per-query recomputation.
 	SearchText string `json:"-"`
+
+	// EmbeddedArtExt is the extension for embedded art (e.g. ".jpg"), empty if none.
+	// Detected during tag reading to avoid re-opening the file.
+	EmbeddedArtExt string `json:"-"`
 }
 
 // libraryItemsReply is the response format for browse and search commands.
@@ -671,7 +685,7 @@ func (m *Module) Run(ctx context.Context) error {
 	if err := m.loadIndex(); err != nil {
 		m.log.Debug("index load failed", zap.Error(err))
 	}
-	if err := m.scan(); err != nil {
+	if err := m.scanCtx(ctx); err != nil && ctx.Err() == nil {
 		m.log.Warn("initial scan failed", zap.Error(err))
 	}
 
@@ -705,7 +719,7 @@ func (m *Module) Run(ctx context.Context) error {
 			wg.Wait()
 			return nil
 		case <-ticker.C:
-			if err := m.scan(); err != nil {
+			if err := m.scanCtx(ctx); err != nil && ctx.Err() == nil {
 				m.log.Warn("scan failed", zap.Error(err))
 			}
 		}
@@ -1017,7 +1031,6 @@ func (m *Module) libraryRescan(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 		return reply
 	}
 
-	// Run scan synchronously
 	if err := scanFn(); err != nil {
 		return errorReply(cmd, "SCAN_FAILED", err.Error())
 	}
@@ -1512,9 +1525,21 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 			ImageURL:   artURL,
 		})
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	// Sort using precomputed lowercase keys to avoid per-comparison allocations
+	type sortable struct {
+		item    libraryItem
+		sortKey string
+	}
+	sortItems := make([]sortable, len(items))
+	for i, it := range items {
+		sortItems[i] = sortable{item: it, sortKey: strings.ToLower(it.Name)}
+	}
+	sort.Slice(sortItems, func(i, j int) bool {
+		return sortItems[i].sortKey < sortItems[j].sortKey
 	})
+	for i, si := range sortItems {
+		items[i] = si.item
+	}
 	total := int64(len(items))
 	return paginate(items, start, count), total
 }
@@ -1836,15 +1861,23 @@ func containsAllTerms(item mediaItem, terms []string) bool {
 	return true
 }
 
+func (m *Module) scanForceEnrichCtx(ctx context.Context) error {
+	return m.scanInner(ctx, true)
+}
+
+func (m *Module) scanCtx(ctx context.Context) error {
+	return m.scanInner(ctx, false)
+}
+
 func (m *Module) scanForceEnrich() error {
-	return m.scanInner(true)
+	return m.scanInner(context.Background(), true)
 }
 
 func (m *Module) scan() error {
-	return m.scanInner(false)
+	return m.scanInner(context.Background(), false)
 }
 
-func (m *Module) scanInner(forceEnrich bool) error {
+func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 	started := time.Now()
 
 	// Clear embedded art cache on rescan (paths may have changed)
@@ -1856,18 +1889,27 @@ func (m *Module) scanInner(forceEnrich bool) error {
 	audioExts := defaultAudioExts()
 	videoExts := defaultVideoExts()
 
+	// Snapshot previous items for incremental scan (skip unchanged files)
+	m.mu.RLock()
+	prevByPath := m.prevItems
+	m.mu.RUnlock()
+
 	next := &libraryIndex{
 		Items:      map[string]mediaItem{},
 		Audio:      map[string]artistEntry{},
 		Containers: map[string]containerInfo{},
 	}
 
+	reused := 0
 	for _, root := range m.config.Roots {
 		root = strings.TrimSpace(root)
 		if root == "" {
 			continue
 		}
 		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if err != nil {
 				m.log.Debug("walk error", zap.Error(err), zap.String("path", path))
 				return nil
@@ -1879,6 +1921,41 @@ func (m *Module) scanInner(forceEnrich bool) error {
 			if !exts[ext] {
 				return nil
 			}
+
+			// Incremental scan: reuse previous item if file unchanged
+			if prevByPath != nil {
+				if prev, ok := prevByPath[path]; ok {
+					info, infoErr := d.Info()
+					if infoErr == nil && info.Size() > 0 &&
+						info.ModTime().Equal(prev.Mtime) {
+						// File unchanged — reuse previous item as-is
+						next.Items[prev.ID] = prev
+						reused++
+						// Still need to add to audio/video hierarchy below
+						item := prev
+						if item.MediaType == "Audio" {
+							artistName := firstOr(item.Artists, "Unknown Artist")
+							albumName := item.Album
+							if albumName == "" {
+								albumName = "Unknown Album"
+							}
+							artist := next.Audio[artistName]
+							if artist.Albums == nil {
+								artist = artistEntry{Name: artistName, Albums: map[string]albumEntry{}}
+							}
+							album := artist.Albums[albumName]
+							album.Name = albumName
+							album.Tracks = append(album.Tracks, item.ID)
+							artist.Albums[albumName] = album
+							next.Audio[artistName] = artist
+						} else if item.MediaType == "Video" {
+							next.Video = append(next.Video, item.ID)
+						}
+						return nil
+					}
+				}
+			}
+
 			item, err := m.buildItem(path, d, audioExts, videoExts)
 			if err != nil {
 				m.log.Debug("item build failed", zap.Error(err), zap.String("path", path))
@@ -1921,12 +1998,10 @@ func (m *Module) scanInner(forceEnrich bool) error {
 					album.CoverArt = findCoverArt(dir)
 					if album.CoverArt != "" {
 						album.CoverArtExt = strings.ToLower(filepath.Ext(album.CoverArt))
-					} else {
-						// Fall back to embedded art in the first track
-						if ext := getEmbeddedArtExt(item.Path); ext != "" {
-							album.CoverArt = item.Path // Store track path; serveArt will extract
-							album.CoverArtExt = ext
-						}
+					} else if item.EmbeddedArtExt != "" {
+						// Fall back to embedded art detected during tag reading (no extra file open)
+						album.CoverArt = item.Path
+						album.CoverArtExt = item.EmbeddedArtExt
 					}
 				}
 			}
@@ -2087,9 +2162,16 @@ func (m *Module) scanInner(forceEnrich bool) error {
 	buildRecentLists(next)
 	buildFolderTrees(next, m.config.Roots)
 
+	// Build path→item index for next incremental scan
+	nextPrevItems := make(map[string]mediaItem, len(next.Items))
+	for _, item := range next.Items {
+		nextPrevItems[item.Path] = item
+	}
+
 	m.mu.Lock()
 	m.index = next
 	m.enrichMeta = enrichMeta
+	m.prevItems = nextPrevItems
 	m.mu.Unlock()
 
 	// Build embeddings asynchronously
@@ -2097,20 +2179,20 @@ func (m *Module) scanInner(forceEnrich bool) error {
 		go m.buildEmbeddings(next.Items)
 	}
 
-	// Launch enrichment in background
+	// Launch enrichment in background (respects parent context for graceful shutdown)
 	if m.config.EnrichEnabled && len(enrichTargets) > 0 {
-		go m.enrichAlbums(context.Background(), enrichTargets)
+		go m.enrichAlbums(ctx, enrichTargets)
 	}
 
 	// Backfill summaries for existing sidecars that have metadata but no generated summary
 	if m.summaryGen != nil {
-		go m.backfillSummaries(context.Background(), enrichMeta, enrichDirs)
+		go m.backfillSummaries(ctx, enrichMeta, enrichDirs)
 	}
 
 	if err := m.saveIndex(); err != nil {
 		m.log.Debug("index save failed", zap.Error(err))
 	}
-	m.log.Info("scan complete", zap.Duration("elapsed", time.Since(started)), zap.Int("items", len(next.Items)))
+	m.log.Info("scan complete", zap.Duration("elapsed", time.Since(started)), zap.Int("items", len(next.Items)), zap.Int("reused", reused))
 	return nil
 }
 
@@ -2144,15 +2226,16 @@ func (m *Module) buildItem(path string, d os.DirEntry, audioExts map[string]bool
 		name = filepath.Base(path)
 	}
 	return mediaItem{
-		ID:         itemID, // Use hash only, no prefix - avoids lib: ref parsing ambiguity
-		Path:       path,
-		Name:       name,
-		Title:      meta.Title,
-		Artists:    meta.Artists,
-		Album:      meta.Album,
-		MediaType:  mediaType,
-		DurationMS: meta.DurationMS,
-		Mtime:      info.ModTime(),
+		ID:             itemID, // Use hash only, no prefix - avoids lib: ref parsing ambiguity
+		Path:           path,
+		Name:           name,
+		Title:          meta.Title,
+		Artists:        meta.Artists,
+		Album:          meta.Album,
+		MediaType:      mediaType,
+		DurationMS:     meta.DurationMS,
+		Mtime:          info.ModTime(),
+		EmbeddedArtExt: meta.ArtExt,
 	}, nil
 }
 
@@ -2161,6 +2244,7 @@ type tagMetadata struct {
 	Artists    []string
 	Album      string
 	DurationMS int64
+	ArtExt     string // embedded art extension (e.g. ".jpg"), empty if none
 }
 
 func readTags(path string) (tagMetadata, error) {
@@ -2179,11 +2263,19 @@ func readTags(path string) (tagMetadata, error) {
 	if artist := strings.TrimSpace(metadata.Artist()); artist != "" {
 		artists = []string{artist}
 	}
+
+	// Check for embedded art while file is already parsed
+	var artExt string
+	if pic := metadata.Picture(); pic != nil {
+		artExt = mimeToExt(pic.MIMEType)
+	}
+
 	return tagMetadata{
 		Title:      strings.TrimSpace(metadata.Title()),
 		Artists:    artists,
 		Album:      strings.TrimSpace(metadata.Album()),
 		DurationMS: 0,
+		ArtExt:     artExt,
 	}, nil
 }
 
@@ -2353,15 +2445,20 @@ func (m *Module) startHTTPServer() error {
 	if err != nil {
 		return err
 	}
-	host, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		_ = ln.Close()
-		return err
+	var baseURL string
+	if u := strings.TrimSpace(m.config.HTTPBaseURL); u != "" {
+		baseURL = strings.TrimRight(u, "/")
+	} else {
+		host, port, err := net.SplitHostPort(ln.Addr().String())
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		baseURL = fmt.Sprintf("http://%s:%s", host, port)
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	baseURL := fmt.Sprintf("http://%s:%s", host, port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/files/", m.serveFile)
 	mux.HandleFunc("/art/default.png", m.serveDefaultArt)
@@ -2418,7 +2515,12 @@ func (m *Module) serveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	http.ServeContent(w, r, filepath.Base(item.Path), time.Now(), f)
+	fi, err := f.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeContent(w, r, filepath.Base(item.Path), fi.ModTime(), f)
 }
 
 func (m *Module) serveArt(w http.ResponseWriter, r *http.Request) {
@@ -2942,7 +3044,7 @@ func errorReply(cmd mu.CommandEnvelope, code string, message string) mu.ReplyEnv
 	}
 }
 
-// coverArtNames lists common cover art filenames in priority order.
+// coverArtNames lists common cover art filenames in priority order (lowercase).
 var coverArtNames = []string{
 	"cover.jpg", "cover.jpeg", "cover.png",
 	"folder.jpg", "folder.jpeg", "folder.png",
@@ -2951,41 +3053,39 @@ var coverArtNames = []string{
 	"albumart.jpg", "albumart.jpeg", "albumart.png",
 }
 
+// coverArtPriority maps lowercase cover art filenames to their priority (lower = better).
+var coverArtPriority = func() map[string]int {
+	m := make(map[string]int, len(coverArtNames))
+	for i, name := range coverArtNames {
+		m[name] = i
+	}
+	return m
+}()
+
 // findCoverArt looks for a cover art file in the given directory.
+// Uses a single os.ReadDir call instead of per-name os.Stat calls.
 // Returns the full path if found, empty string otherwise.
 func findCoverArt(dir string) string {
-	for _, name := range coverArtNames {
-		path := filepath.Join(dir, name)
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-		// Try case-insensitive match
-		upper := filepath.Join(dir, strings.ToUpper(name))
-		if _, err := os.Stat(upper); err == nil {
-			return upper
-		}
-	}
-	return ""
-}
-
-// getEmbeddedArtExt checks if an audio file has embedded album art and returns the file extension.
-// Returns empty string if no embedded art is found.
-func getEmbeddedArtExt(path string) string {
-	f, err := os.Open(path)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
-
-	metadata, err := tag.ReadFrom(f)
-	if err != nil {
-		return ""
+	bestPriority := len(coverArtNames) // worse than any valid priority
+	bestPath := ""
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		lower := strings.ToLower(e.Name())
+		if pri, ok := coverArtPriority[lower]; ok && pri < bestPriority {
+			bestPriority = pri
+			bestPath = filepath.Join(dir, e.Name())
+			if pri == 0 {
+				break // best possible match
+			}
+		}
 	}
-	pic := metadata.Picture()
-	if pic == nil {
-		return ""
-	}
-	return mimeToExt(pic.MIMEType)
+	return bestPath
 }
 
 // mimeToExt converts a MIME type to a file extension.
@@ -3007,8 +3107,10 @@ func mimeToExt(mime string) string {
 // getEmbeddedArt returns embedded album art, using an in-memory cache to avoid
 // re-parsing audio files on every HTTP request.
 func (m *Module) getEmbeddedArt(path string) ([]byte, string, error) {
+	now := time.Now().UnixNano()
 	m.artCacheMu.RLock()
 	if entry, ok := m.artCache[path]; ok {
+		entry.lastAccess = now // benign race under RLock, acceptable for LRU heuristic
 		m.artCacheMu.RUnlock()
 		return entry.data, entry.mime, nil
 	}
@@ -3022,13 +3124,33 @@ func (m *Module) getEmbeddedArt(path string) ([]byte, string, error) {
 	m.artCacheMu.Lock()
 	// Cap cache at 200 entries to bound memory usage
 	if len(m.artCache) >= 200 {
-		// Evict all entries (simple reset; albums are re-cached on demand)
-		m.artCache = make(map[string]*artCacheEntry)
+		// Evict oldest half instead of clearing everything (avoids thundering herd)
+		m.evictArtCacheHalf()
 	}
-	m.artCache[path] = &artCacheEntry{data: data, mime: mime}
+	m.artCache[path] = &artCacheEntry{data: data, mime: mime, lastAccess: now}
 	m.artCacheMu.Unlock()
 
 	return data, mime, nil
+}
+
+// evictArtCacheHalf removes the oldest half of the art cache entries.
+// Caller must hold artCacheMu write lock.
+func (m *Module) evictArtCacheHalf() {
+	type entry struct {
+		path       string
+		lastAccess int64
+	}
+	entries := make([]entry, 0, len(m.artCache))
+	for p, e := range m.artCache {
+		entries = append(entries, entry{path: p, lastAccess: e.lastAccess})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].lastAccess < entries[j].lastAccess
+	})
+	evictCount := len(entries) / 2
+	for i := 0; i < evictCount; i++ {
+		delete(m.artCache, entries[i].path)
+	}
 }
 
 // extractEmbeddedArt extracts album art from an audio file.

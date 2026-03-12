@@ -304,6 +304,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.Mod
 				Roots:             cfgItem.Roots,
 				IncludeExts:       cfgItem.IncludeExts,
 				HTTPListen:        cfgItem.HTTPListen,
+				HTTPBaseURL:       cfgItem.HTTPBaseURL,
 				IndexMode:         cfgItem.IndexMode,
 				IndexPath:         cfgItem.IndexPath,
 				ScanIntervalMS:    cfgItem.ScanIntervalMS,
