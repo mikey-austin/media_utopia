@@ -100,6 +100,7 @@ type FSLibraryConfig struct {
 	EmbeddingModel    string   `toml:"embedding_model"`
 	EmbeddingEndpoint string   `toml:"embedding_endpoint"`
 	EmbeddingCache    string   `toml:"embedding_cache"`
+	EmbeddingBatchSize int     `toml:"embedding_batch_size"`
 	EnrichEnabled     bool     `toml:"enrich_enabled"`
 	DiscogsToken      string   `toml:"discogs_token"`
 	AcoustIDAPIKey    string   `toml:"acoustid_api_key"`

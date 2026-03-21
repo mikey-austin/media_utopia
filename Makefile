@@ -1,6 +1,6 @@
 GOCACHE ?= $(CURDIR)/.gocache
 BIN_DIR ?= $(CURDIR)/bin
-REGISTRY ?= registry.lan.jackiemclean.net
+REGISTRY ?= registry.nas.jackiemclean.net
 DATE_TAG := $(shell date +%Y%m%d)
 
 .PHONY: build test fmt integration docker-library docker-library-push

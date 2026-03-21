@@ -328,6 +328,11 @@ type Config struct {
 	// EmbeddingCache is the directory for caching computed embeddings.
 	EmbeddingCache string
 
+	// EmbeddingBatchSize is the number of items per embedding request.
+	// Lower values reduce memory usage and avoid timeouts on slow hardware.
+	// Default: 32.
+	EmbeddingBatchSize int
+
 	// EnrichEnabled enables automatic album metadata enrichment during rescan.
 	EnrichEnabled bool
 
@@ -603,8 +608,9 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		switch strings.ToLower(cfg.EmbeddingProvider) {
 		case "ollama":
 			provider, err := NewOllamaProvider(OllamaConfig{
-				Endpoint: cfg.EmbeddingEndpoint,
-				Model:    cfg.EmbeddingModel,
+				Endpoint:  cfg.EmbeddingEndpoint,
+				Model:     cfg.EmbeddingModel,
+				BatchSize: cfg.EmbeddingBatchSize,
 			})
 			if err != nil {
 				log.Warn("failed to create ollama provider", zap.Error(err))
