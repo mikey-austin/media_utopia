@@ -80,9 +80,11 @@ func suggestPromoteCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "promote <suggestionId> <playlistName>",
-		Short: "Promote a suggestion to a saved playlist",
-		Args:  cobra.ExactArgs(2),
+		Use:     "promote <suggestionId> <playlistName>",
+		Short:   "Promote a suggestion to a saved playlist",
+		Long:    "Promote a suggestion to a saved playlist, preserving it permanently.",
+		Example: `  mu suggest promote abc-123 "New Discoveries"`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -104,7 +106,16 @@ func suggestLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [renderer] <suggestionId>",
 		Short: "Load a suggestion into the renderer queue",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: `Load a suggestion into a renderer's queue.
+
+Modes:
+  replace - Clear the queue and load the suggestion (default)
+  append  - Add suggestion tracks to the end of the queue
+  next    - Insert suggestion tracks after the currently playing track`,
+		Example: `  mu suggest load abc-123
+  mu suggest load living-room abc-123
+  mu suggest load --mode append abc-123`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
