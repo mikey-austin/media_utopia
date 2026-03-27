@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/clock"
@@ -38,7 +39,15 @@ func main() {
 
 It communicates with media renderers, playlist servers, and libraries over MQTT
 to control playback, manage queues, save and restore snapshots, curate playlists,
-and browse media collections. Configure a broker via --broker or ~/.config/mu.toml.`,
+and browse media collections.
+
+Configuration is loaded from ~/.config/mu/config.toml (or $MU_CONFIG).
+
+Environment variables:
+  MU_BROKER     MQTT broker URL (overrides config file)
+  MU_CONFIG     Path to config file
+  NO_COLOR      Disable colored output when set
+  CLICOLOR=0    Disable colored output`,
 	}
 
 	var (
@@ -72,9 +81,12 @@ and browse media collections. Configure a broker via --broker or ~/.config/mu.to
 	root.PersistentFlags().StringVar(&passOpt, "pass", "", "MQTT password")
 
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		if noColor || verbose {
-			_ = noColor
-			_ = verbose
+		// Respect --no-color flag and standard NO_COLOR / CLICOLOR env vars.
+		// See https://no-color.org/
+		if noColor || os.Getenv("NO_COLOR") != "" {
+			pterm.DisableColor()
+		} else if os.Getenv("CLICOLOR") == "0" {
+			pterm.DisableColor()
 		}
 
 		cfg, err := config.Load()
@@ -84,6 +96,9 @@ and browse media collections. Configure a broker via --broker or ~/.config/mu.to
 		identity = defaultIdentity(identity, cfg.Identity)
 		if broker == "" {
 			broker = cfg.Broker
+		}
+		if broker == "" {
+			broker = os.Getenv("MU_BROKER")
 		}
 		if topicBase == mu.BaseTopic && cfg.TopicBase != "" {
 			topicBase = cfg.TopicBase
