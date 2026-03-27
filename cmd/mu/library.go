@@ -13,8 +13,9 @@ import (
 
 func libraryCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "lib",
-		Short: "Browse and search media libraries",
+		Use:     "lib",
+		Short:   "Browse and search media libraries",
+		GroupID: "library",
 	}
 
 	cmd.AddCommand(libListCommand())

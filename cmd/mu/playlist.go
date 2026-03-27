@@ -206,7 +206,7 @@ func playlistLoadCommand() *cobra.Command {
 			switch modeValue {
 			case "replace", "append", "next":
 			default:
-				return fmt.Errorf("mode must be replace|append|next")
+				return fmt.Errorf("invalid mode %q: must be replace, append, or next", modeValue)
 			}
 			selector := ""
 			playlistID := ""
