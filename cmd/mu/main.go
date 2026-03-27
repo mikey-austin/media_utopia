@@ -184,6 +184,7 @@ and browse media collections. Configure a broker via --broker or ~/.config/mu.to
 	root.AddCommand(libraryCommand())
 	root.AddCommand(suggestCommand())
 	root.AddCommand(versionCommand())
+	root.AddCommand(configCommand())
 	root.AddCommand(completionCommand())
 
 	if err := root.Execute(); err != nil {
