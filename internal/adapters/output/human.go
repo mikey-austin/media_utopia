@@ -27,6 +27,13 @@ type LibraryItemsOutput struct {
 	Payload   json.RawMessage
 }
 
+// QueueListOutput wraps a QueueResult with pagination context.
+type QueueListOutput struct {
+	Result core.QueueResult
+	Offset int64
+	Count  int64
+}
+
 // Render returns human output as a string.
 func (HumanPrinter) Render(v any) (string, error) {
 	return renderHuman(v)
@@ -52,6 +59,8 @@ func renderHuman(v any) (string, error) {
 		return renderSession(data)
 	case core.QueueResult:
 		return renderQueue(data)
+	case QueueListOutput:
+		return renderQueueList(data)
 	case core.QueueNowResult:
 		return renderQueueNow(data)
 	case core.PlaylistListResult:
@@ -220,6 +229,19 @@ func renderQueue(result core.QueueResult) (string, error) {
 	return renderTable(headers, rows)
 }
 
+func renderQueueList(data QueueListOutput) (string, error) {
+	table, err := renderQueue(data.Result)
+	if err != nil {
+		return "", err
+	}
+	numEntries := int64(len(data.Result.Queue.Entries))
+	if numEntries > 0 && (data.Offset > 0 || numEntries == data.Count) {
+		end := data.Offset + numEntries
+		table += fmt.Sprintf("\nShowing %d-%d (rev %d)\n", data.Offset+1, end, data.Result.Queue.Revision)
+	}
+	return table, nil
+}
+
 func renderQueueNow(result core.QueueNowResult) (string, error) {
 	if result.Current == nil {
 		return "(none)\n", nil
@@ -359,7 +381,15 @@ func renderLibraryItemsOutput(result LibraryItemsOutput) (string, error) {
 			libRef,
 		})
 	}
-	return renderTable([]string{"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID", "LIB_REF"}, rows)
+	table, err := renderTable([]string{"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID", "LIB_REF"}, rows)
+	if err != nil {
+		return "", err
+	}
+	if payload.Total > 0 {
+		end := payload.Start + int64(len(payload.Items))
+		table += fmt.Sprintf("\nShowing %d-%d of %d items\n", payload.Start+1, end, payload.Total)
+	}
+	return table, nil
 }
 
 func rawBytes(data any) ([]byte, error) {
@@ -396,7 +426,13 @@ func formatMS(ms int64) string {
 		return "0:00"
 	}
 	secs := ms / 1000
-	return fmt.Sprintf("%d:%02d", secs/60, secs%60)
+	hours := secs / 3600
+	mins := (secs % 3600) / 60
+	sec := secs % 60
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, mins, sec)
+	}
+	return fmt.Sprintf("%d:%02d", mins, sec)
 }
 
 func formatItem(current *mu.CurrentItemState) string {

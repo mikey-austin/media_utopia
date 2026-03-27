@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/mikey-austin/media_utopia/internal/adapters/output"
 )
 
 func queueCommand() *cobra.Command {
@@ -60,6 +62,13 @@ Use --full to include queue entry IDs and item IDs for scripting.`,
 			result, err := app.service.QueueList(ctx, selector, offset, count, !app.json, full)
 			if err != nil {
 				return err
+			}
+			if !app.json {
+				return app.printer.Print(output.QueueListOutput{
+					Result: result,
+					Offset: offset,
+					Count:  count,
+				})
 			}
 			return app.printer.Print(result)
 		},
