@@ -13,8 +13,18 @@ func volumeCommand() *cobra.Command {
 	var unmute bool
 
 	cmd := &cobra.Command{
-		Use:     "vol [renderer] [<0..100>|<+/-n>]",
-		Short:   "Get or set the volume level",
+		Use:   "vol [renderer] [<0..100>|<+/-n>]",
+		Short: "Get or set the volume level",
+		Long: `Get or set the volume level on a renderer.
+
+Volume can be set as an absolute value (0-100) or a relative offset (+/-).
+Use --mute and --unmute to control mute state independently.`,
+		Example: `  mu vol 50
+  mu vol +10
+  mu vol -5
+  mu vol living-room 75
+  mu vol --mute
+  mu vol --unmute`,
 		GroupID: "playback",
 		Args:    cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
