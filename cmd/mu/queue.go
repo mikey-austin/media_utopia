@@ -157,7 +157,12 @@ func queueRemoveCommand() *cobra.Command {
 		Use:     "rm [renderer] <index|queueEntryId>",
 		Aliases: []string{"remove", "del", "delete"},
 		Short:   "Remove an entry from the queue",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: `Remove an entry from the queue by index or queue entry ID.
+Use 'mu queue list --full' to see queue entry IDs.`,
+		Example: `  mu queue rm 3
+  mu queue rm living-room 0
+  mu queue rm living-room abc-123-def`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -182,7 +187,10 @@ func queueMoveCommand() *cobra.Command {
 		Use:     "mv [renderer] <from> <to>",
 		Aliases: []string{"move"},
 		Short:   "Move a queue entry to a new position",
-		Args:  cobra.RangeArgs(2, 3),
+		Long:    "Move a queue entry from one position to another.",
+		Example: `  mu queue mv 5 0
+  mu queue mv living-room 3 7`,
+		Args: cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector := ""
 			fromArg := ""
