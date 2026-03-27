@@ -15,8 +15,13 @@ func statusCommand() *cobra.Command {
 	var watch bool
 
 	cmd := &cobra.Command{
-		Use:     "status [renderer]",
-		Short:   "Show renderer playback status",
+		Use:   "status [renderer]",
+		Short: "Show renderer playback status",
+		Long: `Show the current playback status of a renderer including track info,
+position, volume, and queue state. Use --watch for a live-updating display.`,
+		Example: `  mu status
+  mu status living-room
+  mu status --watch`,
 		GroupID: "discovery",
 		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {

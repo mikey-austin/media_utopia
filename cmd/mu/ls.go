@@ -11,8 +11,14 @@ func lsCommand() *cobra.Command {
 	var online bool
 
 	cmd := &cobra.Command{
-		Use:     "ls",
-		Short:   "List discovered nodes on the network",
+		Use:   "ls",
+		Short: "List discovered nodes on the network",
+		Long: `List all discovered nodes on the network. Nodes include renderers,
+libraries, and playlist servers. Use --kind to filter by type and --online
+to show only currently connected nodes.`,
+		Example: `  mu ls
+  mu ls --kind renderer
+  mu ls --kind library --online`,
 		GroupID: "discovery",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)

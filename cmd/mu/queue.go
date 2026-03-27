@@ -11,8 +11,10 @@ import (
 
 func queueCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "queue",
-		Short:   "Manage the playback queue",
+		Use:   "queue",
+		Short: "Manage the playback queue",
+		Long: `Manage the playback queue on a renderer. The queue holds the list of
+items to play. Most queue commands auto-acquire a lease when needed.`,
 		GroupID: "queue",
 	}
 
@@ -39,7 +41,13 @@ func queueListCommand() *cobra.Command {
 		Use:     "list [renderer]",
 		Aliases: []string{"ls"},
 		Short:   "List queue entries",
-		Args:  cobra.RangeArgs(0, 1),
+		Long: `List entries in the playback queue with title, artist, album, and duration.
+Use --full to include queue entry IDs and item IDs for scripting.`,
+		Example: `  mu queue list
+  mu queue list living-room
+  mu queue list --from 10 --count 20
+  mu queue list --full`,
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -65,9 +73,12 @@ func queueListCommand() *cobra.Command {
 
 func queueNowCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "now [renderer]",
-		Short: "Show the currently playing item",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "now [renderer]",
+		Short:   "Show the currently playing item",
+		Long:    "Show the currently playing item from the queue.",
+		Example: `  mu queue now
+  mu queue now living-room`,
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -89,9 +100,12 @@ func queueNowCommand() *cobra.Command {
 
 func queueClearCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "clear [renderer]",
-		Short: "Clear all entries from the queue",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "clear [renderer]",
+		Short:   "Clear all entries from the queue",
+		Long:    "Remove all entries from the playback queue.",
+		Example: `  mu queue clear
+  mu queue clear living-room`,
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -109,9 +123,12 @@ func queueClearCommand() *cobra.Command {
 
 func queueJumpCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "jump [renderer] <index>",
-		Short: "Jump to a specific queue index",
-		Args:  cobra.RangeArgs(1, 2),
+		Use:     "jump [renderer] <index>",
+		Short:   "Jump to a specific queue index",
+		Long:    "Jump to a specific index in the queue and start playback from there.",
+		Example: `  mu queue jump 5
+  mu queue jump living-room 10`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector := ""
 			indexArg := ""
