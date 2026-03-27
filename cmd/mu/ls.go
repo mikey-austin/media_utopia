@@ -11,8 +11,9 @@ func lsCommand() *cobra.Command {
 	var online bool
 
 	cmd := &cobra.Command{
-		Use:   "ls",
-		Short: "List nodes",
+		Use:     "ls",
+		Short:   "List discovered nodes on the network",
+		GroupID: "discovery",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)

@@ -15,9 +15,10 @@ func statusCommand() *cobra.Command {
 	var watch bool
 
 	cmd := &cobra.Command{
-		Use:   "status [renderer]",
-		Short: "Show renderer status",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "status [renderer]",
+		Short:   "Show renderer playback status",
+		GroupID: "discovery",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			selector := ""

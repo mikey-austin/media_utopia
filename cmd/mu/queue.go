@@ -11,8 +11,9 @@ import (
 
 func queueCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "queue",
-		Short: "Queue commands",
+		Use:     "queue",
+		Short:   "Manage the playback queue",
+		GroupID: "queue",
 	}
 
 	cmd.AddCommand(queueListCommand())
@@ -30,13 +31,14 @@ func queueCommand() *cobra.Command {
 }
 
 func queueListCommand() *cobra.Command {
-	var from int64
+	var offset int64
 	var count int64
 	var full bool
 
 	cmd := &cobra.Command{
-		Use:   "list [renderer]",
-		Short: "List queue entries",
+		Use:     "list [renderer]",
+		Aliases: []string{"ls"},
+		Short:   "List queue entries",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -47,7 +49,7 @@ func queueListCommand() *cobra.Command {
 			if len(args) == 1 {
 				selector = args[0]
 			}
-			result, err := app.service.QueueList(ctx, selector, from, count, !app.json, full)
+			result, err := app.service.QueueList(ctx, selector, offset, count, !app.json, full)
 			if err != nil {
 				return err
 			}
@@ -55,7 +57,7 @@ func queueListCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int64Var(&from, "from", 0, "start index")
+	cmd.Flags().Int64Var(&offset, "offset", 0, "start index")
 	cmd.Flags().Int64Var(&count, "count", 50, "number of entries")
 	cmd.Flags().BoolVar(&full, "full", false, "show full ids")
 	return cmd
@@ -64,7 +66,7 @@ func queueListCommand() *cobra.Command {
 func queueNowCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "now [renderer]",
-		Short: "Show current queue item",
+		Short: "Show the currently playing item",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -88,7 +90,7 @@ func queueNowCommand() *cobra.Command {
 func queueClearCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "clear [renderer]",
-		Short: "Clear the queue",
+		Short: "Clear all entries from the queue",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -108,7 +110,7 @@ func queueClearCommand() *cobra.Command {
 func queueJumpCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "jump [renderer] <index>",
-		Short: "Jump to index",
+		Short: "Jump to a specific queue index",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector := ""
@@ -121,7 +123,7 @@ func queueJumpCommand() *cobra.Command {
 			}
 			index, err := strconv.ParseInt(indexArg, 10, 64)
 			if err != nil {
-				return fmt.Errorf("invalid index")
+				return fmt.Errorf("invalid index %q: expected an integer", indexArg)
 			}
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -135,8 +137,9 @@ func queueJumpCommand() *cobra.Command {
 
 func queueRemoveCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "rm [renderer] <index|queueEntryId>",
-		Short: "Remove entry",
+		Use:     "rm [renderer] <index|queueEntryId>",
+		Aliases: []string{"remove", "del", "delete"},
+		Short:   "Remove an entry from the queue",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -159,8 +162,9 @@ func queueRemoveCommand() *cobra.Command {
 
 func queueMoveCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "mv [renderer] <from> <to>",
-		Short: "Move entry",
+		Use:     "mv [renderer] <from> <to>",
+		Aliases: []string{"move"},
+		Short:   "Move a queue entry to a new position",
 		Args:  cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector := ""
@@ -176,11 +180,11 @@ func queueMoveCommand() *cobra.Command {
 			}
 			from, err := strconv.ParseInt(fromArg, 10, 64)
 			if err != nil {
-				return fmt.Errorf("invalid from index")
+				return fmt.Errorf("invalid source index %q: expected an integer", fromArg)
 			}
 			to, err := strconv.ParseInt(toArg, 10, 64)
 			if err != nil {
-				return fmt.Errorf("invalid to index")
+				return fmt.Errorf("invalid destination index %q: expected an integer", toArg)
 			}
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -197,7 +201,7 @@ func queueShuffleCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "shuffle [renderer]",
-		Short: "Shuffle queue",
+		Short: "Shuffle the queue order",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -220,7 +224,7 @@ func queueShuffleCommand() *cobra.Command {
 func queueRepeatCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "repeat [renderer] off|all|one",
-		Short: "Set repeat mode",
+		Short: "Set the repeat mode",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector := ""
@@ -235,7 +239,7 @@ func queueRepeatCommand() *cobra.Command {
 			switch mode {
 			case "off", "all", "one":
 			default:
-				return fmt.Errorf("repeat must be off|all|one")
+				return fmt.Errorf("invalid repeat mode %q: must be off, all, or one", mode)
 			}
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -256,7 +260,7 @@ func queueAddCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "add [renderer] <item...>",
-		Short: "Add items to queue",
+		Short: "Add items to the queue",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -323,7 +327,7 @@ func queueSetCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "set [renderer] --file <path>|-",
-		Short: "Replace queue",
+		Short: "Replace the entire queue from a file",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -331,7 +335,7 @@ func queueSetCommand() *cobra.Command {
 			defer cancel()
 
 			if file == "" {
-				return fmt.Errorf("--file is required")
+				return fmt.Errorf("--file is required: specify a file path or - for stdin")
 			}
 			data, err := readFileOrStdin(file)
 			if err != nil {

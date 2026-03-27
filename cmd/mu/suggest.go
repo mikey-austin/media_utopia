@@ -9,8 +9,9 @@ import (
 
 func suggestCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "suggest",
-		Short: "Suggestion commands",
+		Use:     "suggest",
+		Short:   "Manage AI-generated suggestions",
+		GroupID: "content",
 	}
 
 	cmd.AddCommand(suggestListCommand())
@@ -25,8 +26,9 @@ func suggestListCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "ls",
-		Short: "List suggestions",
+		Use:     "ls",
+		Aliases: []string{"list"},
+		Short:   "List available suggestions",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -49,7 +51,7 @@ func suggestShowCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "show <suggestionId>",
-		Short: "Show suggestion",
+		Short: "Show suggestion details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -73,7 +75,7 @@ func suggestPromoteCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "promote <suggestionId> <playlistName>",
-		Short: "Promote suggestion to playlist",
+		Short: "Promote a suggestion to a saved playlist",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -95,7 +97,7 @@ func suggestLoadCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "load [renderer] <suggestionId>",
-		Short: "Load suggestion into renderer queue",
+		Short: "Load a suggestion into the renderer queue",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -113,7 +115,7 @@ func suggestLoadCommand() *cobra.Command {
 			switch modeValue {
 			case "replace", "append", "next":
 			default:
-				return fmt.Errorf("mode must be replace|append|next")
+				return fmt.Errorf("invalid mode %q: must be replace, append, or next", modeValue)
 			}
 
 			selector := ""

@@ -14,9 +14,10 @@ func acquireCommand() *cobra.Command {
 	var wait bool
 
 	cmd := &cobra.Command{
-		Use:   "acquire [renderer]",
-		Short: "Acquire a renderer lease",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "acquire [renderer]",
+		Short:   "Acquire an exclusive renderer lease",
+		GroupID: "session",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_ = wait
 			app := fromContext(cmd)
@@ -45,9 +46,10 @@ func renewCommand() *cobra.Command {
 	var ttl time.Duration
 
 	cmd := &cobra.Command{
-		Use:   "renew [renderer]",
-		Short: "Renew a renderer lease",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "renew [renderer]",
+		Short:   "Renew an existing renderer lease",
+		GroupID: "session",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -67,9 +69,10 @@ func renewCommand() *cobra.Command {
 
 func releaseCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "release [renderer]",
-		Short: "Release a renderer lease",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "release [renderer]",
+		Short:   "Release a renderer lease",
+		GroupID: "session",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -87,9 +90,10 @@ func releaseCommand() *cobra.Command {
 
 func ownerCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "owner [renderer]",
-		Short: "Show current renderer owner",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "owner [renderer]",
+		Short:   "Show the current lease owner",
+		GroupID: "session",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)

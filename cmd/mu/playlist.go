@@ -9,8 +9,9 @@ import (
 
 func playlistCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "playlist",
-		Short: "Playlist commands",
+		Use:     "playlist",
+		Short:   "Manage saved playlists",
+		GroupID: "content",
 	}
 
 	cmd.AddCommand(playlistListCommand())
@@ -29,8 +30,9 @@ func playlistListCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "ls",
-		Short: "List playlists",
+		Use:     "ls",
+		Aliases: []string{"list"},
+		Short:   "List all playlists",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -52,8 +54,9 @@ func playlistShowCommand() *cobra.Command {
 	var full bool
 
 	cmd := &cobra.Command{
-		Use:   "show <playlistId|name>",
-		Short: "Show playlist",
+		Use:     "show <playlistId|name>",
+		Aliases: []string{"get", "info"},
+		Short:   "Show playlist contents",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -85,7 +88,7 @@ func playlistCreateCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create playlist",
+		Short: "Create a new playlist",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -106,7 +109,7 @@ func playlistAddCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "add <playlistId|name> <item...>",
-		Short: "Add items to playlist",
+		Short: "Add items to a playlist",
 		Long: "Add items to a playlist.\n" +
 			"Items can be:\n" +
 			"  - http(s) URLs\n" +
@@ -144,7 +147,7 @@ func playlistRemoveCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "rm <playlistId|name> <entryId...>",
-		Short: "Remove items from playlist",
+		Short: "Remove entries from a playlist",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -163,8 +166,8 @@ func playlistDeleteCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "delete <playlistId|name>",
-		Aliases: []string{"del"},
-		Short:   "Delete playlist",
+		Aliases: []string{"del", "rm", "remove"},
+		Short:   "Delete a playlist",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -185,7 +188,7 @@ func playlistLoadCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "load [renderer] <playlistId|name>",
-		Short: "Load playlist into renderer queue",
+		Short: "Load a playlist into the renderer queue",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -230,7 +233,7 @@ func playlistRenameCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "rename <playlistId|name> <name>",
-		Short: "Rename playlist",
+		Short: "Rename a playlist",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)

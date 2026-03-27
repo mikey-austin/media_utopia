@@ -34,6 +34,11 @@ func main() {
 	root := &cobra.Command{
 		Use:   "mu",
 		Short: "Media Utopia CLI",
+		Long: `mu is the command-line interface for Media Utopia.
+
+It communicates with media renderers, playlist servers, and libraries over MQTT
+to control playback, manage queues, save and restore snapshots, curate playlists,
+and browse media collections. Configure a broker via --broker or ~/.config/mu.toml.`,
 	}
 
 	var (
@@ -150,6 +155,15 @@ func main() {
 		return nil
 	}
 
+	root.AddGroup(
+		&cobra.Group{ID: "discovery", Title: "Discovery:"},
+		&cobra.Group{ID: "playback", Title: "Playback:"},
+		&cobra.Group{ID: "session", Title: "Session Management:"},
+		&cobra.Group{ID: "queue", Title: "Queue Management:"},
+		&cobra.Group{ID: "content", Title: "Content:"},
+		&cobra.Group{ID: "library", Title: "Library:"},
+	)
+
 	root.AddCommand(lsCommand())
 	root.AddCommand(statusCommand())
 	root.AddCommand(acquireCommand())
@@ -169,6 +183,8 @@ func main() {
 	root.AddCommand(snapshotCommand())
 	root.AddCommand(libraryCommand())
 	root.AddCommand(suggestCommand())
+	root.AddCommand(versionCommand())
+	root.AddCommand(completionCommand())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(core.ExitCode(err))
@@ -254,6 +270,6 @@ func normalizeResolve(arg string) (string, error) {
 		}
 		return arg, nil
 	default:
-		return "", fmt.Errorf("resolve must be auto|yes|no")
+		return "", fmt.Errorf("invalid resolve mode %q: must be auto, yes, or no", arg)
 	}
 }

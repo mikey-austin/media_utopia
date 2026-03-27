@@ -14,7 +14,7 @@ import (
 func libraryCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "lib",
-		Short: "Library commands",
+		Short: "Browse and search media libraries",
 	}
 
 	cmd.AddCommand(libListCommand())
@@ -28,8 +28,9 @@ func libraryCommand() *cobra.Command {
 
 func libListCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ls",
-		Short: "List libraries",
+		Use:     "ls",
+		Aliases: []string{"list"},
+		Short:   "List available libraries",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -45,13 +46,13 @@ func libListCommand() *cobra.Command {
 }
 
 func libBrowseCommand() *cobra.Command {
-	var start int64
+	var offset int64
 	var count int64
 	var container string
 
 	cmd := &cobra.Command{
 		Use:   "browse [library] [containerId]",
-		Short: "Browse library",
+		Short: "Browse a library by container",
 		Long: "Browse a library by container. Omit containerId to browse the root.\n" +
 			"Library selectors can be a configured alias, the library name, or a full node id (URN).\n" +
 			"Container ids are library-specific; for Jellyfin, use empty to list the root folders.\n" +
@@ -80,7 +81,7 @@ func libBrowseCommand() *cobra.Command {
 				selector = args[0]
 				containerID = args[1]
 			}
-			result, err := app.service.LibraryBrowse(ctx, selector, containerID, start, count)
+			result, err := app.service.LibraryBrowse(ctx, selector, containerID, offset, count)
 			if err != nil {
 				return err
 			}
@@ -97,20 +98,21 @@ func libBrowseCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int64Var(&start, "start", 0, "start offset")
+	cmd.Flags().Int64Var(&offset, "offset", 0, "start offset")
 	cmd.Flags().Int64Var(&count, "count", 50, "page size")
 	cmd.Flags().StringVar(&container, "container", "", "container id (defaults to root)")
 	return cmd
 }
 
 func libSearchCommand() *cobra.Command {
-	var start int64
+	var offset int64
 	var count int64
 	var types string
 
 	cmd := &cobra.Command{
-		Use:   "search [library] <query>",
-		Short: "Search library",
+		Use:     "search [library] <query>",
+		Aliases: []string{"find", "query"},
+		Short:   "Search a library for matching items",
 		Long: "Search a library for matching items.\n" +
 			"Library selectors can be a configured alias, the library name, or a full node id (URN).",
 		Args: cobra.RangeArgs(1, 2),
@@ -131,7 +133,7 @@ func libSearchCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := app.service.LibrarySearch(ctx, selector, query, start, count, typeList)
+			result, err := app.service.LibrarySearch(ctx, selector, query, offset, count, typeList)
 			if err != nil {
 				return err
 			}
@@ -148,7 +150,7 @@ func libSearchCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int64Var(&start, "start", 0, "start offset")
+	cmd.Flags().Int64Var(&offset, "offset", 0, "start offset")
 	cmd.Flags().Int64Var(&count, "count", 25, "page size")
 	cmd.Flags().StringVar(&types, "type", "", "comma-separated types (Audio,MusicAlbum,MusicArtist,Movie,Series,Episode,Video,Playlist,Folder)")
 	return cmd
@@ -157,7 +159,7 @@ func libSearchCommand() *cobra.Command {
 func libResolveCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "resolve [library] <itemId>",
-		Short: "Resolve library item",
+		Short: "Resolve a library item to playable URLs",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -198,7 +200,7 @@ func libRescanCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "rescan [library]",
-		Short: "Rescan library for new files",
+		Short: "Trigger a library rescan",
 		Long: `Trigger a library rescan to index new, modified, or deleted files.
 
 By default runs synchronously and reports the number of items found.

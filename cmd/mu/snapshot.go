@@ -9,8 +9,9 @@ import (
 
 func snapshotCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "snapshot",
-		Short: "Snapshot commands",
+		Use:     "snapshot",
+		Short:   "Manage session snapshots",
+		GroupID: "content",
 	}
 
 	cmd.AddCommand(snapshotSaveCommand())
@@ -26,7 +27,7 @@ func snapshotSaveCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "save [renderer] <name>",
-		Short: "Save session snapshot",
+		Short: "Save the current session as a snapshot",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -57,7 +58,7 @@ func snapshotLoadCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "load [renderer] <snapshotId>",
-		Short: "Load snapshot into renderer queue",
+		Short: "Restore a snapshot into the renderer queue",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -75,7 +76,7 @@ func snapshotLoadCommand() *cobra.Command {
 			switch modeValue {
 			case "replace", "append", "next":
 			default:
-				return fmt.Errorf("mode must be replace|append|next")
+				return fmt.Errorf("invalid mode %q: must be replace, append, or next", modeValue)
 			}
 			selector := ""
 			snapshotID := ""
@@ -101,8 +102,9 @@ func snapshotListCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "ls",
-		Short: "List snapshots",
+		Use:     "ls",
+		Aliases: []string{"list"},
+		Short:   "List saved snapshots",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -123,8 +125,9 @@ func snapshotRemoveCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "rm <snapshotId|name>",
-		Short: "Remove snapshot",
+		Use:     "rm <snapshotId|name>",
+		Aliases: []string{"remove", "del", "delete"},
+		Short:   "Delete a snapshot",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)

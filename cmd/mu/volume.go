@@ -13,16 +13,17 @@ func volumeCommand() *cobra.Command {
 	var unmute bool
 
 	cmd := &cobra.Command{
-		Use:   "vol [renderer] [<0..100>|<+/-n>]",
-		Short: "Set volume",
-		Args:  cobra.RangeArgs(0, 2),
+		Use:     "vol [renderer] [<0..100>|<+/-n>]",
+		Short:   "Get or set the volume level",
+		GroupID: "playback",
+		Args:    cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
 			if mute && unmute {
-				return fmt.Errorf("use only --mute or --unmute")
+				return fmt.Errorf("--mute and --unmute are mutually exclusive")
 			}
 			var mutePtr *bool
 			if mute || unmute {
@@ -45,7 +46,7 @@ func volumeCommand() *cobra.Command {
 			}
 
 			if arg == "" && mutePtr == nil {
-				return fmt.Errorf("volume value required")
+				return fmt.Errorf("volume value required (0-100, +N, or -N)")
 			}
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.SetVolume(ctx, selector, arg, mutePtr)

@@ -11,8 +11,14 @@ func playCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "play [renderer]",
-		Short: "Start playback",
-		Args:  cobra.RangeArgs(0, 1),
+		Short: "Start or resume playback",
+		Long: `Start or resume playback on a renderer. If the queue has entries,
+playback begins at the current position unless --index is specified.`,
+		Example: `  mu play
+  mu play living-room
+  mu play living-room --index 5`,
+		GroupID: "playback",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -39,9 +45,13 @@ func playCommand() *cobra.Command {
 
 func pauseCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "pause [renderer]",
-		Short: "Pause playback",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "pause [renderer]",
+		Short:   "Pause playback",
+		Long:    "Pause playback on a renderer. Use 'mu toggle' to resume.",
+		Example: `  mu pause
+  mu pause living-room`,
+		GroupID: "playback",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -60,9 +70,13 @@ func pauseCommand() *cobra.Command {
 
 func toggleCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "toggle [renderer]",
-		Short: "Toggle playback",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "toggle [renderer]",
+		Short:   "Toggle between play and pause",
+		Long:    "Toggle between play and pause states. If playing, pauses. If paused, resumes.",
+		Example: `  mu toggle
+  mu toggle living-room`,
+		GroupID: "playback",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -81,9 +95,13 @@ func toggleCommand() *cobra.Command {
 
 func stopCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop [renderer]",
-		Short: "Stop playback",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "stop [renderer]",
+		Short:   "Stop playback and reset position",
+		Long:    "Stop playback and reset the position to the beginning of the current track.",
+		Example: `  mu stop
+  mu stop living-room`,
+		GroupID: "playback",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -103,8 +121,17 @@ func stopCommand() *cobra.Command {
 func seekCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "seek [renderer] <+/-dur|ms>",
-		Short: "Seek playback",
-		Args:  cobra.RangeArgs(1, 2),
+		Short: "Seek to a position or offset",
+		Long: `Seek to an absolute position or a relative offset.
+
+Accepts milliseconds, or a relative offset with +/- prefix.
+Duration suffixes like "s" and "m" are also supported.`,
+		Example: `  mu seek +30s
+  mu seek -10s
+  mu seek 120000
+  mu seek living-room +1m`,
+		GroupID: "playback",
+		Args:    cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -129,9 +156,13 @@ func seekCommand() *cobra.Command {
 
 func nextCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "next [renderer]",
-		Short: "Next track",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "next [renderer]",
+		Short:   "Skip to the next track",
+		Long:    "Skip to the next track in the queue.",
+		Example: `  mu next
+  mu next living-room`,
+		GroupID: "playback",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -150,9 +181,13 @@ func nextCommand() *cobra.Command {
 
 func prevCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "prev [renderer]",
-		Short: "Previous track",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "prev [renderer]",
+		Short:   "Go back to the previous track",
+		Long:    "Go back to the previous track in the queue.",
+		Example: `  mu prev
+  mu prev living-room`,
+		GroupID: "playback",
+		Args:    cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
