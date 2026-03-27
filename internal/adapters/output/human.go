@@ -206,6 +206,10 @@ func renderSession(result core.SessionResult) (string, error) {
 }
 
 func renderQueue(result core.QueueResult) (string, error) {
+	return renderQueueWithOffset(result, 0)
+}
+
+func renderQueueWithOffset(result core.QueueResult, offset int64) (string, error) {
 	headers := []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"}
 	if result.FullIDs {
 		headers = append(headers, "QUEUE_ID", "ITEM_ID")
@@ -234,8 +238,13 @@ func renderQueue(result core.QueueResult) (string, error) {
 			}
 			length = formatDuration(entry.Metadata["durationMs"])
 		}
+		absoluteIdx := offset + int64(idx)
+		indexStr := fmt.Sprintf("  %d", absoluteIdx)
+		if absoluteIdx == result.Queue.Index {
+			indexStr = pterm.FgGreen.Sprintf("> %d", absoluteIdx)
+		}
 		row := []string{
-			fmt.Sprintf("%d", idx),
+			indexStr,
 			truncateCell(title, 64),
 			truncateCell(typ, 16),
 			truncateCell(artist, 32),
@@ -251,7 +260,7 @@ func renderQueue(result core.QueueResult) (string, error) {
 }
 
 func renderQueueList(data QueueListOutput) (string, error) {
-	table, err := renderQueue(data.Result)
+	table, err := renderQueueWithOffset(data.Result, data.Offset)
 	if err != nil {
 		return "", err
 	}
