@@ -299,7 +299,17 @@ func queueAddCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add [renderer] <item...>",
 		Short: "Add items to the queue",
-		Args:  cobra.MinimumNArgs(1),
+		Long: `Add one or more items to the queue.
+
+Items can be URLs, mu URNs (mu:...), or library references (lib:<library>:<itemId>).
+By default items are appended to the end. Use --next to insert after the current
+track, or --at to insert at a specific position.`,
+		Example: `  mu queue add https://example.com/song.mp3
+  mu queue add lib:jellyfin:abc123
+  mu queue add --next lib:jellyfin:abc123
+  mu queue add --at 0 https://example.com/song.mp3
+  mu queue add living-room lib:jellyfin:abc123 lib:jellyfin:def456`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -366,7 +376,10 @@ func queueSetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set [renderer] --file <path>|-",
 		Short: "Replace the entire queue from a file",
-		Args:  cobra.RangeArgs(0, 1),
+		Example: `  mu queue set --file playlist.muq
+  mu queue set --file playlist.json --format json
+  cat tracks.muq | mu queue set --file -`,
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)

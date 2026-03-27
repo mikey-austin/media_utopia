@@ -9,8 +9,10 @@ import (
 
 func playlistCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "playlist",
-		Short:   "Manage saved playlists",
+		Use:   "playlist",
+		Short: "Manage saved playlists",
+		Long: `Manage saved playlists on a playlist server. Playlists persist across
+sessions and can be loaded into any renderer's queue.`,
 		GroupID: "content",
 	}
 
@@ -33,6 +35,9 @@ func playlistListCommand() *cobra.Command {
 		Use:     "ls",
 		Aliases: []string{"list"},
 		Short:   "List all playlists",
+		Long:    "List all saved playlists on the server.",
+		Example: `  mu playlist ls
+  mu playlist ls --server myserver`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -57,7 +62,11 @@ func playlistShowCommand() *cobra.Command {
 		Use:     "show <playlistId|name>",
 		Aliases: []string{"get", "info"},
 		Short:   "Show playlist contents",
-		Args:  cobra.ExactArgs(1),
+		Long: `Show the contents of a playlist with track details. Playlists can be
+referenced by name or ID. Use --full to include entry IDs for scripting.`,
+		Example: `  mu playlist show "Evening Jazz"
+  mu playlist show abc-123 --full`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -89,7 +98,11 @@ func playlistCreateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a new playlist",
-		Args:  cobra.ExactArgs(1),
+		Long: `Create a new empty playlist. Use --from-snapshot to create a playlist
+from an existing session snapshot.`,
+		Example: `  mu playlist create "Road Trip"
+  mu playlist create "Live Set" --from-snapshot my-snapshot`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -116,13 +129,9 @@ func playlistAddCommand() *cobra.Command {
 			"  - mu URNs (mu:...)\n" +
 			"  - library refs (lib:<selector>:<itemId>)\n" +
 			"    where selector can be a library alias or full nodeId\n" +
-			"    container items (albums/artists) expand into playable tracks\n" +
-			"\n" +
-			"Examples:\n" +
-			"  mu playlist add <playlistId> https://example.com/a.mp3\n" +
-			"  mu playlist add \"Evening Miles\" https://example.com/a.mp3\n" +
-			"  mu playlist add <playlistId> lib:jellyfin:ITEM_ID --resolve yes\n" +
-			"  mu playlist add <playlistId> lib:mu:library:jellyfin:ns:default:ITEM_ID --resolve yes\n",
+			"    container items (albums/artists) expand into playable tracks\n",
+		Example: `  mu playlist add "Evening Jazz" https://example.com/song.mp3
+  mu playlist add "Evening Jazz" lib:jellyfin:abc123 --resolve yes`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -148,7 +157,10 @@ func playlistRemoveCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rm <playlistId|name> <entryId...>",
 		Short: "Remove entries from a playlist",
-		Args:  cobra.MinimumNArgs(2),
+		Long: `Remove one or more entries from a playlist by entry ID.
+Use 'mu playlist show --full' to see entry IDs.`,
+		Example: "  mu playlist rm \"Evening Jazz\" entry-id-1 entry-id-2",
+		Args:    cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -168,7 +180,10 @@ func playlistDeleteCommand() *cobra.Command {
 		Use:     "delete <playlistId|name>",
 		Aliases: []string{"del", "rm", "remove"},
 		Short:   "Delete a playlist",
-		Args:    cobra.ExactArgs(1),
+		Long:    "Permanently delete a playlist from the server.",
+		Example: `  mu playlist delete "Old Playlist"
+  mu playlist del abc-123`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -189,7 +204,16 @@ func playlistLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [renderer] <playlistId|name>",
 		Short: "Load a playlist into the renderer queue",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: `Load a playlist into a renderer's queue.
+
+Modes:
+  replace - Clear the queue and load the playlist (default)
+  append  - Add playlist tracks to the end of the queue
+  next    - Insert playlist tracks after the currently playing track`,
+		Example: `  mu playlist load "Evening Jazz"
+  mu playlist load living-room "Evening Jazz"
+  mu playlist load --mode append "Road Trip"`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -232,9 +256,11 @@ func playlistRenameCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "rename <playlistId|name> <name>",
-		Short: "Rename a playlist",
-		Args:  cobra.ExactArgs(2),
+		Use:     "rename <playlistId|name> <name>",
+		Short:   "Rename a playlist",
+		Long:    "Rename an existing playlist.",
+		Example: `  mu playlist rename "Old Name" "New Name"`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)

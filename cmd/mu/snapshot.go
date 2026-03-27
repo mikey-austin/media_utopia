@@ -9,8 +9,10 @@ import (
 
 func snapshotCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "snapshot",
-		Short:   "Manage session snapshots",
+		Use:   "snapshot",
+		Short: "Manage session snapshots",
+		Long: `Manage session snapshots. A snapshot captures the current queue state
+and can be restored later or promoted to a saved playlist.`,
 		GroupID: "content",
 	}
 
@@ -26,9 +28,12 @@ func snapshotSaveCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "save [renderer] <name>",
-		Short: "Save the current session as a snapshot",
-		Args:  cobra.RangeArgs(1, 2),
+		Use:     "save [renderer] <name>",
+		Short:   "Save the current session as a snapshot",
+		Long:    "Save the current renderer session (queue, position, volume) as a named snapshot.",
+		Example: `  mu snapshot save "Friday Night"
+  mu snapshot save living-room "Party Mix"`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -59,7 +64,16 @@ func snapshotLoadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "load [renderer] <snapshotId>",
 		Short: "Restore a snapshot into the renderer queue",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: `Restore a snapshot into a renderer's queue.
+
+Modes:
+  replace - Clear the queue and load the snapshot (default)
+  append  - Add snapshot tracks to the end of the queue
+  next    - Insert snapshot tracks after the currently playing track`,
+		Example: `  mu snapshot load "Friday Night"
+  mu snapshot load living-room abc-123
+  mu snapshot load --mode append "Party Mix"`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -105,6 +119,9 @@ func snapshotListCommand() *cobra.Command {
 		Use:     "ls",
 		Aliases: []string{"list"},
 		Short:   "List saved snapshots",
+		Long:    "List all saved snapshots on the server.",
+		Example: `  mu snapshot ls
+  mu snapshot ls --server myserver`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -128,7 +145,10 @@ func snapshotRemoveCommand() *cobra.Command {
 		Use:     "rm <snapshotId|name>",
 		Aliases: []string{"remove", "del", "delete"},
 		Short:   "Delete a snapshot",
-		Args:  cobra.ExactArgs(1),
+		Long:    "Delete a snapshot from the server.",
+		Example: `  mu snapshot rm "Old Snapshot"
+  mu snapshot rm abc-123`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
