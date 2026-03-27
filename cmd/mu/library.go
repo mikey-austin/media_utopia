@@ -175,8 +175,8 @@ func libResolveCommand() *cobra.Command {
 				selector = args[0]
 				itemID = args[1]
 			}
-			if strings.HasPrefix(strings.TrimSpace(itemID), "lib:") {
-				ref := strings.TrimPrefix(strings.TrimSpace(itemID), "lib:")
+			trimmed := strings.TrimSpace(itemID)
+			if ref, ok := strings.CutPrefix(trimmed, "lib:"); ok {
 				idx := strings.LastIndex(ref, ":")
 				if idx <= 0 || idx >= len(ref)-1 {
 					return errors.New("invalid library ref (expected lib:<selector>:<itemId>)")

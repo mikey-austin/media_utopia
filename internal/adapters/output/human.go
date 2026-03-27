@@ -153,13 +153,9 @@ func renderStatus(result core.StatusResult) (string, error) {
 	itemMax := innerWidth
 	if suffix != "" {
 		itemMax = innerWidth - displayWidth(suffix) - 2
-		if itemMax < 10 {
-			itemMax = 10
-		}
+		itemMax = max(itemMax, 10)
 	}
-	if itemMax > 60 {
-		itemMax = 60
-	}
+	itemMax = min(itemMax, 60)
 	item = truncateCell(item, itemMax)
 	if displayWidth(item) > itemMax {
 		item = truncateByWidth(item, itemMax)
@@ -183,9 +179,7 @@ func renderStatus(result core.StatusResult) (string, error) {
 	// Line 3: progress bar (only when playing or paused with duration)
 	if durMS > 0 && (status == "playing" || status == "paused") {
 		barWidth := innerWidth - 8 // leave room for percentage
-		if barWidth > 60 {
-			barWidth = 60
-		}
+		barWidth = min(barWidth, 60)
 		if barWidth >= 10 {
 			percent := int64(0)
 			if durMS > 0 {
@@ -439,16 +433,9 @@ func renderProgressBar(pos, dur int64, width int) string {
 		return ""
 	}
 	barWidth := width - 2 // account for [ and ]
-	if barWidth < 3 {
-		barWidth = 3
-	}
+	barWidth = max(barWidth, 3)
 	fraction := float64(pos) / float64(dur)
-	if fraction < 0 {
-		fraction = 0
-	}
-	if fraction > 1 {
-		fraction = 1
-	}
+	fraction = max(0, min(1, fraction))
 	filled := int(fraction * float64(barWidth))
 	var bar strings.Builder
 	bar.WriteString(pterm.FgGray.Sprint("["))

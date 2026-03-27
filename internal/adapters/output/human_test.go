@@ -77,7 +77,7 @@ func TestRenderStatus(t *testing.T) {
 					},
 					Current: &mu.CurrentItemState{
 						ItemID:   "item-1",
-						Metadata: map[string]interface{}{"title": "My Song", "artist": "The Band"},
+						Metadata: map[string]any{"title": "My Song", "artist": "The Band"},
 					},
 					Queue: &mu.QueueState{
 						Length:   10,
@@ -268,7 +268,7 @@ func TestRenderQueue(t *testing.T) {
 						{
 							QueueEntryID: "qe1",
 							ItemID:       "item-1",
-							Metadata: map[string]interface{}{
+							Metadata: map[string]any{
 								"title":     "Song One",
 								"mediaType": "audio",
 								"artist":    "Artist A",
@@ -279,7 +279,7 @@ func TestRenderQueue(t *testing.T) {
 						{
 							QueueEntryID: "qe2",
 							ItemID:       "item-2",
-							Metadata: map[string]interface{}{
+							Metadata: map[string]any{
 								"title":  "Song Two",
 								"type":   "audio",
 								"artist": "Artist B",
@@ -300,7 +300,7 @@ func TestRenderQueue(t *testing.T) {
 						{
 							QueueEntryID: "qe-full-1",
 							ItemID:       "item-full-1",
-							Metadata: map[string]interface{}{
+							Metadata: map[string]any{
 								"title": "Track",
 							},
 						},
@@ -364,7 +364,7 @@ func TestRenderQueueNow(t *testing.T) {
 			input: core.QueueNowResult{
 				Current: &mu.CurrentItemState{
 					ItemID: "item-1",
-					Metadata: map[string]interface{}{
+					Metadata: map[string]any{
 						"title":  "Song Title",
 						"artist": "Song Artist",
 					},
@@ -377,7 +377,7 @@ func TestRenderQueueNow(t *testing.T) {
 			input: core.QueueNowResult{
 				Current: &mu.CurrentItemState{
 					ItemID: "item-2",
-					Metadata: map[string]interface{}{
+					Metadata: map[string]any{
 						"title": "Only Title",
 					},
 				},
@@ -896,7 +896,7 @@ func TestFormatItem(t *testing.T) {
 			name: "title and artist",
 			current: &mu.CurrentItemState{
 				ItemID:   "item-1",
-				Metadata: map[string]interface{}{"title": "My Song", "artist": "The Band"},
+				Metadata: map[string]any{"title": "My Song", "artist": "The Band"},
 			},
 			want: "The Band - My Song",
 		},
@@ -904,7 +904,7 @@ func TestFormatItem(t *testing.T) {
 			name: "title only",
 			current: &mu.CurrentItemState{
 				ItemID:   "item-2",
-				Metadata: map[string]interface{}{"title": "Solo Title"},
+				Metadata: map[string]any{"title": "Solo Title"},
 			},
 			want: "Solo Title",
 		},
@@ -912,7 +912,7 @@ func TestFormatItem(t *testing.T) {
 			name: "no metadata",
 			current: &mu.CurrentItemState{
 				ItemID:   "item-3",
-				Metadata: map[string]interface{}{},
+				Metadata: map[string]any{},
 			},
 			want: "item-3",
 		},
