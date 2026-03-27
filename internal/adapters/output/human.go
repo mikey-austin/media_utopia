@@ -94,7 +94,7 @@ func renderNodes(result core.NodesResult) (string, error) {
 
 func renderStatus(result core.StatusResult) (string, error) {
 	status := "unknown"
-	position := ""
+	var posMS, durMS int64
 	volume := ""
 	item := ""
 	artistLine := ""
@@ -103,7 +103,8 @@ func renderStatus(result core.StatusResult) (string, error) {
 
 	if result.State.Playback != nil {
 		status = result.State.Playback.Status
-		position = formatPosition(result.State.Playback.PositionMS, result.State.Playback.DurationMS)
+		posMS = result.State.Playback.PositionMS
+		durMS = result.State.Playback.DurationMS
 		volume = fmt.Sprintf("vol %d%%", int(result.State.Playback.Volume*100+0.5))
 		if result.State.Playback.Mute {
 			volume = "muted"
@@ -127,9 +128,9 @@ func renderStatus(result core.StatusResult) (string, error) {
 	if result.State.Queue != nil {
 		queue = fmt.Sprintf("Queue: %d tracks (index %d) rev %d", result.State.Queue.Length, result.State.Queue.Index, result.State.Queue.Revision)
 		if result.State.Queue.RepeatMode == "one" {
-			queue = queue + " repeat-one"
+			queue += " repeat-one"
 		} else if result.State.Queue.Repeat {
-			queue = queue + " repeat"
+			queue += " repeat"
 		}
 	}
 	if result.State.Session != nil {
@@ -143,6 +144,11 @@ func renderStatus(result core.StatusResult) (string, error) {
 	}
 	titleName := truncateCell(result.Renderer.Name, innerWidth-10)
 	title := fmt.Sprintf("%s [%s]", titleName, statusStyled)
+
+	// Build position/time string
+	position := formatPosition(posMS, durMS)
+
+	// Line 1: track title + time position
 	suffix := strings.TrimSpace(fmt.Sprintf("%s  %s", position, volume))
 	itemMax := innerWidth
 	if suffix != "" {
@@ -163,6 +169,8 @@ func renderStatus(result core.StatusResult) (string, error) {
 		line = strings.TrimSpace(fmt.Sprintf("%s  %s", item, suffix))
 	}
 	lines := []string{truncateCell(line, innerWidth)}
+
+	// Line 2: artist
 	if artistLine != "" {
 		label := fmt.Sprintf("Artist: %s", artistLine)
 		label = truncateCell(label, itemMax)
@@ -171,10 +179,29 @@ func renderStatus(result core.StatusResult) (string, error) {
 		}
 		lines = append(lines, pterm.FgCyan.Sprint(label))
 	}
+
+	// Line 3: progress bar (only when playing or paused with duration)
+	if durMS > 0 && (status == "playing" || status == "paused") {
+		barWidth := innerWidth - 8 // leave room for percentage
+		if barWidth > 60 {
+			barWidth = 60
+		}
+		if barWidth >= 10 {
+			percent := int64(0)
+			if durMS > 0 {
+				percent = (posMS * 100) / durMS
+			}
+			bar := renderProgressBar(posMS, durMS, barWidth)
+			lines = append(lines, fmt.Sprintf("%s %3d%%", bar, percent))
+		}
+	}
+
+	// Line 4: queue + owner info
 	if queue != "" || owner != "" {
 		infoLine := strings.TrimSpace(fmt.Sprintf("%s %s", queue, owner))
 		lines = append(lines, truncateCell(infoLine, innerWidth))
 	}
+
 	box := pterm.DefaultBox.WithTitle(title)
 	return box.Sprint(strings.Join(lines, "\n")), nil
 }
@@ -405,6 +432,37 @@ func rawBytes(data any) ([]byte, error) {
 		}
 		return out, nil
 	}
+}
+
+func renderProgressBar(pos, dur int64, width int) string {
+	if dur <= 0 || width < 5 {
+		return ""
+	}
+	barWidth := width - 2 // account for [ and ]
+	if barWidth < 3 {
+		barWidth = 3
+	}
+	fraction := float64(pos) / float64(dur)
+	if fraction < 0 {
+		fraction = 0
+	}
+	if fraction > 1 {
+		fraction = 1
+	}
+	filled := int(fraction * float64(barWidth))
+	var bar strings.Builder
+	bar.WriteString(pterm.FgGray.Sprint("["))
+	for i := 0; i < barWidth; i++ {
+		if i < filled {
+			bar.WriteString(pterm.FgGreen.Sprint("━"))
+		} else if i == filled {
+			bar.WriteString(pterm.FgWhite.Sprint("╸"))
+		} else {
+			bar.WriteString(pterm.FgGray.Sprint("─"))
+		}
+	}
+	bar.WriteString(pterm.FgGray.Sprint("]"))
+	return bar.String()
 }
 
 func formatPosition(pos, dur int64) string {
