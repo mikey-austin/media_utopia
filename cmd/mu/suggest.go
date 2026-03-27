@@ -9,8 +9,9 @@ import (
 
 func suggestCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "suggest",
-		Short:   "Manage AI-generated suggestions",
+		Use:   "suggest",
+		Short: "Manage AI-generated suggestions",
+		Long:  "Manage AI-generated playlist suggestions. Suggestions can be previewed, loaded into a renderer, or promoted to saved playlists.",
 		GroupID: "content",
 	}
 
@@ -29,6 +30,9 @@ func suggestListCommand() *cobra.Command {
 		Use:     "ls",
 		Aliases: []string{"list"},
 		Short:   "List available suggestions",
+		Long:    "List available suggestions from the server.",
+		Example: `  mu suggest ls
+  mu suggest ls --server myserver`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -50,9 +54,11 @@ func suggestShowCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:   "show <suggestionId>",
-		Short: "Show suggestion details",
-		Args:  cobra.ExactArgs(1),
+		Use:     "show <suggestionId>",
+		Short:   "Show suggestion details",
+		Long:    "Show the details and track listing of a suggestion.",
+		Example: "  mu suggest show abc-123",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
