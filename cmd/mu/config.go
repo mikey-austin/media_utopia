@@ -20,6 +20,7 @@ func configCommand() *cobra.Command {
 	}
 	cmd.AddCommand(configShowCommand())
 	cmd.AddCommand(configPathCommand())
+	cmd.AddCommand(configInitCommand())
 	return cmd
 }
 
@@ -109,6 +110,71 @@ func configFilePath() string {
 		return "~/.config/mu/config.toml"
 	}
 	return filepath.Join(home, ".config", "mu", "config.toml")
+}
+
+func configInitCommand() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Create a default configuration file",
+		Long: `Create a default mu configuration file. The file is created at the
+default config path unless MU_CONFIG is set. Use --force to overwrite an existing file.`,
+		Example: `  mu config init
+  mu config init --force`,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := configFilePath()
+
+			if !force {
+				if _, err := os.Stat(path); err == nil {
+					return fmt.Errorf("config file already exists at %s (use --force to overwrite)", path)
+				}
+			}
+
+			// Ensure parent directory exists
+			dir := filepath.Dir(path)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("creating config directory: %w", err)
+			}
+
+			defaultConfig := `# mu CLI configuration
+# See 'mu config show' for current settings.
+
+# MQTT broker URL (required)
+# broker = "tcp://localhost:1883"
+
+# Controller identity (defaults to user@hostname)
+# identity = ""
+
+# MQTT topic base
+# topic_base = "mu/v1"
+
+# Default selectors (used when no explicit selector is given)
+[defaults]
+# renderer = "living-room"
+# playlist_server = ""
+# library = ""
+
+# Aliases map short names to full node IDs
+[aliases]
+# lr = "mu:renderer:living-room:ns:default"
+# jf = "mu:library:jellyfin:ns:default"
+`
+
+			if err := os.WriteFile(path, []byte(defaultConfig), 0o644); err != nil {
+				return fmt.Errorf("writing config file: %w", err)
+			}
+
+			fmt.Printf("Config file created at %s\n", path)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing config file")
+	return cmd
 }
 
 func valueOrDefault(val, def string) string {
