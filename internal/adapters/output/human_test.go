@@ -22,7 +22,7 @@ func TestRenderNodes(t *testing.T) {
 		{
 			name:     "empty list",
 			input:    core.NodesResult{Nodes: []mu.Presence{}},
-			contains: []string{"NAME", "KIND", "NODE_ID"},
+			contains: []string{"No nodes found. Is the broker running?"},
 		},
 		{
 			name: "single node",
@@ -221,9 +221,11 @@ func TestRenderSession(t *testing.T) {
 				},
 			},
 			contains: []string{
-				"session sess-abc",
-				"expires",
+				"Session:  sess-abc",
+				"Expires:",
 				time.Unix(1700000000, 0).Format(time.RFC3339),
+				"Renderer: r1",
+				"Owner:    mu-cli",
 			},
 		},
 	}
@@ -257,7 +259,7 @@ func TestRenderQueue(t *testing.T) {
 			input: core.QueueResult{
 				Queue: mu.QueueGetReply{Entries: []mu.QueueItem{}},
 			},
-			contains: []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"},
+			contains: []string{"Queue is empty."},
 			absent:   []string{"QUEUE_ID", "ITEM_ID"},
 		},
 		{
@@ -422,7 +424,7 @@ func TestRenderPlaylists(t *testing.T) {
 		{
 			name:     "empty list",
 			input:    core.PlaylistListResult{Playlists: []mu.PlaylistSummary{}},
-			contains: []string{"NAME", "PLAYLIST_ID", "REVISION"},
+			contains: []string{"No playlists found."},
 		},
 		{
 			name: "multiple playlists",
@@ -459,6 +461,15 @@ func TestRenderPlaylistShow(t *testing.T) {
 		absent   []string
 	}{
 		{
+			name: "empty playlist",
+			input: core.PlaylistShowResult{
+				PlaylistID: "pl-0",
+				Name:       "Empty Playlist",
+				Entries:    []core.PlaylistEntryResult{},
+			},
+			contains: []string{"Playlist: Empty Playlist (0 tracks)"},
+		},
+		{
 			name: "with metadata no FullIDs",
 			input: core.PlaylistShowResult{
 				PlaylistID: "pl-1",
@@ -477,7 +488,7 @@ func TestRenderPlaylistShow(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"Track One", "audio", "Artist One", "Album One", "3:20"},
+			contains: []string{"Playlist: Test Playlist (1 tracks)", "Track One", "audio", "Artist One", "Album One", "3:20"},
 			absent:   []string{"ENTRY_ID"},
 		},
 		{
@@ -496,7 +507,7 @@ func TestRenderPlaylistShow(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"ENTRY_ID", "ITEM_ID", "entry-abc", "item-xyz", "Full Track"},
+			contains: []string{"Playlist: Full IDs Playlist (1 tracks)", "ENTRY_ID", "ITEM_ID", "entry-abc", "item-xyz", "Full Track"},
 		},
 		{
 			name: "with missing metadata",
@@ -511,7 +522,7 @@ func TestRenderPlaylistShow(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"i3"},
+			contains: []string{"Playlist: Sparse Playlist (1 tracks)", "i3"},
 		},
 	}
 
@@ -546,7 +557,7 @@ func TestRenderSnapshots(t *testing.T) {
 		{
 			name:     "empty",
 			input:    core.SnapshotListResult{Snapshots: []mu.SnapshotSummary{}},
-			contains: []string{"NAME", "SNAPSHOT_ID", "REVISION"},
+			contains: []string{"No snapshots found."},
 		},
 		{
 			name: "multiple snapshots",
@@ -584,7 +595,7 @@ func TestRenderSuggestions(t *testing.T) {
 		{
 			name:     "empty",
 			input:    core.SuggestListResult{Suggestions: []mu.SuggestSummary{}},
-			contains: []string{"NAME", "SUGGESTION_ID", "REVISION"},
+			contains: []string{"No suggestions available."},
 		},
 		{
 			name: "multiple suggestions",

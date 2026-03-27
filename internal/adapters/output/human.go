@@ -85,6 +85,9 @@ func renderHuman(v any) (string, error) {
 }
 
 func renderNodes(result core.NodesResult) (string, error) {
+	if len(result.Nodes) == 0 {
+		return "No nodes found. Is the broker running?\n", nil
+	}
 	rows := make([][]string, 0, len(result.Nodes))
 	for _, node := range result.Nodes {
 		rows = append(rows, []string{node.Name, node.Kind, node.NodeID})
@@ -202,7 +205,13 @@ func renderStatus(result core.StatusResult) (string, error) {
 
 func renderSession(result core.SessionResult) (string, error) {
 	expires := time.Unix(result.Session.LeaseExpiresAt, 0).Format(time.RFC3339)
-	return fmt.Sprintf("session %s expires %s\n", result.Session.ID, expires), nil
+	remaining := time.Until(time.Unix(result.Session.LeaseExpiresAt, 0)).Round(time.Second)
+	var buf strings.Builder
+	buf.WriteString(fmt.Sprintf("Renderer: %s\n", result.RendererID))
+	buf.WriteString(fmt.Sprintf("Session:  %s\n", result.Session.ID))
+	buf.WriteString(fmt.Sprintf("Owner:    %s\n", result.Session.Owner))
+	buf.WriteString(fmt.Sprintf("Expires:  %s (%s remaining)\n", expires, remaining))
+	return buf.String(), nil
 }
 
 func renderQueue(result core.QueueResult) (string, error) {
@@ -210,6 +219,9 @@ func renderQueue(result core.QueueResult) (string, error) {
 }
 
 func renderQueueWithOffset(result core.QueueResult, offset int64) (string, error) {
+	if len(result.Queue.Entries) == 0 {
+		return "Queue is empty.\n", nil
+	}
 	headers := []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"}
 	if result.FullIDs {
 		headers = append(headers, "QUEUE_ID", "ITEM_ID")
@@ -260,6 +272,9 @@ func renderQueueWithOffset(result core.QueueResult, offset int64) (string, error
 }
 
 func renderQueueList(data QueueListOutput) (string, error) {
+	if len(data.Result.Queue.Entries) == 0 {
+		return "Queue is empty.\n", nil
+	}
 	table, err := renderQueueWithOffset(data.Result, data.Offset)
 	if err != nil {
 		return "", err
@@ -281,6 +296,9 @@ func renderQueueNow(result core.QueueNowResult) (string, error) {
 }
 
 func renderPlaylists(result core.PlaylistListResult) (string, error) {
+	if len(result.Playlists) == 0 {
+		return "No playlists found.\n", nil
+	}
 	rows := make([][]string, 0, len(result.Playlists))
 	for _, pl := range result.Playlists {
 		rows = append(rows, []string{pl.Name, pl.PlaylistID, fmt.Sprintf("%d", pl.Revision)})
@@ -289,6 +307,11 @@ func renderPlaylists(result core.PlaylistListResult) (string, error) {
 }
 
 func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
+	if len(result.Entries) == 0 {
+		return fmt.Sprintf("Playlist: %s (0 tracks)\n", result.Name), nil
+	}
+	header := fmt.Sprintf("Playlist: %s (%d tracks)\n\n", result.Name, len(result.Entries))
+
 	headers := []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"}
 	if result.FullIDs {
 		headers = append(headers, "ENTRY_ID", "ITEM_ID")
@@ -330,10 +353,17 @@ func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
 		}
 		rows = append(rows, row)
 	}
-	return renderTable(headers, rows)
+	table, err := renderTable(headers, rows)
+	if err != nil {
+		return "", err
+	}
+	return header + table, nil
 }
 
 func renderSnapshots(result core.SnapshotListResult) (string, error) {
+	if len(result.Snapshots) == 0 {
+		return "No snapshots found.\n", nil
+	}
 	rows := make([][]string, 0, len(result.Snapshots))
 	for _, snap := range result.Snapshots {
 		rows = append(rows, []string{snap.Name, snap.SnapshotID, fmt.Sprintf("%d", snap.Revision)})
@@ -342,6 +372,9 @@ func renderSnapshots(result core.SnapshotListResult) (string, error) {
 }
 
 func renderSuggestions(result core.SuggestListResult) (string, error) {
+	if len(result.Suggestions) == 0 {
+		return "No suggestions available.\n", nil
+	}
 	rows := make([][]string, 0, len(result.Suggestions))
 	for _, sug := range result.Suggestions {
 		rows = append(rows, []string{sug.Name, sug.SuggestionID, fmt.Sprintf("%d", sug.Revision)})
@@ -396,6 +429,9 @@ func renderLibraryItemsOutput(result LibraryItemsOutput) (string, error) {
 	var payload libraryItemsReply
 	if err := json.Unmarshal(result.Payload, &payload); err != nil {
 		return "", err
+	}
+	if len(payload.Items) == 0 {
+		return "No items found.\n", nil
 	}
 	rows := make([][]string, 0, len(payload.Items))
 	for _, item := range payload.Items {
