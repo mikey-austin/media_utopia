@@ -225,9 +225,13 @@ func queueShuffleCommand() *cobra.Command {
 	var seed int64
 
 	cmd := &cobra.Command{
-		Use:   "shuffle [renderer]",
-		Short: "Shuffle the queue order",
-		Args:  cobra.RangeArgs(0, 1),
+		Use:     "shuffle [renderer]",
+		Short:   "Shuffle the queue order",
+		Long:    "Randomly reorder the entries in the queue. Use --seed for reproducible results.",
+		Example: `  mu queue shuffle
+  mu queue shuffle living-room
+  mu queue shuffle --seed 42`,
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -250,7 +254,16 @@ func queueRepeatCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "repeat [renderer] off|all|one",
 		Short: "Set the repeat mode",
-		Args:  cobra.RangeArgs(1, 2),
+		Long: `Set the repeat mode for the queue.
+
+Modes:
+  off  - No repeat (stop after last track)
+  all  - Repeat the entire queue
+  one  - Repeat the current track`,
+		Example: `  mu queue repeat all
+  mu queue repeat one
+  mu queue repeat living-room off`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector := ""
 			arg := ""
