@@ -532,3 +532,457 @@ func TestPlaylistRenameCommand(t *testing.T) {
 		t.Fatalf("expected rename name")
 	}
 }
+
+func TestListNodes(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room", TS: 1}
+	library := mu.Presence{NodeID: "mu:library:jellyfin:test", Kind: "library", Name: "Jellyfin", TS: 2}
+	broker := &stubBroker{
+		presence: []mu.Presence{renderer, library},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	t.Run("all nodes", func(t *testing.T) {
+		result, err := service.ListNodes(context.Background(), "", false)
+		if err != nil {
+			t.Fatalf("ListNodes: %v", err)
+		}
+		if len(result.Nodes) != 2 {
+			t.Fatalf("expected 2 nodes, got %d", len(result.Nodes))
+		}
+	})
+
+	t.Run("filter by kind", func(t *testing.T) {
+		result, err := service.ListNodes(context.Background(), "renderer", false)
+		if err != nil {
+			t.Fatalf("ListNodes: %v", err)
+		}
+		if len(result.Nodes) != 1 {
+			t.Fatalf("expected 1 renderer node, got %d", len(result.Nodes))
+		}
+		if result.Nodes[0].NodeID != renderer.NodeID {
+			t.Fatalf("expected renderer node id")
+		}
+	})
+
+	t.Run("online only filters by TS", func(t *testing.T) {
+		offlineRenderer := mu.Presence{NodeID: "mu:renderer:offline", Kind: "renderer", Name: "Offline", TS: 0}
+		brokerWithOffline := &stubBroker{
+			presence: []mu.Presence{renderer, offlineRenderer},
+		}
+		svc := Service{
+			Broker:     brokerWithOffline,
+			Resolver:   Resolver{Presence: brokerWithOffline, Config: Config{}},
+			Clock:      stubClock{},
+			IDGen:      stubIDGen{},
+			LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{}},
+			Config:     Config{Identity: "tester"},
+		}
+		result, err := svc.ListNodes(context.Background(), "", true)
+		if err != nil {
+			t.Fatalf("ListNodes: %v", err)
+		}
+		if len(result.Nodes) != 1 {
+			t.Fatalf("expected 1 online node, got %d", len(result.Nodes))
+		}
+		if result.Nodes[0].NodeID != renderer.NodeID {
+			t.Fatalf("expected online renderer")
+		}
+	})
+}
+
+func TestStatus(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room"}
+	broker := &stubBroker{
+		presence: []mu.Presence{renderer},
+		state: mu.RendererState{
+			Playback: &mu.PlaybackState{Status: "playing", Volume: 0.75, PositionMS: 5000, DurationMS: 200000},
+		},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Defaults: Defaults{Renderer: renderer.NodeID}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	result, err := service.Status(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if result.Renderer.NodeID != renderer.NodeID {
+		t.Fatalf("expected renderer node id %s, got %s", renderer.NodeID, result.Renderer.NodeID)
+	}
+	if result.State.Playback == nil {
+		t.Fatalf("expected playback state")
+	}
+	if result.State.Playback.Status != "playing" {
+		t.Fatalf("expected status playing, got %s", result.State.Playback.Status)
+	}
+	if result.State.Playback.Volume != 0.75 {
+		t.Fatalf("expected volume 0.75, got %f", result.State.Playback.Volume)
+	}
+}
+
+func TestPlaybackPlay(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{renderer},
+		replyTopic: "mu/v1/reply/test",
+		replies: map[string]mu.ReplyEnvelope{
+			"session.renew": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+			"playback.play": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	err := service.PlaybackPlay(context.Background(), renderer.NodeID, nil)
+	if err != nil {
+		t.Fatalf("PlaybackPlay: %v", err)
+	}
+	if broker.lastCmd.Type != "playback.play" {
+		t.Fatalf("expected playback.play command, got %s", broker.lastCmd.Type)
+	}
+	if broker.lastCmd.Lease == nil {
+		t.Fatalf("expected lease in command")
+	}
+	if broker.lastCmd.Lease.SessionID != "s1" {
+		t.Fatalf("expected session id s1")
+	}
+
+	// Verify body has nil index when no index specified
+	var body mu.PlaybackPlayBody
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Index != nil {
+		t.Fatalf("expected nil index for simple play")
+	}
+}
+
+func TestPlaybackPlayWithIndex(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{renderer},
+		replyTopic: "mu/v1/reply/test",
+		replies: map[string]mu.ReplyEnvelope{
+			"session.renew": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+			"playback.play": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	idx := int64(3)
+	err := service.PlaybackPlay(context.Background(), renderer.NodeID, &idx)
+	if err != nil {
+		t.Fatalf("PlaybackPlay with index: %v", err)
+	}
+	var body mu.PlaybackPlayBody
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Index == nil || *body.Index != 3 {
+		t.Fatalf("expected index 3")
+	}
+}
+
+func TestPlaybackPause(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{renderer},
+		replyTopic: "mu/v1/reply/test",
+		replies: map[string]mu.ReplyEnvelope{
+			"session.renew":  {ID: "id-1", Type: "ack", OK: true, TS: 101},
+			"playback.pause": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	err := service.PlaybackPause(context.Background(), renderer.NodeID)
+	if err != nil {
+		t.Fatalf("PlaybackPause: %v", err)
+	}
+	if broker.lastCmd.Type != "playback.pause" {
+		t.Fatalf("expected playback.pause command, got %s", broker.lastCmd.Type)
+	}
+	if broker.lastCmd.Lease == nil {
+		t.Fatalf("expected lease in command")
+	}
+}
+
+func TestPlaybackStop(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{renderer},
+		replyTopic: "mu/v1/reply/test",
+		replies: map[string]mu.ReplyEnvelope{
+			"session.renew": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+			"playback.stop": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	err := service.PlaybackStop(context.Background(), renderer.NodeID)
+	if err != nil {
+		t.Fatalf("PlaybackStop: %v", err)
+	}
+	if broker.lastCmd.Type != "playback.stop" {
+		t.Fatalf("expected playback.stop command, got %s", broker.lastCmd.Type)
+	}
+	if broker.lastCmd.Lease == nil {
+		t.Fatalf("expected lease in command")
+	}
+}
+
+func TestQueueAdd(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room"}
+	library := mu.Presence{NodeID: "mu:library:jellyfin:test", Kind: "library", Name: "Jellyfin"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{renderer, library},
+		replyTopic: "mu/v1/reply/test",
+	}
+
+	resolveBody, err := json.Marshal(mu.LibraryResolveReply{
+		ItemID:   "track-1",
+		Metadata: map[string]any{"title": "Song One"},
+		Sources:  []mu.ResolvedSource{{URL: "http://host/track-1.flac", Mime: "audio/flac", ByteRange: true}},
+	})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+	broker.replies = map[string]mu.ReplyEnvelope{
+		"session.renew":   {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		"library.resolve": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: resolveBody},
+		"queue.add":       {ID: "id-1", Type: "ack", OK: true, TS: 101},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{"lib": library.NodeID}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	err = service.QueueAdd(context.Background(), renderer.NodeID, []string{"lib:lib:track-1"}, "end", nil, "yes")
+	if err != nil {
+		t.Fatalf("QueueAdd: %v", err)
+	}
+	if broker.lastCmd.Type != "queue.add" {
+		t.Fatalf("expected queue.add command, got %s", broker.lastCmd.Type)
+	}
+	if broker.lastCmd.Lease == nil {
+		t.Fatalf("expected lease in command")
+	}
+	var body mu.QueueAddBody
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Position != "end" {
+		t.Fatalf("expected position end, got %s", body.Position)
+	}
+	if len(body.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(body.Entries))
+	}
+	if body.Entries[0].Ref == nil {
+		t.Fatalf("expected ref in entry")
+	}
+	if body.Entries[0].Resolved == nil {
+		t.Fatalf("expected resolved source in entry")
+	}
+	if body.Entries[0].Resolved.URL != "http://host/track-1.flac" {
+		t.Fatalf("expected resolved URL, got %s", body.Entries[0].Resolved.URL)
+	}
+}
+
+func TestQueueAddURL(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{renderer},
+		replyTopic: "mu/v1/reply/test",
+		replies: map[string]mu.ReplyEnvelope{
+			"session.renew": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+			"queue.add":     {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	err := service.QueueAdd(context.Background(), renderer.NodeID, []string{"http://example.com/stream.mp3"}, "end", nil, "auto")
+	if err != nil {
+		t.Fatalf("QueueAdd URL: %v", err)
+	}
+	var body mu.QueueAddBody
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(body.Entries))
+	}
+	if body.Entries[0].Resolved == nil || body.Entries[0].Resolved.URL != "http://example.com/stream.mp3" {
+		t.Fatalf("expected URL entry")
+	}
+}
+
+func TestSetVolume(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:test:one", Kind: "renderer", Name: "Living Room"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{renderer},
+		replyTopic: "mu/v1/reply/test",
+		state:      mu.RendererState{Playback: &mu.PlaybackState{Volume: 0.5}},
+		replies: map[string]mu.ReplyEnvelope{
+			"session.renew":      {ID: "id-1", Type: "ack", OK: true, TS: 101},
+			"playback.setVolume": {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	t.Run("absolute volume", func(t *testing.T) {
+		err := service.SetVolume(context.Background(), renderer.NodeID, "80", nil)
+		if err != nil {
+			t.Fatalf("SetVolume: %v", err)
+		}
+		if broker.lastCmd.Type != "playback.setVolume" {
+			t.Fatalf("expected playback.setVolume, got %s", broker.lastCmd.Type)
+		}
+		var body mu.PlaybackSetVolumeBody
+		if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body.Volume != 0.8 {
+			t.Fatalf("expected volume 0.8, got %f", body.Volume)
+		}
+	})
+
+	t.Run("mute", func(t *testing.T) {
+		broker.replies["playback.setMute"] = mu.ReplyEnvelope{ID: "id-1", Type: "ack", OK: true, TS: 101}
+		muteVal := true
+		err := service.SetVolume(context.Background(), renderer.NodeID, "", &muteVal)
+		if err != nil {
+			t.Fatalf("SetVolume mute: %v", err)
+		}
+		if broker.lastCmd.Type != "playback.setMute" {
+			t.Fatalf("expected playback.setMute, got %s", broker.lastCmd.Type)
+		}
+		var body mu.PlaybackSetMuteBody
+		if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if !body.Mute {
+			t.Fatalf("expected mute true")
+		}
+	})
+}
+
+func TestLibraryBrowse(t *testing.T) {
+	library := mu.Presence{NodeID: "mu:library:jellyfin:test", Kind: "library", Name: "Jellyfin"}
+	broker := &stubBroker{
+		presence:   []mu.Presence{library},
+		replyTopic: "mu/v1/reply/test",
+	}
+
+	browseReply, err := json.Marshal(map[string]any{
+		"items":      []map[string]any{{"itemId": "folder-1", "title": "Rock"}, {"itemId": "folder-2", "title": "Jazz"}},
+		"totalCount": 2,
+	})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+	broker.replies = map[string]mu.ReplyEnvelope{
+		"library.browse": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: browseReply},
+	}
+
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Aliases: map[string]string{"lib": library.NodeID}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{}},
+		Config:     Config{Identity: "tester"},
+	}
+
+	result, err := service.LibraryBrowse(context.Background(), "lib", "root", 0, 50)
+	if err != nil {
+		t.Fatalf("LibraryBrowse: %v", err)
+	}
+	if result.Data == nil {
+		t.Fatalf("expected browse data")
+	}
+	if broker.lastNode != library.NodeID {
+		t.Fatalf("expected library node %s, got %s", library.NodeID, broker.lastNode)
+	}
+	if broker.lastCmd.Type != "library.browse" {
+		t.Fatalf("expected library.browse command, got %s", broker.lastCmd.Type)
+	}
+	var body mu.LibraryBrowseBody
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.ContainerID != "root" {
+		t.Fatalf("expected container id root, got %s", body.ContainerID)
+	}
+	if body.Start != 0 {
+		t.Fatalf("expected start 0, got %d", body.Start)
+	}
+	if body.Count != 50 {
+		t.Fatalf("expected count 50, got %d", body.Count)
+	}
+}

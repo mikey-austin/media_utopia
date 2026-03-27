@@ -37,6 +37,9 @@ func (s Supervisor) Run(ctx context.Context, modules []ModuleRunner) error {
 		shutdownTimeout = DefaultShutdownTimeout
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(modules))
 
@@ -66,14 +69,17 @@ func (s Supervisor) Run(ctx context.Context, modules []ModuleRunner) error {
 		}()
 	}
 
+	var firstErr error
 	select {
 	case <-ctx.Done():
 		s.Logger.Info("shutdown requested")
 	case err := <-errCh:
-		return err
+		firstErr = err
+		s.Logger.Error("module failure triggered shutdown", zap.Error(err))
+		cancel()
 	}
 
-	// Wait for modules to stop with timeout
+	// Wait for all modules to stop with timeout.
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -88,5 +94,15 @@ func (s Supervisor) Run(ctx context.Context, modules []ModuleRunner) error {
 			zap.Duration("timeout", shutdownTimeout))
 	}
 
-	return nil
+	// Drain any module errors that arrived during shutdown.
+	for {
+		select {
+		case err := <-errCh:
+			if firstErr == nil {
+				firstErr = err
+			}
+		default:
+			return firstErr
+		}
+	}
 }

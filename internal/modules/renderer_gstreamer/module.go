@@ -262,15 +262,26 @@ func (m *Module) processCommand(cmd mu.CommandEnvelope, recvTime time.Time) {
 		return
 	}
 
+	// Use read lock for commands that only query state without mutation.
+	readOnly := cmd.Type == "queue.get"
+
 	// Track mutex acquisition time for contention diagnostics
 	lockStart := time.Now()
-	m.mu.Lock()
+	if readOnly {
+		m.mu.RLock()
+	} else {
+		m.mu.Lock()
+	}
 	lockWait := time.Since(lockStart)
 
 	dispatchStart := time.Now()
 	reply := m.dispatch(cmd)
 	dispatchDuration := time.Since(dispatchStart)
-	m.mu.Unlock()
+	if readOnly {
+		m.mu.RUnlock()
+	} else {
+		m.mu.Unlock()
+	}
 
 	totalDuration := time.Since(recvTime)
 
@@ -295,28 +306,31 @@ func (m *Module) processCommand(cmd mu.CommandEnvelope, recvTime time.Time) {
 }
 
 // processLoadCommand handles load commands which may involve network I/O.
-// Network operations happen outside the lock to reduce contention.
+// Network operations (fetchPlaylistEntries, fetchSnapshotItems, resolveRefs)
+// happen outside the lock to avoid blocking command processing and position
+// updates. Only the engine state mutation is performed under the lock.
 func (m *Module) processLoadCommand(cmd mu.CommandEnvelope, recvTime time.Time) {
 	m.log.Debug("load command started",
 		zap.String("id", cmd.ID),
 		zap.String("type", cmd.Type),
 		zap.String("from", cmd.From))
 
-	lockStart := time.Now()
-	m.mu.Lock()
-	lockWait := time.Since(lockStart)
-
-	dispatchStart := time.Now()
-	reply := m.dispatch(cmd)
-	dispatchDuration := time.Since(dispatchStart)
-	m.mu.Unlock()
+	// Phase 1: Validation and network I/O happen outside the lock.
+	// LeaseManager has its own internal mutex, so Require is safe here.
+	var reply mu.ReplyEnvelope
+	switch cmd.Type {
+	case "queue.loadPlaylist":
+		reply = m.handleQueueLoadPlaylist(cmd)
+	case "queue.loadSnapshot":
+		reply = m.handleQueueLoadSnapshot(cmd)
+	default:
+		reply = errorReply(cmd, "INVALID", "unsupported load command")
+	}
 
 	totalDuration := time.Since(recvTime)
 	m.log.Debug("load command completed",
 		zap.String("id", cmd.ID),
 		zap.String("type", cmd.Type),
-		zap.Duration("lock_wait", lockWait),
-		zap.Duration("dispatch", dispatchDuration),
 		zap.Duration("total", totalDuration),
 		zap.Bool("ok", reply.OK))
 
@@ -324,8 +338,6 @@ func (m *Module) processLoadCommand(cmd mu.CommandEnvelope, recvTime time.Time) 
 		m.log.Warn("slow load command",
 			zap.String("id", cmd.ID),
 			zap.String("type", cmd.Type),
-			zap.Duration("lock_wait", lockWait),
-			zap.Duration("dispatch", dispatchDuration),
 			zap.Duration("total", totalDuration))
 	}
 
@@ -405,25 +417,20 @@ func (m *Module) runPositionUpdates(ctx context.Context) {
 }
 
 func (m *Module) updatePlaybackState() {
-	// Use read lock for initial status check
-	m.mu.RLock()
-	playing := m.engine.State.Playback != nil && m.engine.State.Playback.Status == "playing"
-	m.mu.RUnlock()
+	// Query driver position outside the lock — the driver has its own
+	// synchronisation and this avoids holding our mutex during the
+	// (potentially slow) GStreamer query.
+	posMS, durMS, ok := m.engine.Driver.Position()
 
+	// Single lock acquisition: check state and update in one section.
+	m.mu.Lock()
+	playing := m.engine.State.Playback != nil && m.engine.State.Playback.Status == "playing"
 	if !playing {
-		m.mu.Lock()
 		m.eosSeen = ""
 		m.mu.Unlock()
 		return
 	}
-
-	posMS, durMS, ok := m.engine.Driver.Position()
 	if !ok {
-		return
-	}
-
-	m.mu.Lock()
-	if m.engine.State.Playback == nil || m.engine.State.Playback.Status != "playing" {
 		m.mu.Unlock()
 		return
 	}
@@ -502,19 +509,11 @@ func (m *Module) advanceOnEndLocked(positionMS int64, durationMS int64) {
 }
 
 func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
-	reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
-
-	switch cmd.Type {
-	case "queue.loadPlaylist":
-		return m.handleQueueLoadPlaylist(cmd, reply)
-	case "queue.loadSnapshot":
-		return m.handleQueueLoadSnapshot(cmd, reply)
-	default:
-		return m.engine.HandleCommand(cmd)
-	}
+	return m.engine.HandleCommand(cmd)
 }
 
-func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
+	// --- Phase 1: Validation and network I/O (no lock held) ---
 	var body mu.QueueLoadPlaylistBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
@@ -522,6 +521,7 @@ func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope, reply mu.ReplyE
 	if cmd.Lease == nil {
 		return errorReply(cmd, "LEASE_REQUIRED", "lease required")
 	}
+	// LeaseManager has its own mutex; safe to call without m.mu.
 	if err := m.engine.Leases.Require(cmd.Lease.SessionID, cmd.Lease.Token); err != nil {
 		return errorReply(cmd, "LEASE_REQUIRED", err.Error())
 	}
@@ -533,15 +533,18 @@ func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope, reply mu.ReplyE
 		mode = "replace"
 	}
 
+	// Network I/O: fetch playlist entries and resolve refs via MQTT.
 	entries, err := m.fetchPlaylistEntries(cmd.From, body.PlaylistServerID, body.PlaylistID, body.Resolve)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 
+	// Build the synthesized queue command from fetched data.
+	var queueCmd mu.CommandEnvelope
 	switch mode {
 	case "replace":
 		payload, _ := json.Marshal(mu.QueueSetBody{StartIndex: 0, Entries: entries})
-		queueCmd := mu.CommandEnvelope{
+		queueCmd = mu.CommandEnvelope{
 			ID:    cmd.ID,
 			Type:  "queue.set",
 			TS:    time.Now().Unix(),
@@ -549,10 +552,9 @@ func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope, reply mu.ReplyE
 			Lease: cmd.Lease,
 			Body:  payload,
 		}
-		return m.engine.HandleCommand(queueCmd)
 	case "append":
 		payload, _ := json.Marshal(mu.QueueAddBody{Position: "end", Entries: entries})
-		queueCmd := mu.CommandEnvelope{
+		queueCmd = mu.CommandEnvelope{
 			ID:    cmd.ID,
 			Type:  "queue.add",
 			TS:    time.Now().Unix(),
@@ -560,10 +562,9 @@ func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope, reply mu.ReplyE
 			Lease: cmd.Lease,
 			Body:  payload,
 		}
-		return m.engine.HandleCommand(queueCmd)
 	case "next":
 		payload, _ := json.Marshal(mu.QueueAddBody{Position: "next", Entries: entries})
-		queueCmd := mu.CommandEnvelope{
+		queueCmd = mu.CommandEnvelope{
 			ID:    cmd.ID,
 			Type:  "queue.add",
 			TS:    time.Now().Unix(),
@@ -571,13 +572,19 @@ func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope, reply mu.ReplyE
 			Lease: cmd.Lease,
 			Body:  payload,
 		}
-		return m.engine.HandleCommand(queueCmd)
 	default:
 		return errorReply(cmd, "INVALID", "mode must be replace|append|next")
 	}
+
+	// --- Phase 2: State mutation under lock ---
+	m.mu.Lock()
+	reply := m.engine.HandleCommand(queueCmd)
+	m.mu.Unlock()
+	return reply
 }
 
-func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
+	// --- Phase 1: Validation and network I/O (no lock held) ---
 	var body mu.QueueLoadSnapshotBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
@@ -585,6 +592,7 @@ func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyE
 	if cmd.Lease == nil {
 		return errorReply(cmd, "LEASE_REQUIRED", "lease required")
 	}
+	// LeaseManager has its own mutex; safe to call without m.mu.
 	if err := m.engine.Leases.Require(cmd.Lease.SessionID, cmd.Lease.Token); err != nil {
 		return errorReply(cmd, "LEASE_REQUIRED", err.Error())
 	}
@@ -596,6 +604,7 @@ func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyE
 		mode = "replace"
 	}
 
+	// Network I/O: fetch snapshot items and resolve refs via MQTT.
 	items, capture, err := m.fetchSnapshotItems(cmd.From, body.PlaylistServerID, body.SnapshotID)
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
@@ -605,10 +614,12 @@ func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyE
 		return errorReply(cmd, "INVALID", err.Error())
 	}
 
+	// Build the synthesized queue command from fetched data.
+	var queueCmd mu.CommandEnvelope
 	switch mode {
 	case "replace":
 		payload, _ := json.Marshal(mu.QueueSetBody{StartIndex: capture.Index, Entries: entries})
-		queueCmd := mu.CommandEnvelope{
+		queueCmd = mu.CommandEnvelope{
 			ID:    cmd.ID,
 			Type:  "queue.set",
 			TS:    time.Now().Unix(),
@@ -616,10 +627,9 @@ func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyE
 			Lease: cmd.Lease,
 			Body:  payload,
 		}
-		reply = m.engine.HandleCommand(queueCmd)
 	case "append":
 		payload, _ := json.Marshal(mu.QueueAddBody{Position: "end", Entries: entries})
-		queueCmd := mu.CommandEnvelope{
+		queueCmd = mu.CommandEnvelope{
 			ID:    cmd.ID,
 			Type:  "queue.add",
 			TS:    time.Now().Unix(),
@@ -627,10 +637,9 @@ func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyE
 			Lease: cmd.Lease,
 			Body:  payload,
 		}
-		reply = m.engine.HandleCommand(queueCmd)
 	case "next":
 		payload, _ := json.Marshal(mu.QueueAddBody{Position: "next", Entries: entries})
-		queueCmd := mu.CommandEnvelope{
+		queueCmd = mu.CommandEnvelope{
 			ID:    cmd.ID,
 			Type:  "queue.add",
 			TS:    time.Now().Unix(),
@@ -638,17 +647,22 @@ func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope, reply mu.ReplyE
 			Lease: cmd.Lease,
 			Body:  payload,
 		}
-		reply = m.engine.HandleCommand(queueCmd)
 	default:
 		return errorReply(cmd, "INVALID", "mode must be replace|append|next")
 	}
 
-	m.engine.Queue.SetRepeat(capture.Repeat)
-	if capture.RepeatMode != "" {
-		m.engine.Queue.SetRepeatMode(capture.RepeatMode)
+	// --- Phase 2: State mutation under lock ---
+	m.mu.Lock()
+	reply := m.engine.HandleCommand(queueCmd)
+	if reply.OK {
+		m.engine.Queue.SetRepeat(capture.Repeat)
+		if capture.RepeatMode != "" {
+			m.engine.Queue.SetRepeatMode(capture.RepeatMode)
+		}
+		m.engine.State.Playback.PositionMS = capture.PositionMS
+		m.engine.State.TS = time.Now().Unix()
 	}
-	m.engine.State.Playback.PositionMS = capture.PositionMS
-	m.engine.State.TS = time.Now().Unix()
+	m.mu.Unlock()
 	return reply
 }
 

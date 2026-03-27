@@ -818,7 +818,7 @@ func (s Service) SnapshotSave(ctx context.Context, selector string, name string,
 			PositionMS:    state.Playback.PositionMS,
 			Repeat:        state.Queue.Repeat,
 			RepeatMode:    state.Queue.RepeatMode,
-			Shuffle:       false,
+			Shuffle:       state.Queue.Shuffle,
 		},
 		Items: items,
 	}

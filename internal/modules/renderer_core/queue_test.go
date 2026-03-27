@@ -120,3 +120,60 @@ func TestQueueShuffleKeepsCurrent(t *testing.T) {
 		t.Fatalf("expected current entry to stay active")
 	}
 }
+
+// TestQueueSummaryReturnsCorrectState verifies that Summary() returns a
+// correct snapshot of the queue state. This exercises the RLock-based read
+// path (previously it used a full Lock, which was unnecessary contention).
+func TestQueueSummaryReturnsCorrectState(t *testing.T) {
+	queue := &Queue{}
+	_ = queue.Add([]QueueEntry{
+		{QueueEntryID: "e1"},
+		{QueueEntryID: "e2"},
+		{QueueEntryID: "e3"},
+	}, "end", nil)
+	_ = queue.Jump(1)
+	queue.SetRepeat(true)
+	queue.SetRepeatMode("one")
+	queue.SetShuffle(true)
+
+	summary := queue.Summary()
+
+	if summary.Length != 3 {
+		t.Fatalf("Length = %d, want 3", summary.Length)
+	}
+	if summary.Index != 1 {
+		t.Fatalf("Index = %d, want 1", summary.Index)
+	}
+	if !summary.Repeat {
+		t.Fatalf("Repeat = false, want true")
+	}
+	if summary.RepeatMode != "one" {
+		t.Fatalf("RepeatMode = %q, want %q", summary.RepeatMode, "one")
+	}
+	if !summary.Shuffle {
+		t.Fatalf("Shuffle = false, want true")
+	}
+	if summary.Revision == 0 {
+		t.Fatalf("Revision = 0, expected non-zero after mutations")
+	}
+}
+
+// TestQueueSummaryEmptyQueue verifies Summary() on an empty queue.
+func TestQueueSummaryEmptyQueue(t *testing.T) {
+	queue := &Queue{}
+
+	summary := queue.Summary()
+
+	if summary.Length != 0 {
+		t.Fatalf("Length = %d, want 0", summary.Length)
+	}
+	if summary.Index != 0 {
+		t.Fatalf("Index = %d, want 0", summary.Index)
+	}
+	if summary.Repeat {
+		t.Fatalf("Repeat = true, want false")
+	}
+	if summary.Shuffle {
+		t.Fatalf("Shuffle = true, want false")
+	}
+}

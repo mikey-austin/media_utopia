@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,7 +19,7 @@ type Driver struct {
 	http       *http.Client
 	username   string
 	password   string
-	lastVolume int
+	lastVolume atomic.Int64
 }
 
 // NewDriver creates a VLC HTTP RC driver.
@@ -33,13 +34,14 @@ func NewDriver(baseURL string, username string, password string, timeout time.Du
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
-	return &Driver{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		http:       &http.Client{Timeout: timeout},
-		username:   username,
-		password:   password,
-		lastVolume: 256,
-	}, nil
+	d := &Driver{
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		http:     &http.Client{Timeout: timeout},
+		username: username,
+		password: password,
+	}
+	d.lastVolume.Store(256)
+	return d, nil
 }
 
 func (d *Driver) Play(streamURL string, positionMS int64) error {
@@ -97,7 +99,7 @@ func (d *Driver) SetVolume(volume float64) error {
 	}
 	level := int(volume*256 + 0.5)
 	if level > 0 {
-		d.lastVolume = level
+		d.lastVolume.Store(int64(level))
 	}
 	_, err := d.request(url.Values{
 		"command": []string{"volume"},
@@ -109,7 +111,7 @@ func (d *Driver) SetVolume(volume float64) error {
 func (d *Driver) SetMute(mute bool) error {
 	level := 0
 	if !mute {
-		level = d.lastVolume
+		level = int(d.lastVolume.Load())
 		if level <= 0 {
 			level = 256
 		}

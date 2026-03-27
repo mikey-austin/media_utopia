@@ -2,12 +2,13 @@ package fslibrary
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"math"
 	"net/http"
@@ -16,8 +17,25 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// similarityHeap is a min-heap of SimilarityResult ordered by Score.
+// Used to efficiently track the top-k results during a linear scan.
+type similarityHeap []SimilarityResult
+
+func (h similarityHeap) Len() int            { return len(h) }
+func (h similarityHeap) Less(i, j int) bool   { return h[i].Score < h[j].Score }
+func (h similarityHeap) Swap(i, j int)        { h[i], h[j] = h[j], h[i] }
+func (h *similarityHeap) Push(x interface{})  { *h = append(*h, x.(SimilarityResult)) }
+func (h *similarityHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
 
 // EmbedInput represents text to be embedded.
 type EmbedInput struct {
@@ -44,7 +62,7 @@ type OllamaProvider struct {
 	model     string
 	timeout   time.Duration
 	batchSize int
-	dimension int
+	dimension atomic.Int32
 	http      *http.Client
 }
 
@@ -71,12 +89,11 @@ func NewOllamaProvider(cfg OllamaConfig) (*OllamaProvider, error) {
 		cfg.BatchSize = 32
 	}
 
-	return &OllamaProvider{
+	p := &OllamaProvider{
 		endpoint:  strings.TrimRight(cfg.Endpoint, "/"),
 		model:     cfg.Model,
 		timeout:   cfg.Timeout,
 		batchSize: cfg.BatchSize,
-		dimension: 768, // Default for nomic-embed-text, updated on first embed
 		http: &http.Client{
 			Timeout: cfg.Timeout,
 			Transport: &http.Transport{
@@ -86,7 +103,9 @@ func NewOllamaProvider(cfg OllamaConfig) (*OllamaProvider, error) {
 				IdleConnTimeout:     60 * time.Second,
 			},
 		},
-	}, nil
+	}
+	p.dimension.Store(768) // Default for nomic-embed-text, updated on first embed
+	return p, nil
 }
 
 func (p *OllamaProvider) Name() string {
@@ -94,7 +113,7 @@ func (p *OllamaProvider) Name() string {
 }
 
 func (p *OllamaProvider) Dimension() int {
-	return p.dimension
+	return int(p.dimension.Load())
 }
 
 type ollamaEmbedRequest struct {
@@ -140,13 +159,23 @@ func (p *OllamaProvider) Embed(ctx context.Context, inputs []EmbedInput) ([]Embe
 	for err := range errChan {
 		errs = append(errs, err)
 	}
+
+	// Filter out zero-vector entries from failed goroutines
+	filtered := results[:0]
+	for _, r := range results {
+		if len(r.Vector) > 0 {
+			filtered = append(filtered, r)
+		}
+	}
+	results = filtered
+
 	if len(errs) > 0 {
 		return results, errors.Join(errs...)
 	}
 
 	// Update dimension from first result
 	if len(results) > 0 && len(results[0].Vector) > 0 {
-		p.dimension = len(results[0].Vector)
+		p.dimension.Store(int32(len(results[0].Vector)))
 	}
 
 	return results, nil
@@ -283,11 +312,15 @@ func NewEmbeddingCache(dir string) (*EmbeddingCache, error) {
 }
 
 func (c *EmbeddingCache) cacheKey(itemID, text string) string {
-	h := sha256.New()
+	h := fnv.New128a()
 	h.Write([]byte(itemID))
 	h.Write([]byte("|"))
 	h.Write([]byte(text))
-	return hex.EncodeToString(h.Sum(nil))[:32]
+	var buf [16]byte
+	binary.BigEndian.PutUint64(buf[:8], 0)
+	binary.BigEndian.PutUint64(buf[8:], 0)
+	sum := h.Sum(buf[:0])
+	return fmt.Sprintf("%x", sum)
 }
 
 func (c *EmbeddingCache) Get(itemID, text string) ([]float32, bool) {
@@ -386,6 +419,7 @@ type SimilarityResult struct {
 }
 
 // Search finds the most similar items to the query vector.
+// Uses a min-heap of size limit to avoid O(n) allocation and O(n log n) sort.
 func (idx *VectorIndex) Search(query []float32, limit int) []SimilarityResult {
 	if len(query) == 0 || limit <= 0 {
 		return nil
@@ -394,19 +428,21 @@ func (idx *VectorIndex) Search(query []float32, limit int) []SimilarityResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	results := make([]SimilarityResult, 0, len(idx.vectors))
+	h := make(similarityHeap, 0, limit+1)
 	for id, vec := range idx.vectors {
 		score := cosineSimilarity(query, vec)
-		results = append(results, SimilarityResult{ID: id, Score: score})
+		if h.Len() < limit {
+			heap.Push(&h, SimilarityResult{ID: id, Score: score})
+		} else if score > h[0].Score {
+			h[0] = SimilarityResult{ID: id, Score: score}
+			heap.Fix(&h, 0)
+		}
 	}
 
-	// Sort by score descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
-	})
-
-	if len(results) > limit {
-		results = results[:limit]
+	// Extract results in descending score order.
+	results := make([]SimilarityResult, h.Len())
+	for i := len(results) - 1; i >= 0; i-- {
+		results[i] = heap.Pop(&h).(SimilarityResult)
 	}
 
 	return results
@@ -421,6 +457,7 @@ const (
 // Keys ending in :card are treated as primary; the corresponding :summary key is looked up.
 // If no summary vector exists for an item, the card score is used at full weight (no penalty).
 // Returns results with base item IDs (suffixes stripped).
+// Uses a min-heap of size limit to avoid O(n) allocation and O(n log n) sort.
 func (idx *VectorIndex) SearchDual(query []float32, cardWeight, summaryWeight float32, limit int) []SimilarityResult {
 	if len(query) == 0 || limit <= 0 {
 		return nil
@@ -429,12 +466,7 @@ func (idx *VectorIndex) SearchDual(query []float32, cardWeight, summaryWeight fl
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	// Find all card vectors and compute combined scores.
-	type scored struct {
-		baseID string
-		score  float32
-	}
-	var items []scored
+	h := make(similarityHeap, 0, limit+1)
 
 	for id, vec := range idx.vectors {
 		if !strings.HasSuffix(id, vectorSuffixCard) {
@@ -452,25 +484,24 @@ func (idx *VectorIndex) SearchDual(query []float32, cardWeight, summaryWeight fl
 			total = cardScore
 		}
 
-		items = append(items, scored{baseID: baseID, score: total})
+		if h.Len() < limit {
+			heap.Push(&h, SimilarityResult{ID: baseID, Score: total})
+		} else if total > h[0].Score {
+			h[0] = SimilarityResult{ID: baseID, Score: total}
+			heap.Fix(&h, 0)
+		}
 	}
 
-	if len(items) == 0 {
+	if h.Len() == 0 {
 		return nil
 	}
 
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].score > items[j].score
-	})
-
-	if len(items) > limit {
-		items = items[:limit]
+	// Extract results in descending score order.
+	results := make([]SimilarityResult, h.Len())
+	for i := len(results) - 1; i >= 0; i-- {
+		results[i] = heap.Pop(&h).(SimilarityResult)
 	}
 
-	results := make([]SimilarityResult, len(items))
-	for i, it := range items {
-		results[i] = SimilarityResult{ID: it.baseID, Score: it.score}
-	}
 	return results
 }
 

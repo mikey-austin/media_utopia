@@ -688,7 +688,7 @@ func (m *Module) resolveRefs(owner string, refs []string) (map[string][]mu.Resol
 			return nil, errors.New("invalid library ref (expected lib:<libraryNodeId>:<itemId>)")
 		}
 		ref = strings.TrimPrefix(ref, "lib:")
-		idx := strings.Index(ref, ":")
+		idx := strings.LastIndex(ref, ":")
 		if idx == -1 {
 			return nil, errors.New("invalid library ref (expected lib:<libraryNodeId>:<itemId>)")
 		}

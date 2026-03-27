@@ -177,6 +177,226 @@ func TestReverseSortByDate(t *testing.T) {
 	}
 }
 
+func TestSearchNoResults(t *testing.T) {
+	feedURL := "http://example.test/feed.xml"
+
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:          "mu:library:podcast:test",
+		TopicBase:       mu.BaseTopic,
+		Feeds:           []string{feedURL},
+		CacheDir:        t.TempDir(),
+		RefreshInterval: 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+	module.http = &http.Client{Transport: testTransport(func(_ *http.Request) (*http.Response, error) {
+		return feedResponse(testFeed), nil
+	})}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibrarySearchBody{Query: "zzz_no_match_xyz"})}
+	reply := module.librarySearch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var out libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &out); err != nil {
+		t.Fatalf("search decode: %v", err)
+	}
+	if len(out.Items) != 0 {
+		t.Fatalf("expected 0 search results, got %d", len(out.Items))
+	}
+	if out.Total != 0 {
+		t.Fatalf("expected total=0, got %d", out.Total)
+	}
+}
+
+func TestBrowseNonexistentContainer(t *testing.T) {
+	feedURL := "http://example.test/feed.xml"
+
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:          "mu:library:podcast:test",
+		TopicBase:       mu.BaseTopic,
+		Feeds:           []string{feedURL},
+		CacheDir:        t.TempDir(),
+		RefreshInterval: 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+	module.http = &http.Client{Transport: testTransport(func(_ *http.Request) (*http.Response, error) {
+		return feedResponse(testFeed), nil
+	})}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: "nonexistent_container_id"})}
+	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if reply.OK {
+		t.Fatalf("expected error reply for nonexistent container")
+	}
+	if reply.Type != "error" {
+		t.Fatalf("expected type=error, got %q", reply.Type)
+	}
+	if reply.Err == nil {
+		t.Fatalf("expected Err to be set")
+	}
+	if reply.Err.Code != "INVALID" {
+		t.Fatalf("expected error code INVALID, got %q", reply.Err.Code)
+	}
+}
+
+func TestResolveNonexistentItem(t *testing.T) {
+	feedURL := "http://example.test/feed.xml"
+
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:          "mu:library:podcast:test",
+		TopicBase:       mu.BaseTopic,
+		Feeds:           []string{feedURL},
+		CacheDir:        t.TempDir(),
+		RefreshInterval: 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+	module.http = &http.Client{Transport: testTransport(func(_ *http.Request) (*http.Response, error) {
+		return feedResponse(testFeed), nil
+	})}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "nonexistent_item_id"})}
+	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if reply.OK {
+		t.Fatalf("expected error reply for nonexistent item")
+	}
+	if reply.Type != "error" {
+		t.Fatalf("expected type=error, got %q", reply.Type)
+	}
+	if reply.Err == nil {
+		t.Fatalf("expected Err to be set")
+	}
+	if reply.Err.Code != "INVALID" {
+		t.Fatalf("expected error code INVALID, got %q", reply.Err.Code)
+	}
+}
+
+func TestBrowsePagination(t *testing.T) {
+	feedURL := "http://example.test/feed.xml"
+
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:          "mu:library:podcast:test",
+		TopicBase:       mu.BaseTopic,
+		Feeds:           []string{feedURL},
+		CacheDir:        t.TempDir(),
+		RefreshInterval: 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+	module.http = &http.Client{Transport: testTransport(func(_ *http.Request) (*http.Response, error) {
+		return feedResponse(testFeedFiveEpisodes), nil
+	})}
+
+	// First, browse root to get the feed ID.
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{})}
+	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var root libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &root); err != nil {
+		t.Fatalf("root browse decode: %v", err)
+	}
+	if len(root.Items) < 2 {
+		t.Fatalf("expected at least 2 root items, got %d", len(root.Items))
+	}
+	feedID := root.Items[1].ItemID
+
+	// Browse all episodes (no pagination) to get the total count.
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID})}
+	reply = module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var allEpisodes libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &allEpisodes); err != nil {
+		t.Fatalf("all episodes decode: %v", err)
+	}
+	if allEpisodes.Total != 5 {
+		t.Fatalf("expected total=5, got %d", allEpisodes.Total)
+	}
+	if len(allEpisodes.Items) != 5 {
+		t.Fatalf("expected 5 items, got %d", len(allEpisodes.Items))
+	}
+
+	// Page 1: start=0, count=2
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID, Start: 0, Count: 2})}
+	reply = module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var page1 libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &page1); err != nil {
+		t.Fatalf("page1 decode: %v", err)
+	}
+	if page1.Total != 5 {
+		t.Fatalf("page1: expected total=5, got %d", page1.Total)
+	}
+	if len(page1.Items) != 2 {
+		t.Fatalf("page1: expected 2 items, got %d", len(page1.Items))
+	}
+	if page1.Start != 0 {
+		t.Fatalf("page1: expected start=0, got %d", page1.Start)
+	}
+	if page1.Count != 2 {
+		t.Fatalf("page1: expected count=2, got %d", page1.Count)
+	}
+
+	// Page 2: start=2, count=2
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID, Start: 2, Count: 2})}
+	reply = module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var page2 libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &page2); err != nil {
+		t.Fatalf("page2 decode: %v", err)
+	}
+	if len(page2.Items) != 2 {
+		t.Fatalf("page2: expected 2 items, got %d", len(page2.Items))
+	}
+	if page2.Start != 2 {
+		t.Fatalf("page2: expected start=2, got %d", page2.Start)
+	}
+
+	// Page 3: start=4, count=2 (should return only 1 item)
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID, Start: 4, Count: 2})}
+	reply = module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var page3 libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &page3); err != nil {
+		t.Fatalf("page3 decode: %v", err)
+	}
+	if len(page3.Items) != 1 {
+		t.Fatalf("page3: expected 1 item, got %d", len(page3.Items))
+	}
+	if page3.Total != 5 {
+		t.Fatalf("page3: expected total=5, got %d", page3.Total)
+	}
+
+	// Page beyond range: start=10, count=2 (should return 0 items)
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID, Start: 10, Count: 2})}
+	reply = module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var pageBeyond libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &pageBeyond); err != nil {
+		t.Fatalf("pageBeyond decode: %v", err)
+	}
+	if len(pageBeyond.Items) != 0 {
+		t.Fatalf("pageBeyond: expected 0 items, got %d", len(pageBeyond.Items))
+	}
+	if pageBeyond.Total != 5 {
+		t.Fatalf("pageBeyond: expected total=5, got %d", pageBeyond.Total)
+	}
+
+	// Verify no duplicate items across pages.
+	seen := map[string]bool{}
+	for _, item := range page1.Items {
+		seen[item.ItemID] = true
+	}
+	for _, item := range page2.Items {
+		if seen[item.ItemID] {
+			t.Fatalf("duplicate item %s across pages", item.ItemID)
+		}
+		seen[item.ItemID] = true
+	}
+	for _, item := range page3.Items {
+		if seen[item.ItemID] {
+			t.Fatalf("duplicate item %s across pages", item.ItemID)
+		}
+	}
+}
+
 func mustJSON(v any) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -224,6 +444,50 @@ const testFeed = `<?xml version="1.0" encoding="UTF-8"?>
     <description>Second episode</description>
     <pubDate>Tue, 02 Jan 2024 10:00:00 GMT</pubDate>
     <enclosure url="https://example.com/audio2.mp3" length="456" type="audio/mpeg"/>
+  </item>
+</channel>
+</rss>`
+
+const testFeedFiveEpisodes = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+<channel>
+  <title>Big Podcast</title>
+  <description>A podcast with many episodes</description>
+  <itunes:author>Big Host</itunes:author>
+  <item>
+    <title>Alpha</title>
+    <guid>ep-a</guid>
+    <description>Alpha episode</description>
+    <pubDate>Mon, 01 Jan 2024 10:00:00 GMT</pubDate>
+    <enclosure url="https://example.com/a.mp3" length="100" type="audio/mpeg"/>
+  </item>
+  <item>
+    <title>Bravo</title>
+    <guid>ep-b</guid>
+    <description>Bravo episode</description>
+    <pubDate>Tue, 02 Jan 2024 10:00:00 GMT</pubDate>
+    <enclosure url="https://example.com/b.mp3" length="200" type="audio/mpeg"/>
+  </item>
+  <item>
+    <title>Charlie</title>
+    <guid>ep-c</guid>
+    <description>Charlie episode</description>
+    <pubDate>Wed, 03 Jan 2024 10:00:00 GMT</pubDate>
+    <enclosure url="https://example.com/c.mp3" length="300" type="audio/mpeg"/>
+  </item>
+  <item>
+    <title>Delta</title>
+    <guid>ep-d</guid>
+    <description>Delta episode</description>
+    <pubDate>Thu, 04 Jan 2024 10:00:00 GMT</pubDate>
+    <enclosure url="https://example.com/d.mp3" length="400" type="audio/mpeg"/>
+  </item>
+  <item>
+    <title>Echo</title>
+    <guid>ep-e</guid>
+    <description>Echo episode</description>
+    <pubDate>Fri, 05 Jan 2024 10:00:00 GMT</pubDate>
+    <enclosure url="https://example.com/e.mp3" length="500" type="audio/mpeg"/>
   </item>
 </channel>
 </rss>`

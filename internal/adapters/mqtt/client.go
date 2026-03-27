@@ -205,12 +205,17 @@ func (c *Client) WatchRenderer(ctx context.Context, nodeID string) (<-chan mu.Re
 	eventCh := make(chan mu.Event, 8)
 	errCh := make(chan error, 1)
 
+	// done is closed before the data channels to signal handlers to stop
+	// sending. Handlers select on done to avoid sending on a closed channel.
+	done := make(chan struct{})
+
 	stateHandler := func(_ paho.Client, msg paho.Message) {
 		var state mu.RendererState
 		if err := json.Unmarshal(msg.Payload(), &state); err != nil {
 			return
 		}
 		select {
+		case <-done:
 		case stateCh <- state:
 		default:
 		}
@@ -222,6 +227,7 @@ func (c *Client) WatchRenderer(ctx context.Context, nodeID string) (<-chan mu.Re
 			return
 		}
 		select {
+		case <-done:
 		case eventCh <- evt:
 		default:
 		}
@@ -241,7 +247,9 @@ func (c *Client) WatchRenderer(ctx context.Context, nodeID string) (<-chan mu.Re
 
 	go func() {
 		<-ctx.Done()
-		c.client.Unsubscribe(stateTopic, eventTopic)
+		close(done)
+		token := c.client.Unsubscribe(stateTopic, eventTopic)
+		token.Wait()
 		close(stateCh)
 		close(eventCh)
 		close(errCh)

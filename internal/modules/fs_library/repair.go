@@ -9,6 +9,18 @@ import (
 	"strings"
 )
 
+// Pre-compiled regexes for metadata cleaning (avoid recompiling per invocation).
+var (
+	reTrackNumber      = regexp.MustCompile(`^(\d{1,3})[.\s]+(.+)$`)
+	reOfficialParen    = regexp.MustCompile(`\s*\(Official\s*(Video|Audio|Music\s*Video)?\)\s*$`)
+	reOfficialBracket  = regexp.MustCompile(`\s*\[Official\s*(Video|Audio|Music\s*Video)?\]\s*$`)
+	reLyricsParen      = regexp.MustCompile(`\s*\(Lyrics?\)\s*$`)
+	reLyricsBracket    = regexp.MustCompile(`\s*\[Lyrics?\]\s*$`)
+	reFeaturing        = regexp.MustCompile(`\s*(feat\.|ft\.|featuring)\s+.+$`)
+	reEditionParen     = regexp.MustCompile(`\s*\((Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\)\s*$`)
+	reEditionBracket   = regexp.MustCompile(`\s*\[(Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\]\s*$`)
+)
+
 // RepairPolicy controls how aggressively metadata is repaired.
 type RepairPolicy string
 
@@ -111,8 +123,7 @@ func parseFilename(filename string) RepairResult {
 	}
 
 	// Pattern: "01. Title" or "01 Title"
-	trackNumPattern := regexp.MustCompile(`^(\d{1,3})[.\s]+(.+)$`)
-	if matches := trackNumPattern.FindStringSubmatch(name); len(matches) == 3 {
+	if matches := reTrackNumber.FindStringSubmatch(name); len(matches) == 3 {
 		result.Title = strings.TrimSpace(matches[2])
 		return result
 	}
@@ -138,25 +149,25 @@ func isTrackNumber(s string) bool {
 func cleanTitle(title string) string {
 	title = strings.TrimSpace(title)
 	// Remove common suffixes
-	title = regexp.MustCompile(`\s*\(Official\s*(Video|Audio|Music\s*Video)?\)\s*$`).ReplaceAllString(title, "")
-	title = regexp.MustCompile(`\s*\[Official\s*(Video|Audio|Music\s*Video)?\]\s*$`).ReplaceAllString(title, "")
-	title = regexp.MustCompile(`\s*\(Lyrics?\)\s*$`).ReplaceAllString(title, "")
-	title = regexp.MustCompile(`\s*\[Lyrics?\]\s*$`).ReplaceAllString(title, "")
+	title = reOfficialParen.ReplaceAllString(title, "")
+	title = reOfficialBracket.ReplaceAllString(title, "")
+	title = reLyricsParen.ReplaceAllString(title, "")
+	title = reLyricsBracket.ReplaceAllString(title, "")
 	return strings.TrimSpace(title)
 }
 
 func cleanArtist(artist string) string {
 	artist = strings.TrimSpace(artist)
 	// Remove "feat." variations at the end
-	artist = regexp.MustCompile(`\s*(feat\.|ft\.|featuring)\s+.+$`).ReplaceAllString(artist, "")
+	artist = reFeaturing.ReplaceAllString(artist, "")
 	return strings.TrimSpace(artist)
 }
 
 func cleanAlbum(album string) string {
 	album = strings.TrimSpace(album)
 	// Remove common edition suffixes
-	album = regexp.MustCompile(`\s*\((Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\)\s*$`).ReplaceAllString(album, "")
-	album = regexp.MustCompile(`\s*\[(Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\]\s*$`).ReplaceAllString(album, "")
+	album = reEditionParen.ReplaceAllString(album, "")
+	album = reEditionBracket.ReplaceAllString(album, "")
 	return strings.TrimSpace(album)
 }
 

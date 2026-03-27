@@ -286,13 +286,14 @@ func (m *Module) publishAllUpdates() {
 	}
 
 	m.mu.Lock()
-	zones := make([]*Zone, 0, len(m.zones))
+	snapshots := make([]Zone, 0, len(m.zones))
 	for _, z := range m.zones {
-		zones = append(zones, z)
+		snapshots = append(snapshots, *z) // copy field values under lock
 	}
 	m.mu.Unlock()
 
-	for _, zone := range zones {
+	for i := range snapshots {
+		zone := &snapshots[i]
 		if err := m.publishZonePresence(zone); err != nil {
 			m.log.Debug("failed to publish zone presence", zap.String("zone", zone.NodeID), zap.Error(err))
 		}
@@ -302,21 +303,23 @@ func (m *Module) publishAllUpdates() {
 	}
 }
 
-// zonePublishInfo holds zone info needed for publishing, captured under lock.
+// zonePublishInfo holds a snapshot of zone fields needed for publishing, captured under lock.
 type zonePublishInfo struct {
-	zone          *Zone
+	zone          *Zone // pointer used only for updating flags after publish
+	snapshot      Zone  // value copy of zone fields at time of capture
 	needsPresence bool
 }
 
 // publishChangedUpdates publishes presence/state only for zones that have changed.
 func (m *Module) publishChangedUpdates() {
-	// Collect dirty zones and their publish requirements in a single lock
+	// Collect dirty zones: copy field VALUES under lock so we can publish without races
 	m.mu.Lock()
 	var toPublish []zonePublishInfo
 	for _, z := range m.zones {
 		if z.dirty {
 			toPublish = append(toPublish, zonePublishInfo{
 				zone:          z,
+				snapshot:      *z, // copy all field values
 				needsPresence: !z.published,
 			})
 		}
@@ -336,18 +339,18 @@ func (m *Module) publishChangedUpdates() {
 	presenceOK := make(map[*Zone]bool)
 	stateOK := make(map[*Zone]bool)
 
-	// Publish all zones without holding the lock
+	// Publish all zones without holding the lock, using snapshot copies
 	for _, info := range toPublish {
 		if info.needsPresence {
-			if err := m.publishZonePresence(info.zone); err != nil {
-				m.log.Debug("failed to publish zone presence", zap.String("zone", info.zone.NodeID), zap.Error(err))
+			if err := m.publishZonePresence(&info.snapshot); err != nil {
+				m.log.Debug("failed to publish zone presence", zap.String("zone", info.snapshot.NodeID), zap.Error(err))
 			} else {
 				presenceOK[info.zone] = true
 			}
 		}
 
-		if err := m.publishZoneState(info.zone); err != nil {
-			m.log.Debug("failed to publish zone state", zap.String("zone", info.zone.NodeID), zap.Error(err))
+		if err := m.publishZoneState(&info.snapshot); err != nil {
+			m.log.Debug("failed to publish zone state", zap.String("zone", info.snapshot.NodeID), zap.Error(err))
 		} else {
 			stateOK[info.zone] = true
 		}

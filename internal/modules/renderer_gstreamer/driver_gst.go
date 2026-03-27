@@ -58,6 +58,7 @@ func (d *Driver) Play(url string, positionMS int64) error {
 		return err
 	}
 	if err := d.startPipeline(pipeline, volumeEl); err != nil {
+		_ = pipeline.SetState(gst.StateNull)
 		return err
 	}
 
@@ -197,13 +198,19 @@ func (d *Driver) buildPipeline(url string, volume float64, positionMS int64) (*g
 }
 
 func (d *Driver) startPipeline(pipeline *gst.Element, volumeEl *gst.Element) error {
-	if err := pipeline.SetState(gst.StatePlaying); err != nil {
-		return err
-	}
-
 	target := volumeEl
 	if target == nil {
 		target = pipeline
+	}
+
+	// When crossfade is enabled, zero the volume BEFORE starting playback
+	// to avoid an audible pop/glitch at the start of the crossfade.
+	if d.crossfade > 0 && !d.muted {
+		_ = target.SetProperty("volume", 0.0)
+	}
+
+	if err := pipeline.SetState(gst.StatePlaying); err != nil {
+		return err
 	}
 
 	if d.muted {
@@ -211,14 +218,12 @@ func (d *Driver) startPipeline(pipeline *gst.Element, volumeEl *gst.Element) err
 		// setups and causes playback to skip.
 		//_ = target.SetProperty("mute", d.muted)
 		_ = target.SetProperty("volume", 0.00001)
-	} else {
-		_ = target.SetProperty("volume", d.volume)
-	}
-
-	if d.crossfade > 0 && !d.muted {
-		_ = target.SetProperty("volume", 0.0)
+	} else if d.crossfade > 0 {
+		// Volume already zeroed above; start fade-in
 		targetVolume := d.currentVolumeLocked()
 		go d.fadeIn(d.ctx, pipeline, target, d.crossfade, targetVolume)
+	} else {
+		_ = target.SetProperty("volume", d.volume)
 	}
 
 	return nil
@@ -227,6 +232,9 @@ func (d *Driver) startPipeline(pipeline *gst.Element, volumeEl *gst.Element) err
 func (d *Driver) stopCurrentLocked() error {
 	if d.current == nil {
 		return nil
+	}
+	if d.cancelFade != nil {
+		d.cancelFade()
 	}
 	_ = d.current.SetState(gst.StateNull)
 	d.current = nil

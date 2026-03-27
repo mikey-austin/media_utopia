@@ -11,6 +11,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,7 @@ type Driver struct {
 	password     string
 	mu           sync.Mutex
 	lastPlayerID *int
+	nextID       atomic.Int64
 }
 
 // NewDriver creates a Kodi JSON-RPC driver.
@@ -153,7 +155,7 @@ func (d *Driver) Position() (int64, int64, bool) {
 
 type rpcRequest struct {
 	JSONRPC string      `json:"jsonrpc"`
-	ID      int         `json:"id"`
+	ID      int64       `json:"id"`
 	Method  string      `json:"method"`
 	Params  interface{} `json:"params,omitempty"`
 }
@@ -188,7 +190,7 @@ type timeObject struct {
 func (d *Driver) rpc(method string, params interface{}) (json.RawMessage, error) {
 	req := rpcRequest{
 		JSONRPC: "2.0",
-		ID:      int(time.Now().UnixNano()),
+		ID:      d.nextID.Add(1),
 		Method:  method,
 		Params:  params,
 	}

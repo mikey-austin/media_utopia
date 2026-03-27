@@ -1419,7 +1419,7 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 		m.mu.RLock()
 		items := m.index.Items
 		m.mu.RUnlock()
-		m.buildEmbeddings(items)
+		m.buildEmbeddings(ctx, items)
 	}
 }
 
@@ -1427,9 +1427,12 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 // metadata (MusicBrainz or Discogs) but no generated summary. This handles
 // sidecars that were written before summary generation was enabled.
 func (m *Module) backfillSummaries(ctx context.Context, metas map[string]*AlbumMetadata, dirs map[string]string) {
+	// Snapshot the keys under RLock to avoid racing with enrichAlbums writing to m.enrichMeta
+	// (metas is the same map object as m.enrichMeta).
 	var candidates []string
 	noMetadata := 0
 	alreadyHave := 0
+	m.mu.RLock()
 	for key, meta := range metas {
 		if meta.MusicBrainz == nil && meta.Discogs == nil {
 			noMetadata++
@@ -1441,6 +1444,7 @@ func (m *Module) backfillSummaries(ctx context.Context, metas map[string]*AlbumM
 		}
 		candidates = append(candidates, key)
 	}
+	m.mu.RUnlock()
 
 	m.log.Debug("summary backfill scan",
 		zap.Int("candidates", len(candidates)),
@@ -1458,7 +1462,9 @@ func (m *Module) backfillSummaries(ctx context.Context, metas map[string]*AlbumM
 		if ctx.Err() != nil {
 			break
 		}
+		m.mu.RLock()
 		meta := metas[key]
+		m.mu.RUnlock()
 		dir := dirs[key]
 
 		m.log.Debug("backfill generating summary",
@@ -1480,17 +1486,30 @@ func (m *Module) backfillSummaries(ctx context.Context, metas map[string]*AlbumM
 			continue
 		}
 
-		if meta.Description == nil {
-			meta.Description = &AlbumDescription{}
+		// Copy the metadata struct before mutating to avoid a data race:
+		// buildEmbeddings concurrently reads these AlbumMetadata objects via
+		// m.enrichMeta under m.mu.RLock, so we must not mutate in place.
+		updated := *meta
+		if updated.Description != nil {
+			descCopy := *updated.Description
+			updated.Description = &descCopy
+		} else {
+			updated.Description = &AlbumDescription{}
 		}
-		meta.Description.GeneratedSummary = summary
+		updated.Description.GeneratedSummary = summary
 
-		if err := writeSidecar(dir, meta); err != nil {
+		if err := writeSidecar(dir, &updated); err != nil {
 			m.log.Warn("backfill failed to write sidecar",
 				zap.String("dir", dir),
 				zap.Error(err))
 			continue
 		}
+
+		// Swap the pointer in the map under write lock so concurrent
+		// readers see a consistent snapshot.
+		m.mu.Lock()
+		metas[key] = &updated
+		m.mu.Unlock()
 
 		m.log.Debug("backfill summary generated",
 			zap.String("artist", meta.Artist),
@@ -1508,7 +1527,7 @@ func (m *Module) backfillSummaries(ctx context.Context, metas map[string]*AlbumM
 		m.mu.RLock()
 		items := m.index.Items
 		m.mu.RUnlock()
-		m.buildEmbeddings(items)
+		m.buildEmbeddings(ctx, items)
 	}
 }
 

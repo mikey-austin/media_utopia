@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -501,6 +502,242 @@ func TestAbsoluteURL(t *testing.T) {
 	}
 	if module.absoluteURL("https://x") != "https://x" {
 		t.Fatalf("expected passthrough url")
+	}
+}
+
+func TestLibraryResolveMissing(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/Items/nonexistent", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "nonexistent"})}
+	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	if reply.OK {
+		t.Fatalf("expected error reply for missing item")
+	}
+	if reply.Type != "error" {
+		t.Fatalf("expected type=error, got %s", reply.Type)
+	}
+	if reply.Err == nil {
+		t.Fatalf("expected err to be set")
+	}
+	if !strings.Contains(reply.Err.Message, "404") {
+		t.Fatalf("expected 404 in error message, got: %s", reply.Err.Message)
+	}
+}
+
+func TestLibraryBrowseEmpty(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/Items/empty-container", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfItem{
+			ID:   "empty-container",
+			Name: "Empty",
+			Type: "CollectionFolder",
+		}
+		writeJSON(t, w, resp)
+	})
+	handler.HandleFunc("/Users/user/Items", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfItemsResponse{
+			Items:            []jfItem{},
+			TotalRecordCount: 0,
+			StartIndex:       0,
+		}
+		writeJSON(t, w, resp)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: "empty-container", Start: 0, Count: 10})}
+	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	if !reply.OK {
+		t.Fatalf("expected ok reply, got err: %+v", reply.Err)
+	}
+	var payload libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if len(payload.Items) != 0 {
+		t.Fatalf("expected 0 items, got %d", len(payload.Items))
+	}
+	if payload.Total != 0 {
+		t.Fatalf("expected total=0, got %d", payload.Total)
+	}
+}
+
+func TestLibrarySearchEmpty(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/Users/user/Items", func(w http.ResponseWriter, r *http.Request) {
+		resp := jfItemsResponse{
+			Items:            []jfItem{},
+			TotalRecordCount: 0,
+			StartIndex:       0,
+		}
+		writeJSON(t, w, resp)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibrarySearchBody{Query: "zzz_no_match", Start: 0, Count: 10})}
+	reply := module.librarySearch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	if !reply.OK {
+		t.Fatalf("expected ok reply, got err: %+v", reply.Err)
+	}
+	var payload libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if len(payload.Items) != 0 {
+		t.Fatalf("expected 0 items, got %d", len(payload.Items))
+	}
+	if payload.Total != 0 {
+		t.Fatalf("expected total=0, got %d", payload.Total)
+	}
+}
+
+func TestLibraryBrowsePagination(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/Users/user/Items", func(w http.ResponseWriter, r *http.Request) {
+		startStr := r.URL.Query().Get("StartIndex")
+		limitStr := r.URL.Query().Get("Limit")
+		start, _ := strconv.ParseInt(startStr, 10, 64)
+		limit, _ := strconv.ParseInt(limitStr, 10, 64)
+
+		if start != 5 {
+			t.Errorf("expected StartIndex=5, got %d", start)
+		}
+		if limit != 3 {
+			t.Errorf("expected Limit=3, got %d", limit)
+		}
+
+		resp := jfItemsResponse{
+			Items: []jfItem{
+				{ID: "item-a", Name: "A", Type: "Audio", MediaType: "Audio"},
+				{ID: "item-b", Name: "B", Type: "Audio", MediaType: "Audio"},
+			},
+			TotalRecordCount: 20,
+			StartIndex:       start,
+		}
+		writeJSON(t, w, resp)
+	})
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: "root", Start: 5, Count: 3})}
+	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	if !reply.OK {
+		t.Fatalf("expected ok reply, got err: %+v", reply.Err)
+	}
+	var payload libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if payload.Start != 5 {
+		t.Fatalf("expected start=5, got %d", payload.Start)
+	}
+	if payload.Count != 2 {
+		t.Fatalf("expected count=2 (actual items returned), got %d", payload.Count)
+	}
+	if payload.Total != 20 {
+		t.Fatalf("expected total=20, got %d", payload.Total)
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(payload.Items))
+	}
+}
+
+func TestNewModuleRequiredFields(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "missing base_url",
+			cfg: Config{
+				NodeID: "mu:library:test",
+				APIKey: "key",
+				UserID: "user",
+			},
+			want: "base_url required",
+		},
+		{
+			name: "missing api_key",
+			cfg: Config{
+				NodeID:  "mu:library:test",
+				BaseURL: "http://example",
+				UserID:  "user",
+			},
+			want: "api_key required",
+		},
+		{
+			name: "missing node_id",
+			cfg: Config{
+				BaseURL: "http://example",
+				APIKey:  "key",
+				UserID:  "user",
+			},
+			want: "node_id required",
+		},
+		{
+			name: "missing user_id",
+			cfg: Config{
+				NodeID:  "mu:library:test",
+				BaseURL: "http://example",
+				APIKey:  "key",
+			},
+			want: "user_id required",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewModule(zap.NewNop(), nil, tc.cfg)
+			if err == nil {
+				t.Fatalf("expected error for %s", tc.name)
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("expected error %q, got %q", tc.want, err.Error())
+			}
+		})
 	}
 }
 

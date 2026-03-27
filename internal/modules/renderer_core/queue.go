@@ -12,7 +12,7 @@ import (
 
 // Queue holds the canonical renderer queue.
 type Queue struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	revision   int64
 	index      int64
 	entries    []QueueEntry
@@ -290,8 +290,8 @@ func (q *Queue) Current() (QueueEntry, bool) {
 
 // Summary returns the queue summary.
 func (q *Queue) Summary() mu.QueueState {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	q.mu.RLock()
+	defer q.mu.RUnlock()
 
 	return mu.QueueState{
 		Revision:   q.revision,

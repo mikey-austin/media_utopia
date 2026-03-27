@@ -67,6 +67,7 @@ type rendererInstance struct {
 	nodeID        string
 	name          string
 	engine        *renderercore.Engine
+	mu            sync.Mutex
 	cmdTopic      string
 	avTransport   string
 	avtService    string
@@ -254,6 +255,7 @@ func (m *Module) stateLoop(r *rendererInstance) {
 			if !ok {
 				continue
 			}
+			r.mu.Lock()
 			changed := false
 			if r.engine.State.Playback.PositionMS != pos {
 				r.engine.State.Playback.PositionMS = pos
@@ -263,10 +265,17 @@ func (m *Module) stateLoop(r *rendererInstance) {
 				r.engine.State.Playback.DurationMS = dur
 				changed = true
 			}
+			var payload []byte
 			if changed {
-				if payload, err := r.engineStatePayload(); err == nil {
-					_ = m.client.Publish(mu.TopicState(m.config.TopicBase, r.nodeID), 1, true, payload)
+				var err error
+				payload, err = r.engineStatePayload()
+				if err != nil {
+					payload = nil
 				}
+			}
+			r.mu.Unlock()
+			if payload != nil {
+				_ = m.client.Publish(mu.TopicState(m.config.TopicBase, r.nodeID), 1, true, payload)
 			}
 		}
 	}
@@ -278,14 +287,17 @@ func (m *Module) handleRendererMessage(r *rendererInstance, msg paho.Message) {
 		m.log.Warn("invalid renderer command", zap.String("node", r.nodeID), zap.Error(err))
 		return
 	}
+	r.mu.Lock()
 	reply := r.engine.HandleCommand(cmd)
+	statePayload, _ := r.engineStatePayload()
+	r.mu.Unlock()
 	if cmd.ReplyTo != "" {
 		if payload, err := json.Marshal(reply); err == nil {
 			_ = m.client.Publish(cmd.ReplyTo, 1, false, payload)
 		}
 	}
-	if payload, err := r.engineStatePayload(); err == nil {
-		_ = m.client.Publish(mu.TopicState(m.config.TopicBase, r.nodeID), 1, true, payload)
+	if statePayload != nil {
+		_ = m.client.Publish(mu.TopicState(m.config.TopicBase, r.nodeID), 1, true, statePayload)
 	}
 }
 
