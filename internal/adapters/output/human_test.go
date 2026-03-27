@@ -467,7 +467,7 @@ func TestRenderPlaylistShow(t *testing.T) {
 				Name:       "Empty Playlist",
 				Entries:    []core.PlaylistEntryResult{},
 			},
-			contains: []string{"Playlist: Empty Playlist (0 tracks)"},
+			contains: []string{"Playlist is empty."},
 		},
 		{
 			name: "with metadata no FullIDs",
