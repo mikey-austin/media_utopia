@@ -1,0 +1,1015 @@
+package output
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mikey-austin/media_utopia/internal/core"
+	"github.com/mikey-austin/media_utopia/pkg/mu"
+)
+
+func TestRenderNodes(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.NodesResult
+		contains []string
+	}{
+		{
+			name:     "empty list",
+			input:    core.NodesResult{Nodes: []mu.Presence{}},
+			contains: []string{"NAME", "KIND", "NODE_ID"},
+		},
+		{
+			name: "single node",
+			input: core.NodesResult{Nodes: []mu.Presence{
+				{NodeID: "n1", Kind: "renderer", Name: "Living Room"},
+			}},
+			contains: []string{"NAME", "KIND", "NODE_ID", "Living Room", "renderer", "n1"},
+		},
+		{
+			name: "multiple nodes",
+			input: core.NodesResult{Nodes: []mu.Presence{
+				{NodeID: "n1", Kind: "renderer", Name: "Living Room"},
+				{NodeID: "n2", Kind: "library", Name: "Music Server"},
+			}},
+			contains: []string{"Living Room", "renderer", "n1", "Music Server", "library", "n2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderStatus(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.StatusResult
+		contains []string
+	}{
+		{
+			name: "playing with all fields",
+			input: core.StatusResult{
+				Renderer: mu.Presence{Name: "Living Room"},
+				State: mu.RendererState{
+					Playback: &mu.PlaybackState{
+						Status:     "playing",
+						PositionMS: 61000,
+						DurationMS: 240000,
+						Volume:     0.75,
+					},
+					Current: &mu.CurrentItemState{
+						ItemID:   "item-1",
+						Metadata: map[string]interface{}{"title": "My Song", "artist": "The Band"},
+					},
+					Queue: &mu.QueueState{
+						Length:   10,
+						Index:    3,
+						Revision: 5,
+					},
+					Session: &mu.SessionState{
+						Owner: "mu-cli",
+					},
+				},
+			},
+			contains: []string{"Living Room", "playing", "My Song", "The Band", "vol 75%", "Queue: 10 tracks", "owner mu-cli"},
+		},
+		{
+			name: "paused state",
+			input: core.StatusResult{
+				Renderer: mu.Presence{Name: "Bedroom"},
+				State: mu.RendererState{
+					Playback: &mu.PlaybackState{
+						Status:     "paused",
+						PositionMS: 30000,
+						DurationMS: 180000,
+						Volume:     0.50,
+					},
+				},
+			},
+			contains: []string{"Bedroom", "paused", "vol 50%"},
+		},
+		{
+			name: "stopped state",
+			input: core.StatusResult{
+				Renderer: mu.Presence{Name: "Kitchen"},
+				State: mu.RendererState{
+					Playback: &mu.PlaybackState{
+						Status: "stopped",
+						Volume: 0.0,
+					},
+				},
+			},
+			contains: []string{"Kitchen", "stopped", "vol 0%"},
+		},
+		{
+			name: "unknown state",
+			input: core.StatusResult{
+				Renderer: mu.Presence{Name: "Patio"},
+				State:    mu.RendererState{},
+			},
+			contains: []string{"Patio", "unknown"},
+		},
+		{
+			name: "nil playback, current, queue, session",
+			input: core.StatusResult{
+				Renderer: mu.Presence{Name: "Garage"},
+				State: mu.RendererState{
+					Playback: nil,
+					Current:  nil,
+					Queue:    nil,
+					Session:  nil,
+				},
+			},
+			contains: []string{"Garage", "unknown"},
+		},
+		{
+			name: "muted",
+			input: core.StatusResult{
+				Renderer: mu.Presence{Name: "Office"},
+				State: mu.RendererState{
+					Playback: &mu.PlaybackState{
+						Status: "playing",
+						Volume: 0.80,
+						Mute:   true,
+					},
+				},
+			},
+			contains: []string{"Office", "muted"},
+		},
+		{
+			name: "repeat mode one",
+			input: core.StatusResult{
+				Renderer: mu.Presence{Name: "Den"},
+				State: mu.RendererState{
+					Queue: &mu.QueueState{
+						Length:     5,
+						Index:     1,
+						Revision:  2,
+						RepeatMode: "one",
+					},
+				},
+			},
+			contains: []string{"Den", "repeat-one", "Queue: 5 tracks"},
+		},
+		{
+			name: "repeat mode all",
+			input: core.StatusResult{
+				Renderer: mu.Presence{Name: "Studio"},
+				State: mu.RendererState{
+					Queue: &mu.QueueState{
+						Length:   8,
+						Index:    0,
+						Revision: 1,
+						Repeat:   true,
+					},
+				},
+			},
+			contains: []string{"Studio", "repeat", "Queue: 8 tracks"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderSession(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.SessionResult
+		contains []string
+	}{
+		{
+			name: "session with ID and expiry",
+			input: core.SessionResult{
+				RendererID: "r1",
+				Session: mu.SessionLease{
+					ID:             "sess-abc",
+					Token:          "tok-123",
+					Owner:          "mu-cli",
+					LeaseExpiresAt: 1700000000,
+				},
+			},
+			contains: []string{
+				"session sess-abc",
+				"expires",
+				time.Unix(1700000000, 0).Format(time.RFC3339),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderQueue(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.QueueResult
+		contains []string
+		absent   []string
+	}{
+		{
+			name: "empty queue",
+			input: core.QueueResult{
+				Queue: mu.QueueGetReply{Entries: []mu.QueueItem{}},
+			},
+			contains: []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"},
+			absent:   []string{"QUEUE_ID", "ITEM_ID"},
+		},
+		{
+			name: "queue with entries and metadata",
+			input: core.QueueResult{
+				Queue: mu.QueueGetReply{
+					Entries: []mu.QueueItem{
+						{
+							QueueEntryID: "qe1",
+							ItemID:       "item-1",
+							Metadata: map[string]interface{}{
+								"title":     "Song One",
+								"mediaType": "audio",
+								"artist":    "Artist A",
+								"album":     "Album X",
+								"durationMs": json.Number("180000"),
+							},
+						},
+						{
+							QueueEntryID: "qe2",
+							ItemID:       "item-2",
+							Metadata: map[string]interface{}{
+								"title":  "Song Two",
+								"type":   "audio",
+								"artist": "Artist B",
+							},
+						},
+					},
+				},
+			},
+			contains: []string{"Song One", "Artist A", "Album X", "audio", "3:00", "Song Two", "Artist B"},
+			absent:   []string{"QUEUE_ID", "ITEM_ID"},
+		},
+		{
+			name: "queue with FullIDs",
+			input: core.QueueResult{
+				FullIDs: true,
+				Queue: mu.QueueGetReply{
+					Entries: []mu.QueueItem{
+						{
+							QueueEntryID: "qe-full-1",
+							ItemID:       "item-full-1",
+							Metadata: map[string]interface{}{
+								"title": "Track",
+							},
+						},
+					},
+				},
+			},
+			contains: []string{"QUEUE_ID", "ITEM_ID", "qe-full-1", "item-full-1", "Track"},
+		},
+		{
+			name: "queue with missing metadata fields",
+			input: core.QueueResult{
+				Queue: mu.QueueGetReply{
+					Entries: []mu.QueueItem{
+						{
+							QueueEntryID: "qe3",
+							ItemID:       "item-3",
+							Metadata:     nil,
+						},
+					},
+				},
+			},
+			contains: []string{"item-3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+			for _, nope := range tt.absent {
+				if strings.Contains(out, nope) {
+					t.Errorf("output should not contain %q\noutput:\n%s", nope, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderQueueNow(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.QueueNowResult
+		contains []string
+	}{
+		{
+			name:     "nil current shows none",
+			input:    core.QueueNowResult{Current: nil},
+			contains: []string{"(none)"},
+		},
+		{
+			name: "current with title and artist",
+			input: core.QueueNowResult{
+				Current: &mu.CurrentItemState{
+					ItemID: "item-1",
+					Metadata: map[string]interface{}{
+						"title":  "Song Title",
+						"artist": "Song Artist",
+					},
+				},
+			},
+			contains: []string{"Song Artist - Song Title"},
+		},
+		{
+			name: "current with only title",
+			input: core.QueueNowResult{
+				Current: &mu.CurrentItemState{
+					ItemID: "item-2",
+					Metadata: map[string]interface{}{
+						"title": "Only Title",
+					},
+				},
+			},
+			contains: []string{"Only Title"},
+		},
+		{
+			name: "current with only itemID",
+			input: core.QueueNowResult{
+				Current: &mu.CurrentItemState{
+					ItemID:   "item-fallback",
+					Metadata: nil,
+				},
+			},
+			contains: []string{"item-fallback"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderPlaylists(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.PlaylistListResult
+		contains []string
+	}{
+		{
+			name:     "empty list",
+			input:    core.PlaylistListResult{Playlists: []mu.PlaylistSummary{}},
+			contains: []string{"NAME", "PLAYLIST_ID", "REVISION"},
+		},
+		{
+			name: "multiple playlists",
+			input: core.PlaylistListResult{Playlists: []mu.PlaylistSummary{
+				{PlaylistID: "pl-1", Name: "Chill Vibes", Revision: 3},
+				{PlaylistID: "pl-2", Name: "Workout Mix", Revision: 7},
+			}},
+			contains: []string{"Chill Vibes", "pl-1", "3", "Workout Mix", "pl-2", "7"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderPlaylistShow(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.PlaylistShowResult
+		contains []string
+		absent   []string
+	}{
+		{
+			name: "with metadata no FullIDs",
+			input: core.PlaylistShowResult{
+				PlaylistID: "pl-1",
+				Name:       "Test Playlist",
+				Entries: []core.PlaylistEntryResult{
+					{
+						EntryID: "e1",
+						ItemID:  "i1",
+						Metadata: map[string]any{
+							"title":      "Track One",
+							"mediaType":  "audio",
+							"artist":     "Artist One",
+							"album":      "Album One",
+							"durationMs": json.Number("200000"),
+						},
+					},
+				},
+			},
+			contains: []string{"Track One", "audio", "Artist One", "Album One", "3:20"},
+			absent:   []string{"ENTRY_ID"},
+		},
+		{
+			name: "with FullIDs",
+			input: core.PlaylistShowResult{
+				PlaylistID: "pl-2",
+				Name:       "Full IDs Playlist",
+				FullIDs:    true,
+				Entries: []core.PlaylistEntryResult{
+					{
+						EntryID: "entry-abc",
+						ItemID:  "item-xyz",
+						Metadata: map[string]any{
+							"title": "Full Track",
+						},
+					},
+				},
+			},
+			contains: []string{"ENTRY_ID", "ITEM_ID", "entry-abc", "item-xyz", "Full Track"},
+		},
+		{
+			name: "with missing metadata",
+			input: core.PlaylistShowResult{
+				PlaylistID: "pl-3",
+				Name:       "Sparse Playlist",
+				Entries: []core.PlaylistEntryResult{
+					{
+						EntryID:  "e3",
+						ItemID:   "i3",
+						Metadata: nil,
+					},
+				},
+			},
+			contains: []string{"i3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+			for _, nope := range tt.absent {
+				if strings.Contains(out, nope) {
+					t.Errorf("output should not contain %q\noutput:\n%s", nope, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderSnapshots(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.SnapshotListResult
+		contains []string
+	}{
+		{
+			name:     "empty",
+			input:    core.SnapshotListResult{Snapshots: []mu.SnapshotSummary{}},
+			contains: []string{"NAME", "SNAPSHOT_ID", "REVISION"},
+		},
+		{
+			name: "multiple snapshots",
+			input: core.SnapshotListResult{Snapshots: []mu.SnapshotSummary{
+				{SnapshotID: "snap-1", Name: "Morning Session", Revision: 1},
+				{SnapshotID: "snap-2", Name: "Evening Session", Revision: 4},
+			}},
+			contains: []string{"Morning Session", "snap-1", "1", "Evening Session", "snap-2", "4"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderSuggestions(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.SuggestListResult
+		contains []string
+	}{
+		{
+			name:     "empty",
+			input:    core.SuggestListResult{Suggestions: []mu.SuggestSummary{}},
+			contains: []string{"NAME", "SUGGESTION_ID", "REVISION"},
+		},
+		{
+			name: "multiple suggestions",
+			input: core.SuggestListResult{Suggestions: []mu.SuggestSummary{
+				{SuggestionID: "sug-1", Name: "Jazz Night", Revision: 2},
+				{SuggestionID: "sug-2", Name: "Road Trip", Revision: 5},
+			}},
+			contains: []string{"Jazz Night", "sug-1", "2", "Road Trip", "sug-2", "5"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderLibraryResolve(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.LibraryResolveResult
+		contains []string
+	}{
+		{
+			name: "no sources",
+			input: core.LibraryResolveResult{
+				Item: mu.LibraryResolveReply{
+					ItemID:  "item-1",
+					Sources: []mu.ResolvedSource{},
+				},
+			},
+			contains: []string{"no sources"},
+		},
+		{
+			name: "multiple sources",
+			input: core.LibraryResolveResult{
+				Item: mu.LibraryResolveReply{
+					ItemID: "item-2",
+					Sources: []mu.ResolvedSource{
+						{URL: "http://example.com/a.flac", Mime: "audio/flac"},
+						{URL: "http://example.com/b.mp3", Mime: "audio/mpeg"},
+					},
+				},
+			},
+			contains: []string{"URL", "MIME", "http://example.com/a.flac", "audio/flac", "http://example.com/b.mp3", "audio/mpeg"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderLibraryRescan(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.LibraryRescanResult
+		contains []string
+	}{
+		{
+			name: "started status",
+			input: core.LibraryRescanResult{
+				Status:  "started",
+				Message: "scan queued",
+			},
+			contains: []string{"rescan started: scan queued"},
+		},
+		{
+			name: "complete status",
+			input: core.LibraryRescanResult{
+				Status: "complete",
+				Items:  1234,
+			},
+			contains: []string{"rescan complete: 1234 items indexed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderRaw(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    core.RawResult
+		contains []string
+	}{
+		{
+			name:     "json.RawMessage",
+			input:    core.RawResult{Data: json.RawMessage(`{"key":"value"}`)},
+			contains: []string{`{"key":"value"}`},
+		},
+		{
+			name:     "byte slice",
+			input:    core.RawResult{Data: []byte(`hello bytes`)},
+			contains: []string{"hello bytes"},
+		},
+		{
+			name:     "struct",
+			input:    core.RawResult{Data: struct{ Foo string }{Foo: "bar"}},
+			contains: []string{`"Foo":"bar"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderLibraryItemsOutput(t *testing.T) {
+	p := HumanPrinter{}
+
+	payload := `{
+		"items": [
+			{
+				"itemId": "id-1",
+				"name": "Cool Track",
+				"type": "track",
+				"mediaType": "audio",
+				"artists": ["Alice", "Bob"],
+				"album": "Greatest Hits",
+				"containerId": "container-abc"
+			}
+		],
+		"start": 0,
+		"count": 1,
+		"total": 1
+	}`
+
+	tests := []struct {
+		name     string
+		input    LibraryItemsOutput
+		contains []string
+	}{
+		{
+			name: "with items including all fields",
+			input: LibraryItemsOutput{
+				LibraryID: "lib-1",
+				Payload:   json.RawMessage(payload),
+			},
+			contains: []string{
+				"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID", "LIB_REF",
+				"Cool Track", "track", "Alice, Bob", "Greatest Hits", "container-abc",
+				"id-1", "lib:lib-1:id-1",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestFormatMS(t *testing.T) {
+	tests := []struct {
+		name string
+		ms   int64
+		want string
+	}{
+		{"zero", 0, "0:00"},
+		{"one second", 1000, "0:01"},
+		{"one minute", 60000, "1:00"},
+		{"one hour one minute one second", 3661000, "1:01:01"},
+		{"negative", -5000, "0:00"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatMS(tt.ms)
+			if got != tt.want {
+				t.Errorf("formatMS(%d) = %q, want %q", tt.ms, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatPosition(t *testing.T) {
+	tests := []struct {
+		name string
+		pos  int64
+		dur  int64
+		want string
+	}{
+		{"both zero", 0, 0, ""},
+		{"with duration", 61000, 240000, "1:01 / 4:00 (25%)"},
+		{"without duration", 30000, 0, "0:30 / 0:00"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatPosition(tt.pos, tt.dur)
+			if got != tt.want {
+				t.Errorf("formatPosition(%d, %d) = %q, want %q", tt.pos, tt.dur, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"int64", int64(180000), "3:00"},
+		{"float64", float64(90000), "1:30"},
+		{"json.Number", json.Number("60000"), "1:00"},
+		{"nil", nil, ""},
+		{"string returns empty", "not a number", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatDuration(tt.value)
+			if got != tt.want {
+				t.Errorf("formatDuration(%v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatItem(t *testing.T) {
+	tests := []struct {
+		name    string
+		current *mu.CurrentItemState
+		want    string
+	}{
+		{
+			name: "title and artist",
+			current: &mu.CurrentItemState{
+				ItemID:   "item-1",
+				Metadata: map[string]interface{}{"title": "My Song", "artist": "The Band"},
+			},
+			want: "The Band - My Song",
+		},
+		{
+			name: "title only",
+			current: &mu.CurrentItemState{
+				ItemID:   "item-2",
+				Metadata: map[string]interface{}{"title": "Solo Title"},
+			},
+			want: "Solo Title",
+		},
+		{
+			name: "no metadata",
+			current: &mu.CurrentItemState{
+				ItemID:   "item-3",
+				Metadata: map[string]interface{}{},
+			},
+			want: "item-3",
+		},
+		{
+			name: "nil metadata",
+			current: &mu.CurrentItemState{
+				ItemID:   "item-4",
+				Metadata: nil,
+			},
+			want: "item-4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatItem(tt.current)
+			if got != tt.want {
+				t.Errorf("formatItem() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateCell(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		max   int
+		want  string
+	}{
+		{"within limit", "short", 10, "short"},
+		{"over limit", "this is a very long string that exceeds", 15, "this is a ve..."},
+		{"with pipe chars", "foo|bar", 20, "foo/bar"},
+		{"with newlines", "line1\nline2", 20, "line1 line2"},
+		{"max 3", "abcdef", 3, "abc"},
+		{"max 0", "anything", 0, "anything"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateCell(tt.value, tt.max)
+			if got != tt.want {
+				t.Errorf("truncateCell(%q, %d) = %q, want %q", tt.value, tt.max, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateByWidth(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		max   int
+		want  string
+	}{
+		{"normal ascii", "hello world", 5, "hello"},
+		{"max 0", "anything", 0, ""},
+		{"max negative", "anything", -1, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateByWidth(tt.value, tt.max)
+			if got != tt.want {
+				t.Errorf("truncateByWidth(%q, %d) = %q, want %q", tt.value, tt.max, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStyleStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		check  string
+	}{
+		{"playing green", "playing", "playing"},
+		{"paused yellow", "paused", "paused"},
+		{"stopped red", "stopped", "stopped"},
+		{"unknown gray", "buffering", "buffering"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := styleStatus(tt.status)
+			if !strings.Contains(got, tt.check) {
+				t.Errorf("styleStatus(%q) = %q, want it to contain %q", tt.status, got, tt.check)
+			}
+		})
+	}
+}
+
+func TestDisplayWidth(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{"ascii", "hello", 5},
+		{"empty string", "", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := displayWidth(tt.value)
+			if got != tt.want {
+				t.Errorf("displayWidth(%q) = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHumanPrinterDefault(t *testing.T) {
+	p := HumanPrinter{}
+
+	// An unrecognized type should fall through to "ok\n".
+	type unknownResult struct{ Foo string }
+	out, err := p.Render(unknownResult{Foo: "bar"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "ok\n" {
+		t.Errorf("expected %q for unknown type, got %q", "ok\n", out)
+	}
+}
