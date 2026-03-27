@@ -300,6 +300,14 @@ func completeRenderers(cmd *cobra.Command, args []string, toComplete string) ([]
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
+// selectorArg returns the first arg as a selector, or empty string if no args.
+func selectorArg(args []string) string {
+	if len(args) > 0 {
+		return args[0]
+	}
+	return ""
+}
+
 func normalizeResolve(arg string) (string, error) {
 	arg = strings.ToLower(strings.TrimSpace(arg))
 	switch arg {

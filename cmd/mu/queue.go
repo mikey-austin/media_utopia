@@ -55,10 +55,7 @@ Use --full to include queue entry IDs and item IDs for scripting.`,
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			result, err := app.service.QueueList(ctx, selector, offset, count, !app.json, full)
 			if err != nil {
 				return err
@@ -93,10 +90,7 @@ func queueNowCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			result, err := app.service.QueueNow(ctx, selector)
 			if err != nil {
 				return err
@@ -119,10 +113,7 @@ func queueClearCommand() *cobra.Command {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueClear(ctx, selector)
 			})
@@ -245,10 +236,7 @@ func queueShuffleCommand() *cobra.Command {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueShuffle(ctx, selector, seed)
 			})
@@ -421,10 +409,7 @@ func queueSetCommand() *cobra.Command {
 			if ifRevSet {
 				revPtr = &ifRev
 			}
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueSet(ctx, selector, entries, revPtr)
 			})

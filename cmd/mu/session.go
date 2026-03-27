@@ -31,10 +31,7 @@ which is auto-acquired when needed. Use this to explicitly lock a renderer.`,
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			result, err := app.service.AcquireLease(ctx, selector, ttl)
 			if err != nil {
 				return err
@@ -66,10 +63,7 @@ func renewCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.service.RenewLease(ctx, selector, ttl)
 		},
 	}
@@ -93,10 +87,7 @@ func releaseCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.service.ReleaseLease(ctx, selector)
 		},
 	}
@@ -118,10 +109,7 @@ func ownerCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			owner, err := app.service.Owner(ctx, selector)
 			if err != nil {
 				return err

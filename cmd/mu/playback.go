@@ -25,10 +25,7 @@ playback begins at the current position unless --index is specified.`,
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			var idxPtr *int64
 			if cmd.Flags().Changed("index") {
 				idxPtr = &index
@@ -59,10 +56,7 @@ func pauseCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackPause(ctx, selector)
 			})
@@ -85,10 +79,7 @@ func toggleCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackToggle(ctx, selector)
 			})
@@ -111,10 +102,7 @@ func stopCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackStop(ctx, selector)
 			})
@@ -173,10 +161,7 @@ func nextCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackNext(ctx, selector)
 			})
@@ -199,10 +184,7 @@ func prevCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			return app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackPrev(ctx, selector)
 			})

@@ -27,10 +27,7 @@ position, volume, and queue state. Use --watch for a live-updating display.`,
 		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
-			selector := ""
-			if len(args) == 1 {
-				selector = args[0]
-			}
+			selector := selectorArg(args)
 			if watch {
 				return watchStatus(cmd, app, selector)
 			}
