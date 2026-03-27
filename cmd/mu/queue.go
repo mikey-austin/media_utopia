@@ -272,6 +272,17 @@ Modes:
 		Example: `  mu queue repeat all
   mu queue repeat one
   mu queue repeat living-room off`,
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if len(args) == 0 {
+				// Could be renderer or mode - suggest modes
+				return []string{"off", "all", "one"}, cobra.ShellCompDirectiveNoFileComp
+			}
+			if len(args) == 1 {
+				// Could be mode if first was renderer
+				return []string{"off", "all", "one"}, cobra.ShellCompDirectiveNoFileComp
+			}
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		},
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			selector := ""

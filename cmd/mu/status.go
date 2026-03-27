@@ -22,8 +22,9 @@ position, volume, and queue state. Use --watch for a live-updating display.`,
 		Example: `  mu status
   mu status living-room
   mu status --watch`,
-		GroupID: "discovery",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "discovery",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			selector := ""

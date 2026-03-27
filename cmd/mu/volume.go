@@ -25,8 +25,9 @@ Use --mute and --unmute to control mute state independently.`,
   mu vol living-room 75
   mu vol --mute
   mu vol --unmute`,
-		GroupID: "playback",
-		Args:    cobra.RangeArgs(0, 2),
+		GroupID:           "playback",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)

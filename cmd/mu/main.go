@@ -277,6 +277,29 @@ func readFileOrStdin(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// completeRenderers returns a ValidArgsFunction that suggests renderer names.
+func completeRenderers(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Only complete the first arg (renderer selector)
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	app := fromContext(cmd)
+	if app == nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	result, err := app.service.ListNodes(ctx, "renderer", true)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	names := make([]string, 0, len(result.Nodes))
+	for _, node := range result.Nodes {
+		names = append(names, node.Name)
+	}
+	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
 func normalizeResolve(arg string) (string, error) {
 	arg = strings.ToLower(strings.TrimSpace(arg))
 	switch arg {

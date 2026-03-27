@@ -17,8 +17,9 @@ playback begins at the current position unless --index is specified.`,
 		Example: `  mu play
   mu play living-room
   mu play living-room --index 5`,
-		GroupID: "playback",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "playback",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -50,8 +51,9 @@ func pauseCommand() *cobra.Command {
 		Long:    "Pause playback on a renderer. Use 'mu toggle' to resume.",
 		Example: `  mu pause
   mu pause living-room`,
-		GroupID: "playback",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "playback",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -75,8 +77,9 @@ func toggleCommand() *cobra.Command {
 		Long:    "Toggle between play and pause states. If playing, pauses. If paused, resumes.",
 		Example: `  mu toggle
   mu toggle living-room`,
-		GroupID: "playback",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "playback",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -100,8 +103,9 @@ func stopCommand() *cobra.Command {
 		Long:    "Stop playback and reset the position to the beginning of the current track.",
 		Example: `  mu stop
   mu stop living-room`,
-		GroupID: "playback",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "playback",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -161,8 +165,9 @@ func nextCommand() *cobra.Command {
 		Long:    "Skip to the next track in the queue.",
 		Example: `  mu next
   mu next living-room`,
-		GroupID: "playback",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "playback",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -186,8 +191,9 @@ func prevCommand() *cobra.Command {
 		Long:    "Go back to the previous track in the queue.",
 		Example: `  mu prev
   mu prev living-room`,
-		GroupID: "playback",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "playback",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)

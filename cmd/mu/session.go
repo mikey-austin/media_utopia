@@ -22,8 +22,9 @@ which is auto-acquired when needed. Use this to explicitly lock a renderer.`,
 		Example: `  mu acquire
   mu acquire living-room
   mu acquire living-room --ttl 10m`,
-		GroupID: "session",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "session",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_ = wait
 			app := fromContext(cmd)
@@ -57,8 +58,9 @@ func renewCommand() *cobra.Command {
 		Long:    "Extend the TTL of an existing lease without releasing it.",
 		Example: `  mu renew
   mu renew living-room --ttl 15m`,
-		GroupID: "session",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "session",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -83,8 +85,9 @@ func releaseCommand() *cobra.Command {
 		Long:    "Release a lease so other controllers can acquire it.",
 		Example: `  mu release
   mu release living-room`,
-		GroupID: "session",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "session",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -107,8 +110,9 @@ func ownerCommand() *cobra.Command {
 		Long:    "Show which controller currently holds the lease on a renderer.",
 		Example: `  mu owner
   mu owner living-room`,
-		GroupID: "session",
-		Args:    cobra.RangeArgs(0, 1),
+		GroupID:           "session",
+		ValidArgsFunction: completeRenderers,
+		Args:              cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
