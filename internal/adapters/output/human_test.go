@@ -2,6 +2,7 @@ package output
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -816,6 +817,30 @@ func TestFormatMS(t *testing.T) {
 	}
 }
 
+func TestFormatMSHours(t *testing.T) {
+	tests := []struct {
+		ms   int64
+		want string
+	}{
+		{0, "0:00"},
+		{1000, "0:01"},
+		{60000, "1:00"},
+		{3599000, "59:59"},
+		{3600000, "1:00:00"},
+		{3661000, "1:01:01"},
+		{7200000, "2:00:00"},
+		{-1, "0:00"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%d", tt.ms), func(t *testing.T) {
+			got := formatMS(tt.ms)
+			if got != tt.want {
+				t.Errorf("formatMS(%d) = %q, want %q", tt.ms, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatPosition(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1011,5 +1036,131 @@ func TestHumanPrinterDefault(t *testing.T) {
 	}
 	if out != "ok\n" {
 		t.Errorf("expected %q for unknown type, got %q", "ok\n", out)
+	}
+}
+
+func TestRenderProgressBar(t *testing.T) {
+	tests := []struct {
+		name  string
+		pos   int64
+		dur   int64
+		width int
+		want  string // what to check with strings.Contains
+		empty bool   // expect empty string
+	}{
+		{"zero_duration", 0, 0, 30, "", true},
+		{"negative_duration", 0, -1, 30, "", true},
+		{"small_width", 0, 100, 3, "", true},
+		{"at_start", 0, 100000, 30, "[", false},
+		{"at_start_has_empty", 0, 100000, 30, "─", false},
+		{"half_way", 50000, 100000, 30, "━", false},
+		{"at_end", 100000, 100000, 30, "━", false},
+		{"at_end_no_empty", 100000, 100000, 30, "]", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderProgressBar(tt.pos, tt.dur, tt.width)
+			if tt.empty {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Error("expected non-empty progress bar")
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("expected %q to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderQueueListOutput(t *testing.T) {
+	t.Run("with_pagination", func(t *testing.T) {
+		data := QueueListOutput{
+			Result: core.QueueResult{
+				Queue: mu.QueueGetReply{
+					Revision: 5,
+					Entries: []mu.QueueItem{
+						{QueueEntryID: "q1", ItemID: "i1", Metadata: map[string]any{"title": "Song A"}},
+						{QueueEntryID: "q2", ItemID: "i2", Metadata: map[string]any{"title": "Song B"}},
+					},
+				},
+			},
+			Offset: 10,
+			Count:  50,
+		}
+		printer := HumanPrinter{}
+		out, err := printer.Render(data)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if !strings.Contains(out, "Song A") {
+			t.Error("expected Song A in output")
+		}
+		if !strings.Contains(out, "Showing 11-12") {
+			t.Errorf("expected pagination 'Showing 11-12', got:\n%s", out)
+		}
+		if !strings.Contains(out, "rev 5") {
+			t.Error("expected rev 5 in pagination line")
+		}
+	})
+
+	t.Run("without_pagination", func(t *testing.T) {
+		data := QueueListOutput{
+			Result: core.QueueResult{
+				Queue: mu.QueueGetReply{
+					Entries: []mu.QueueItem{
+						{QueueEntryID: "q1", ItemID: "i1", Metadata: map[string]any{"title": "Song A"}},
+					},
+				},
+			},
+			Offset: 0,
+			Count:  50,
+		}
+		printer := HumanPrinter{}
+		out, err := printer.Render(data)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if strings.Contains(out, "Showing") {
+			t.Error("should not show pagination when offset=0 and not full page")
+		}
+	})
+}
+
+func TestLibraryItemsPagination(t *testing.T) {
+	payload := `{"items":[{"itemId":"i1","name":"Track 1","type":"Audio","artists":["Artist"],"album":"Album"}],"start":0,"count":50,"total":100}`
+	data := LibraryItemsOutput{
+		LibraryID: "lib-1",
+		Payload:   json.RawMessage(payload),
+	}
+	printer := HumanPrinter{}
+	out, err := printer.Render(data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, "Track 1") {
+		t.Error("expected Track 1 in output")
+	}
+	if !strings.Contains(out, "Showing 1-1 of 100 items") {
+		t.Errorf("expected pagination footer, got:\n%s", out)
+	}
+}
+
+func TestLibraryItemsNoPagination(t *testing.T) {
+	payload := `{"items":[{"itemId":"i1","name":"Track 1","type":"Audio"}],"start":0,"count":50,"total":0}`
+	data := LibraryItemsOutput{
+		LibraryID: "lib-1",
+		Payload:   json.RawMessage(payload),
+	}
+	printer := HumanPrinter{}
+	out, err := printer.Render(data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "Showing") {
+		t.Error("should not show pagination when total is 0")
 	}
 }
