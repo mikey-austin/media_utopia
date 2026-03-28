@@ -12,3 +12,5 @@ integrations/home_assistant/mosquitto/log/
 /integrations/home_assistant/ha_config/www/
 /.cache/
 /.mud/
+integrations/home_assistant/mud_config/music/
+integrations/home_assistant/mud_config/playlists/
