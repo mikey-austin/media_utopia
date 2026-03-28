@@ -19,6 +19,11 @@ var (
 	reFeaturing        = regexp.MustCompile(`\s*(feat\.|ft\.|featuring)\s+.+$`)
 	reEditionParen     = regexp.MustCompile(`\s*\((Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\)\s*$`)
 	reEditionBracket   = regexp.MustCompile(`\s*\[(Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\]\s*$`)
+	reHQ               = regexp.MustCompile(`\s*[\(\[](HQ|HD|4K)[\)\]]\s*$`)
+	reLive             = regexp.MustCompile(`\s*[\(\[](Live)[\)\]]\s*$`)
+	reExplicit         = regexp.MustCompile(`\s*[\(\[](Explicit|Clean)[\)\]]\s*$`)
+	reUnderscore       = regexp.MustCompile(`_+`)
+	reDiscNumber       = regexp.MustCompile(`\s*[\(\[]?(?:Disc|CD)\s*\d+[\)\]]?\s*$`)
 )
 
 // RepairPolicy controls how aggressively metadata is repaired.
@@ -98,10 +103,10 @@ func parseFilename(filename string) RepairResult {
 	result := RepairResult{}
 
 	// Remove extension and path
-	name := strings.TrimSuffix(filename, ".mp3")
-	name = strings.TrimSuffix(name, ".flac")
-	name = strings.TrimSuffix(name, ".m4a")
-	name = strings.TrimSuffix(name, ".ogg")
+	name := filename
+	for _, ext := range []string{".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".wma", ".aac", ".aiff", ".alac", ".ape", ".wv"} {
+		name = strings.TrimSuffix(name, ext)
+	}
 
 	// Common patterns:
 	// "Artist - Title"
@@ -109,6 +114,22 @@ func parseFilename(filename string) RepairResult {
 	// "01. Title"
 	// "Artist - Album - Title"
 	// "01 Artist - Title"
+
+	// Pattern: "Artist - Album - Title" (3 parts with hyphens)
+	if parts := strings.SplitN(name, " - ", 3); len(parts) == 3 {
+		first := strings.TrimSpace(parts[0])
+		if isTrackNumber(first) {
+			// "01 - Artist - Title"
+			result.Artists = []string{strings.TrimSpace(parts[1])}
+			result.Title = strings.TrimSpace(parts[2])
+		} else {
+			// "Artist - Album - Title"
+			result.Artists = []string{first}
+			result.Album = strings.TrimSpace(parts[1])
+			result.Title = strings.TrimSpace(parts[2])
+		}
+		return result
+	}
 
 	// Pattern: "Artist - Title"
 	if parts := strings.SplitN(name, " - ", 2); len(parts) == 2 {
@@ -148,11 +169,15 @@ func isTrackNumber(s string) bool {
 
 func cleanTitle(title string) string {
 	title = strings.TrimSpace(title)
+	title = reUnderscore.ReplaceAllString(title, " ")
 	// Remove common suffixes
 	title = reOfficialParen.ReplaceAllString(title, "")
 	title = reOfficialBracket.ReplaceAllString(title, "")
 	title = reLyricsParen.ReplaceAllString(title, "")
 	title = reLyricsBracket.ReplaceAllString(title, "")
+	title = reHQ.ReplaceAllString(title, "")
+	title = reLive.ReplaceAllString(title, "")
+	title = reExplicit.ReplaceAllString(title, "")
 	return strings.TrimSpace(title)
 }
 
@@ -165,9 +190,11 @@ func cleanArtist(artist string) string {
 
 func cleanAlbum(album string) string {
 	album = strings.TrimSpace(album)
+	album = reUnderscore.ReplaceAllString(album, " ")
 	// Remove common edition suffixes
 	album = reEditionParen.ReplaceAllString(album, "")
 	album = reEditionBracket.ReplaceAllString(album, "")
+	album = reDiscNumber.ReplaceAllString(album, "")
 	return strings.TrimSpace(album)
 }
 
@@ -292,6 +319,23 @@ func (d *DuplicateIndex) Original(itemID string) string {
 		return itemID
 	}
 	return ids[0]
+}
+
+// BestItem returns the item ID with the best quality from a duplicate group.
+// Prefers: higher bitrate > larger file > first occurrence.
+func (d *DuplicateIndex) BestItem(ids []string, sizeMap map[string]int64) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	best := ids[0]
+	bestSize := sizeMap[best]
+	for _, id := range ids[1:] {
+		if sizeMap[id] > bestSize {
+			best = id
+			bestSize = sizeMap[id]
+		}
+	}
+	return best
 }
 
 // computeFileHash computes a partial hash of a file for deduplication.
