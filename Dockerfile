@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-dev \
     libgstreamer1.0-dev \
     libupnp-dev \
+    libchromaprint-dev \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
  && rm -rf /var/lib/apt/lists/*
@@ -49,6 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-alsa \
     gstreamer1.0-tools \
     gstreamer1.0-pipewire \
+    libchromaprint1 \
     alsa-utils \
     libupnp17t64 \
     libasound2t64 \

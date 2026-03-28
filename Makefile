@@ -19,6 +19,13 @@ fmt:
 integration:
 	GOCACHE=$(GOCACHE) go test -count=1 -v -tags=integration ./...
 
+docker:
+	docker build --target mud --build-arg BUILD_TAGS="upnp gstreamer chromaprint" \
+		-t $(REGISTRY)/mud:$(DATE_TAG)-full .
+
+docker-push: docker
+	docker push $(REGISTRY)/mud:$(DATE_TAG)-full
+
 docker-library:
 	docker build --target mud-library --build-arg BUILD_TAGS="" --build-arg CGO=0 \
 		-t $(REGISTRY)/mud-library:$(DATE_TAG)-nogst-noupnp .
