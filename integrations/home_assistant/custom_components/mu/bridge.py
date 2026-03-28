@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
@@ -80,15 +81,15 @@ class MudBridge:
 
         self.reply_topic = f"{self.topic_base}/reply/ha-{uuid.uuid4().hex}"
         self._pending: dict[str, asyncio.Future] = {}
-        self._unsubscribes: list[callable] = []
+        self._unsubscribes: list[Callable] = []
         self._playlist_task: asyncio.Task | None = None
         self._discovery_topics: set[str] = set()
         self._discovery_store = Store(hass, 1, f"{DOMAIN}_discovery_topics")
 
         self._renderers: dict[str, dict[str, Any]] = {}
         self._renderer_topics: dict[str, dict[str, str]] = {}
-        self._renderer_listeners: list[callable] = []
-        self._renderer_state_listeners: list[callable] = []
+        self._renderer_listeners: list[Callable] = []
+        self._renderer_state_listeners: list[Callable] = []
         self._metadata_cache: dict[str, dict[str, Any]] = {}
         self._metadata_inflight: set[str] = set()
         self._metadata_failures: dict[str, float] = {}
@@ -100,12 +101,12 @@ class MudBridge:
         self._playlists: dict[str, dict[str, Any]] = {}
         self._leases: dict[str, Lease] = {}
         self._snapshot_names: dict[str, str] = {}
-        self._playlist_listeners: list[callable] = []
+        self._playlist_listeners: list[Callable] = []
         self._zone_controllers: dict[str, dict[str, Any]] = {}
-        self._zone_controller_listeners: list[callable] = []
+        self._zone_controller_listeners: list[Callable] = []
         self._zones: dict[str, dict[str, Any]] = {}
-        self._zone_listeners: list[callable] = []
-        self._zone_state_listeners: list[callable] = []
+        self._zone_listeners: list[Callable] = []
+        self._zone_state_listeners: list[Callable] = []
         self._image_proxy_url = _image_proxy_url
 
     async def async_start(self) -> None:
@@ -184,12 +185,6 @@ class MudBridge:
             playlist_id = await self._resolve_playlist_id(playlist)
             if playlist_id is None:
                 return
-            body = {
-                "playlistServerId": self._playlist_server["nodeId"],
-                "playlistId": playlist_id,
-                "mode": mode,
-                "resolve": resolve,
-            }
             await self.async_load_playlist(renderer_id, playlist_id, mode, resolve)
 
         async def _clear_queue(call):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -136,7 +137,7 @@ async def ws_renderer_state(
         "session": {
             "owned": session.get("owner") == bridge.identity,
             "owner": session.get("owner", ""),
-            "expires_in_s": max(0, (session.get("leaseExpiresAt") or 0) - int(__import__("time").time())),
+            "expires_in_s": max(0, int(session.get("leaseExpiresAt") or 0) - int(time.time())),
         },
         "playback": {
             "status": playback.get("status", "idle"),
@@ -185,11 +186,10 @@ async def ws_lease_status(
     renderer_id = msg["renderer_id"]
     state = bridge.get_renderer_state(renderer_id)
     session = (state or {}).get("session") or {}
-    import time
     result = {
         "owned": session.get("owner") == bridge.identity,
         "owner": session.get("owner", ""),
-        "expires_in_s": max(0, (session.get("leaseExpiresAt") or 0) - int(time.time())),
+        "expires_in_s": max(0, int(session.get("leaseExpiresAt") or 0) - int(time.time())),
     }
     connection.send_result(msg["id"], result)
 
