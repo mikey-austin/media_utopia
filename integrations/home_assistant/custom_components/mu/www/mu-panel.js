@@ -206,8 +206,9 @@ const styles = css`
     justify-content: center;
   }
 
-  .queue-item-art svg, .browser-item-art svg { width: 16px; height: 16px; opacity: 0.4; }
+  .queue-item-art svg, .browser-item-art svg, .browser-item-icon svg { width: 16px; height: 16px; opacity: 0.4; }
   .browser-item-art { width: 36px; height: 36px; }
+  .browser-item-icon { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--mu-secondary); }
 
   .queue-item-info, .browser-item-info { flex: 1; min-width: 0; overflow: hidden; }
 
@@ -846,6 +847,9 @@ class MuPanel extends LitElement {
     _createPlaylistName: { state: true },
     queueLoading: { state: true },
     volumeOverlay: { state: true },
+    _renamingPlaylistId: { state: true },
+    _renamePlaylistName: { state: true },
+    _pendingDelete: { state: true },
   };
 
   constructor() {
@@ -885,6 +889,9 @@ class MuPanel extends LitElement {
     this._createPlaylistName = '';
     this.queueLoading = false;
     this.volumeOverlay = null;
+    this._renamingPlaylistId = null;
+    this._renamePlaylistName = '';
+    this._pendingDelete = null;
     this._volumeOverlayTimer = null;
     this._refreshInterval = null;
     this._localSeekPos = null;
@@ -1943,6 +1950,65 @@ class MuPanel extends LitElement {
     }
   }
 
+  async _loadPlaylist(playlistId, mode = 'replace') {
+    if (!this.selectedRenderer) return;
+    this.queueLoading = true;
+    try {
+      await this._callWS('mu/queue_load_playlist', {
+        renderer_id: this.selectedRenderer,
+        playlist_id: playlistId,
+        mode,
+      });
+      await this._loadQueue();
+      this._showToast(mode === 'replace' ? 'Playlist loaded' : 'Playlist added to queue');
+    } finally {
+      this.queueLoading = false;
+    }
+  }
+
+  _startRenamePlaylist(playlistId, currentName) {
+    this._renamingPlaylistId = playlistId;
+    this._renamePlaylistName = currentName;
+    this.requestUpdate();
+  }
+
+  async _confirmRenamePlaylist() {
+    const name = this._renamePlaylistName?.trim();
+    if (!name) return;
+    const id = this._renamingPlaylistId;
+    this._renamingPlaylistId = null;
+    await this._callWS('mu/playlist_rename', { playlist_id: id, name });
+    await this._loadPlaylists();
+    this._showToast('Playlist renamed');
+  }
+
+  _cancelRenamePlaylist() {
+    this._renamingPlaylistId = null;
+    this.requestUpdate();
+  }
+
+  _startDelete(type, id) {
+    this._pendingDelete = { type, id };
+    this.requestUpdate();
+    // Auto-cancel after 3 seconds
+    setTimeout(() => {
+      if (this._pendingDelete?.id === id) {
+        this._pendingDelete = null;
+        this.requestUpdate();
+      }
+    }, 3000);
+  }
+
+  async _confirmDelete() {
+    const { type, id } = this._pendingDelete || {};
+    this._pendingDelete = null;
+    if (type === 'playlist') {
+      await this._deletePlaylist(id);
+    } else if (type === 'snapshot') {
+      await this._deleteSnapshot(id);
+    }
+  }
+
   _renderPlaylistsTab() {
     return html`
       ${this.playlistServers.length > 1 ? html`
@@ -1972,13 +2038,30 @@ class MuPanel extends LitElement {
       ${!this.playlists.length ? html`<div class="empty">No playlists</div>` : ''}
       ${this.playlists.map(pl => html`
         <div class="browser-item">
-          <div class="browser-item-art">${icons.playlist}</div>
-          <div class="browser-item-info"><div class="browser-item-title">${pl.name}</div><div class="browser-item-subtitle">${pl.size || 0} track${(pl.size || 0) !== 1 ? 's' : ''}</div></div>
-          <div class="browser-item-actions" style="opacity:1">
-            <button class="action-btn" @click=${() => this._loadPlaylistToQueue(pl.playlistId, 'replace')}>▶</button>
-            <button class="action-btn secondary" @click=${() => this._loadPlaylistToQueue(pl.playlistId, 'append')}>+</button>
-            <button class="icon-btn" @click=${() => this._deletePlaylist(pl.playlistId)} title="Delete">${icons.close}</button>
-          </div>
+          <div class="browser-item-icon">${icons.playlist || icons.music}</div>
+          ${this._renamingPlaylistId === pl.playlistId ? html`
+            <input type="text" .value=${this._renamePlaylistName}
+              @input=${e => this._renamePlaylistName = e.target.value}
+              @keydown=${e => { if(e.key==='Enter') this._confirmRenamePlaylist(); if(e.key==='Escape') this._cancelRenamePlaylist(); }}
+              style="background:var(--primary-background-color);color:var(--primary-text-color);border:1px solid var(--mu-border);border-radius:4px;padding:3px 6px;font-size:13px;flex:1"
+            />
+            <button class="action-btn" @click=${() => this._confirmRenamePlaylist()}>&#10003;</button>
+            <button class="action-btn secondary" @click=${() => this._cancelRenamePlaylist()}>&#10005;</button>
+          ` : html`
+            <div class="browser-item-info" @dblclick=${() => this._startRenamePlaylist(pl.playlistId, pl.name)}>
+              <div class="browser-item-title">${pl.name}</div>
+              <div class="browser-item-subtitle">${pl.size || 0} track${(pl.size || 0) !== 1 ? 's' : ''}</div>
+            </div>
+            <div class="browser-item-actions" style="opacity:1">
+              <button class="action-btn" @click=${e => { e.stopPropagation(); this._loadPlaylist(pl.playlistId, 'replace'); }} title="Play">&#9654;</button>
+              <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._loadPlaylist(pl.playlistId, 'append'); }} title="Add to queue">+</button>
+              ${this._pendingDelete?.id === pl.playlistId ? html`
+                <button class="action-btn" style="color:#f44336" @click=${e => { e.stopPropagation(); this._confirmDelete(); }}>Confirm?</button>
+              ` : html`
+                <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._startDelete('playlist', pl.playlistId); }} title="Delete">&#128465;</button>
+              `}
+            </div>
+          `}
         </div>
       `)}
     </div>`;
@@ -1999,7 +2082,7 @@ class MuPanel extends LitElement {
         ${!this.snapshots.length ? html`<div class="empty">No snapshots</div>` : ''}
         ${this.snapshots.map(s => html`
           <div class="browser-item">
-            <div class="browser-item-art">${icons.camera}</div>
+            <div class="browser-item-icon">${icons.camera}</div>
             <div class="browser-item-info"><div class="browser-item-title">${s.name}</div></div>
             <div class="browser-item-actions" style="opacity:1">
               ${this._createPlaylistSnapshotId === s.snapshotId ? html`
@@ -2008,11 +2091,15 @@ class MuPanel extends LitElement {
                   @keydown=${e => e.key === 'Enter' && this._confirmCreatePlaylistFromSnapshot()}
                   placeholder="Playlist name..." style="background:var(--primary-background-color);color:var(--primary-text-color);border:1px solid var(--mu-border);border-radius:4px;padding:3px 6px;font-size:12px;width:120px" />
                 <button class="action-btn" @click=${() => this._confirmCreatePlaylistFromSnapshot()}>OK</button>
-                <button class="action-btn secondary" @click=${() => this._cancelCreatePlaylistFromSnapshot()}>✕</button>
+                <button class="action-btn secondary" @click=${() => this._cancelCreatePlaylistFromSnapshot()}>&#10005;</button>
               ` : html`
-                <button class="action-btn" @click=${() => this._loadSnapshotToQueue(s.snapshotId)} title="Restore to queue">▶</button>
-                <button class="action-btn secondary" @click=${() => this._startCreatePlaylistFromSnapshot(s.snapshotId, s.name)} title="Create playlist">📋</button>
-                <button class="icon-btn" @click=${() => this._deleteSnapshot(s.snapshotId)} title="Delete">${icons.close}</button>
+                <button class="action-btn" @click=${e => { e.stopPropagation(); this._loadSnapshotToQueue(s.snapshotId); }} title="Restore to queue">&#9654;</button>
+                <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._startCreatePlaylistFromSnapshot(s.snapshotId, s.name); }} title="Create playlist">&#128203;</button>
+                ${this._pendingDelete?.id === s.snapshotId ? html`
+                  <button class="action-btn" style="color:#f44336" @click=${e => { e.stopPropagation(); this._confirmDelete(); }}>Confirm?</button>
+                ` : html`
+                  <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._startDelete('snapshot', s.snapshotId); }} title="Delete">&#128465;</button>
+                `}
               `}
             </div>
           </div>
