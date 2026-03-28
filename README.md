@@ -1,122 +1,98 @@
-![Media Utopia](assets/mu_logo_dark_green_bg.png)
+# Media Utopia
 
-# Media Utopia (`mu`)
+A boringly reliable media control plane for the home.
 
-[![CI](https://github.com/mikey-austin/media_utopia/actions/workflows/ci.yml/badge.svg)](https://github.com/mikey-austin/media_utopia/actions/workflows/ci.yml)
+Media Utopia connects renderers (speakers), libraries (music collections), and
+controllers (Home Assistant, CLI) over MQTT, with HTTP for media streaming.
 
-**無 — nothing in the way.**
-Media Utopia is a homelab-first media control protocol and reference implementation designed to replace shaky legacy stacks (UPnP/DLNA control plane quirks, MPD client sync pain, proprietary casting silos) with a small, observable core:
+## Features
 
-- **Control plane:** MQTT (commands, state, events)
-- **Data plane:** HTTP (media streaming, artwork)
-- **Primary UI:** Home Assistant (first-class, reference UI)
-- **Reference CLI:** `mu` (think `mpc`, but lease-aware and deterministic)
-- **Bridges over rewrites:** integrate with UPnP, Jellyfin, Kodi via adapters
+- **Multiple renderers**: GStreamer, Kodi, VLC, UPnP/DLNA
+- **Multiple libraries**: filesystem, Jellyfin, UPnP, podcast, go2rtc
+- **Queue management**: add, remove, reorder, shuffle, repeat, snapshots
+- **Playlist persistence**: durable playlists and queue snapshots
+- **Home Assistant integration**: media player entities, custom panel, automations
+- **Semantic search**: AI-powered search with MusicBrainz/Discogs enrichment
+- **Multi-room audio**: Snapcast zone controller support
+- **CLI client**: full-featured `mu` command-line tool
 
-The goal is a system that is *boringly reliable*: explicit state, explicit ownership, minimal surface area, no hidden heuristics.
+## Quick Start
 
----
+See the [Getting Started Guide](docs/getting-started.md) for Docker Compose setup.
 
-## Status
+## Architecture
 
-This repository contains:
-- Protocol specification drafts (`docs/spec/`)
-- Design rationale and decisions (`docs/design/`)
-- (Planned) reference implementations:
-  - playlist server
-  - renderer bridges (UPnP, Kodi, VLC)
-  - library bridges (UPnP, Jellyfin, Podcasts, go2rtc)
-  - `mu` CLI
-  - Home Assistant MQTT Discovery mapping
+```
+Controller (CLI/HA) → MQTT Broker → Renderer (GStreamer/Kodi/VLC)
+                         ↕                    ↕
+                    Library (fs/Jellyfin)  HTTP streams
+                         ↕
+                   Playlist Server
+```
+
+- **Control plane**: MQTT (commands, state, presence, events)
+- **Data plane**: HTTP (media streams, artwork)
+- **Lease model**: mutations require exclusive session ownership
+
+See [Architecture Overview](docs/design/architecture.md) for details.
+
+## Building
+
+```bash
+# Full build (with GStreamer + UPnP)
+go build -tags "gstreamer upnp" ./cmd/mud
+go build ./cmd/mu
+
+# Library-only build (no CGO)
+CGO_ENABLED=0 go build ./cmd/mud
+go build ./cmd/mu
+
+# Docker
+docker build --target mud -t mud .
+docker build --target mu -t mu .
+```
+
+## Testing
+
+```bash
+go test ./...
+go test -tags integration ./...  # integration tests (needs MQTT)
+```
 
 ## Documentation
 
-- Docs index: `docs/README.md`
-- Spec overview: `docs/spec/overview.md`
-- Message formats: `docs/spec/messages.md`
-- Design motivation: `docs/design/motivation.md`
-- Design decisions: `docs/design/decisions.md`
-- Architecture overview: `docs/design/architecture.md`
-- Integrations: `docs/design/integrations.md`
-- Roadmap: `docs/design/roadmap.md`
+- [Getting Started](docs/getting-started.md)
+- [Protocol Specification](docs/spec/messages.md)
+- [CLI Reference](docs/spec/cli.md)
+- [Architecture](docs/design/architecture.md)
+- [All Documentation](docs/README.md)
 
-## Development
+## Project Structure
 
-Build:
-
-```bash
-go build -o ./bin/mu ./cmd/mu
-go build -o ./bin/mud ./cmd/mud
 ```
-
-Optional build tags:
-
-- `upnp`: enable UPnP library + renderer bridges (requires `libupnp` dev headers). Example:
-
-  ```bash
-  go build -tags "upnp gstreamer" -o ./bin/mud ./cmd/mud
-  ```
-
-- `gstreamer`: enable the GStreamer renderer bridge.
-
-Test:
-
-```bash
-GOCACHE=/home/mikey/Workspace/media_utopia/.gocache go test ./...
+cmd/mu/             CLI client
+cmd/mud/            Daemon (multi-module server)
+pkg/mu/             Wire protocol types
+internal/core/      Service layer (CLI orchestration)
+internal/ports/     Interface definitions
+internal/adapters/  MQTT, config, output adapters
+internal/modules/   Module implementations
+  ├── playlist/           Playlist server
+  ├── renderer_gstreamer/ GStreamer renderer
+  ├── renderer_kodi/      Kodi renderer
+  ├── renderer_vlc/       VLC renderer
+  ├── renderer_upnp/      UPnP renderer bridge
+  ├── fs_library/         Filesystem library
+  ├── jellyfin_library/   Jellyfin library bridge
+  ├── podcast_library/    Podcast/RSS library
+  ├── go2rtc_library/     go2rtc camera library
+  ├── zone_snapcast/      Snapcast zone controller
+  └── embedded_mqtt/      Embedded MQTT broker
+integrations/
+  └── home_assistant/     HA custom component + panel
+docs/                     Specifications and design
 ```
-
-Or use the Make targets:
-
-```bash
-make build
-make test
-make fmt
-make integration
-```
-
-Integration tests (embedded MQTT + `mud` + `mu`) run via `make integration`.
-Set `MU_INTEGRATION_DEBUG=1` for verbose integration logs.
-
-## Docker
-
-Build the `mud` image:
-
-```bash
-docker build -t media-utopia-mud --target mud .
-```
-
-Run with a config file:
-
-```bash
-docker run --rm -p 1883:1883 \\
-  -v $PWD/mud.toml:/etc/mud/mud.toml:ro \\
-  -v $PWD/mud-data:/var/lib/mud \\
-  media-utopia-mud -config /etc/mud/mud.toml
-```
-
-Build the `mu` CLI image:
-
-```bash
-docker build -t media-utopia-mu --target mu .
-```
-
-Compose example:
-
-```bash
-docker compose up --build
-```
-
-Note: the `mud` container includes the GStreamer renderer and required runtime libraries by default.
-
-## Contributing / Next Steps
-
-If you’re implementing:
-1) Bring up MQTT broker (Mosquitto) and define ACLs
-2) Implement playlist server (required v1)
-3) Implement UPnP renderer bridge (unlocks existing renderers)
-4) Implement `mu` CLI command surface
-5) Add HA MQTT Discovery mapping
 
 ## License
 
-TBD
+See LICENSE file.
