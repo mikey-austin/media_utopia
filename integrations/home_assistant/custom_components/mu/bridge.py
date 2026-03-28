@@ -1743,15 +1743,29 @@ class MudBridge:
                 return []
             body = reply.get("body") or {}
             sources = body.get("sources") or []
+            if not sources:
+                return []
+            # Check if sources represent multiple tracks (container expansion)
+            # or multiple formats of the same track (alternative sources).
+            # If sources have distinct itemIds they are separate tracks;
+            # otherwise they are alternative sources for one item — use only
+            # the first.
+            distinct_ids = {s.get("itemId") for s in sources if s.get("itemId")}
+            is_container_expansion = len(distinct_ids) > 1
             entries = []
-            for source in sources:
-                # Use source's itemId if available for correct metadata lookup
-                # Otherwise fall back to original media_id (may be container for albums)
+            if is_container_expansion:
+                for source in sources:
+                    source_item_id = source.get("itemId")
+                    if source_item_id:
+                        ref_id = f"lib:{library_id}:{source_item_id}"
+                    else:
+                        ref_id = media_id
+                    entries.append({"ref": {"id": ref_id}, "resolved": source})
+            else:
+                # Single track — pick best source (first), ignore alternatives
+                source = sources[0]
                 source_item_id = source.get("itemId")
-                if source_item_id:
-                    ref_id = f"lib:{library_id}:{source_item_id}"
-                else:
-                    ref_id = media_id
+                ref_id = f"lib:{library_id}:{source_item_id}" if source_item_id else media_id
                 entries.append({"ref": {"id": ref_id}, "resolved": source})
             return entries
         return []
