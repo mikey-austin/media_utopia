@@ -1170,15 +1170,16 @@ class MudBridge:
         entries = []
         for item_id in items:
             resolved = await self._resolve_media_entries(item_id)
-            _LOGGER.debug(
-                "queue_add resolve %s -> %d entries", item_id, len(resolved)
+            _LOGGER.warning(
+                "DIAG queue_add resolve %s -> %d entries", item_id, len(resolved)
             )
             entries.extend(resolved)
-        _LOGGER.debug(
-            "queue_add node=%s mode=%s items=%d entries=%d",
+        _LOGGER.warning(
+            "DIAG queue_add total: node=%s mode=%s items=%d entries=%d",
             node_id, mode, len(items), len(entries),
         )
         if not entries:
+            _LOGGER.warning("DIAG queue_add SKIPPED: no entries resolved")
             return False
 
         if mode == "replace":
@@ -1845,8 +1846,8 @@ class MudBridge:
             # Single track: sources share the same itemId or have none — use first only.
             distinct_ids = {s.get("itemId") for s in sources if s.get("itemId")}
             is_container = len(distinct_ids) > 1
-            _LOGGER.debug(
-                "resolve %s: %d sources, %d distinct itemIds, container=%s",
+            _LOGGER.warning(
+                "DIAG resolve %s: %d sources, %d distinct itemIds, container=%s",
                 media_id, len(sources), len(distinct_ids), is_container,
             )
             if is_container:
