@@ -2177,10 +2177,9 @@ func TestParseFilenameExtensions(t *testing.T) {
 		{"Artist - Title.flac", "Title", []string{"Artist"}},
 		{"Artist - Title.m4a", "Title", []string{"Artist"}},
 		{"Artist - Title.ogg", "Title", []string{"Artist"}},
-		// Non-standard extension should remain as part of the title
-		// because parseFilename only strips known extensions.
-		{"Artist - Title.wav", "Title.wav", []string{"Artist"}},
-		{"Artist - Title.aac", "Title.aac", []string{"Artist"}},
+		// Additional audio extensions are now stripped.
+		{"Artist - Title.wav", "Title", []string{"Artist"}},
+		{"Artist - Title.aac", "Title", []string{"Artist"}},
 		// No extension at all.
 		{"Artist - Title", "Title", []string{"Artist"}},
 		// Extension only, no dash pattern.
