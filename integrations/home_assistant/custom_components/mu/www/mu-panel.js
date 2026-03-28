@@ -845,6 +845,7 @@ class MuPanel extends LitElement {
     this._touchDragItem = null;
     this._touchDragStartY = 0;
     this._stateUnsubscribe = null;
+    this._searchDebounce = null;
   }
 
   connectedCallback() {
@@ -869,6 +870,7 @@ class MuPanel extends LitElement {
       this._stateUnsubscribe();
       this._stateUnsubscribe = null;
     }
+    if (this._searchDebounce) clearTimeout(this._searchDebounce);
     document.removeEventListener('keydown', this._boundKeydown);
     document.removeEventListener('mousemove', this._boundMouseMove);
     document.removeEventListener('mouseup', this._boundMouseUp);
@@ -1255,11 +1257,15 @@ class MuPanel extends LitElement {
   async _browseContainer(item) {
     if (item.isLibrary) {
       this.browserPath = [{ id: item.itemId, title: item.title, isLibrary: true }];
+      this.browserLoading = true;
+      this.browserItems = [];
       await this._loadBrowserItems(item.itemId, '');
     } else if (item.isContainer) {
       const libId = this.browserPath[0]?.id;
       if (!libId) return;
       this.browserPath = [...this.browserPath, { id: item.itemId, title: item.title }];
+      this.browserLoading = true;
+      this.browserItems = [];
       await this._loadBrowserItems(libId, item.itemId);
     }
   }
@@ -1436,8 +1442,19 @@ class MuPanel extends LitElement {
     this._loadBrowserItems(libId, item.itemId);
   }
 
+  _onSearchInput(e) {
+    this.searchQuery = e.target.value;
+    if (this._searchDebounce) clearTimeout(this._searchDebounce);
+    if (this.searchQuery.trim().length >= 2) {
+      this._searchDebounce = setTimeout(() => this._performSearch(), 500);
+    }
+  }
+
   _onSearchKeydown(e) {
-    if (e.key === 'Enter') this._performSearch();
+    if (e.key === 'Enter') {
+      if (this._searchDebounce) clearTimeout(this._searchDebounce);
+      this._performSearch();
+    }
   }
 
   async _switchTab(tab) {
@@ -1603,7 +1620,7 @@ class MuPanel extends LitElement {
       <div class="search-bar">
         <input class="search-input" type="text" placeholder="Search library..."
           .value=${this.searchQuery}
-          @input=${e => this.searchQuery = e.target.value}
+          @input=${e => this._onSearchInput(e)}
           @keydown=${e => this._onSearchKeydown(e)} />
         ${this.libraries.length > 1 ? html`
           <select class="search-library-select"
