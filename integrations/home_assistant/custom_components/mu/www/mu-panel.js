@@ -789,6 +789,9 @@ class MuPanel extends LitElement {
     searchLoading: { state: true },
     searchTotal: { state: true },
     searchLibraryId: { state: true },
+    _snapshotSaving: { state: true },
+    _createPlaylistSnapshotId: { state: true },
+    _createPlaylistName: { state: true },
   };
 
   constructor() {
@@ -822,6 +825,9 @@ class MuPanel extends LitElement {
     this.searchLoading = false;
     this.searchTotal = 0;
     this.searchLibraryId = '';
+    this._snapshotSaving = false;
+    this._createPlaylistSnapshotId = null;
+    this._createPlaylistName = '';
     this._refreshInterval = null;
     this._localSeekPos = null;
     this._localVolume = null;
@@ -905,7 +911,6 @@ class MuPanel extends LitElement {
       this.rendererState = r;
       this.leaseOwned = r.session?.owned || false;
       if (r.queue?.revision !== oldRev) {
-        console.log(`Queue revision changed: ${oldRev} -> ${r.queue?.revision}`);
         await this._loadQueue();
       }
     }
@@ -926,7 +931,6 @@ class MuPanel extends LitElement {
   async _loadSnapshots() { const r = await this._callWS('mu/snapshots_list'); if (r) this.snapshots = r; }
   async _loadPlaylistServers() {
     const r = await this._callWS('mu/playlist_servers_list');
-    console.log('Playlist servers:', r);
     if (r) {
       this.playlistServers = r;
       const selected = r.find(s => s.selected);
@@ -1340,9 +1344,16 @@ class MuPanel extends LitElement {
 
   async _saveSnapshot() {
     if (!this.selectedRenderer) return;
-    const name = prompt('Snapshot name:');
-    if (!name?.trim()) return;
-    const r = await this._callWS('mu/snapshot_save', { renderer_id: this.selectedRenderer, name: name.trim() });
+    this._snapshotSaving = true;
+    this.requestUpdate();
+  }
+
+  async _confirmSaveSnapshot() {
+    const input = this.shadowRoot.querySelector('.snapshot-name-input');
+    const name = input?.value?.trim();
+    if (!name) { this._showToast('Enter a name'); return; }
+    this._snapshotSaving = false;
+    const r = await this._callWS('mu/snapshot_save', { renderer_id: this.selectedRenderer, name });
     if (r?.success) {
       this._showToast('Saved');
       await this._loadSnapshots();
@@ -1351,27 +1362,46 @@ class MuPanel extends LitElement {
     }
   }
 
+  _cancelSaveSnapshot() {
+    this._snapshotSaving = false;
+    this.requestUpdate();
+  }
+
   async _deleteSnapshot(snapshotId) {
-    if (!confirm('Delete this snapshot?')) return;
     const r = await this._callWS('mu/snapshot_delete', { snapshot_id: snapshotId });
     if (r?.success) {
-      this._showToast('Deleted');
+      this._showToast('Snapshot deleted');
       await this._loadSnapshots();
     } else {
       this._showToast('Failed to delete');
     }
   }
 
-  async _createPlaylistFromSnapshot(snapshotId, snapshotName) {
-    const name = prompt('Playlist name:', snapshotName);
-    if (!name?.trim()) return;
-    const r = await this._callWS('mu/playlist_from_snapshot', { snapshot_id: snapshotId, name: name.trim() });
+  _startCreatePlaylistFromSnapshot(snapshotId, snapshotName) {
+    this._createPlaylistSnapshotId = snapshotId;
+    this._createPlaylistName = snapshotName || '';
+    this.requestUpdate();
+  }
+
+  async _confirmCreatePlaylistFromSnapshot() {
+    const name = this._createPlaylistName?.trim();
+    if (!name) { this._showToast('Enter a name'); return; }
+    const snapshotId = this._createPlaylistSnapshotId;
+    this._createPlaylistSnapshotId = null;
+    this._createPlaylistName = '';
+    const r = await this._callWS('mu/playlist_from_snapshot', { snapshot_id: snapshotId, name });
     if (r?.success) {
       this._showToast('Playlist created');
       await this._loadPlaylists();
     } else {
       this._showToast('Failed to create playlist');
     }
+  }
+
+  _cancelCreatePlaylistFromSnapshot() {
+    this._createPlaylistSnapshotId = null;
+    this._createPlaylistName = '';
+    this.requestUpdate();
   }
 
   _onDragStart(e, i) { this.dragIndex = i; e.dataTransfer.effectAllowed = 'move'; }
@@ -1626,10 +1656,9 @@ class MuPanel extends LitElement {
   }
 
   async _deletePlaylist(playlistId) {
-    if (!confirm('Delete this playlist?')) return;
     const r = await this._callWS('mu/playlist_delete', { playlist_id: playlistId });
     if (r?.success) {
-      this._showToast('Deleted');
+      this._showToast('Playlist deleted');
       await this._loadPlaylists();
     } else {
       this._showToast('Failed to delete');
@@ -1664,7 +1693,15 @@ class MuPanel extends LitElement {
 
   _renderSnapshotsTab() {
     return html`
-      <div class="pane-header"><span class="pane-title">Snapshots</span><button class="action-btn" @click=${() => this._saveSnapshot()}>Save</button></div>
+      <div class="pane-header"><span class="pane-title">Snapshots</span>
+        ${this._snapshotSaving ? html`
+          <input class="snapshot-name-input" type="text" placeholder="Snapshot name..." style="background:var(--primary-background-color);color:var(--primary-text-color);border:1px solid var(--mu-border);border-radius:4px;padding:4px 8px;font-size:13px;width:160px" @keydown=${e => e.key === 'Enter' && this._confirmSaveSnapshot()} />
+          <button class="action-btn" @click=${() => this._confirmSaveSnapshot()}>OK</button>
+          <button class="action-btn secondary" @click=${() => this._cancelSaveSnapshot()}>Cancel</button>
+        ` : html`
+          <button class="action-btn" @click=${() => this._saveSnapshot()}>Save</button>
+        `}
+      </div>
       <div class="browser-list">
         ${!this.snapshots.length ? html`<div class="empty">No snapshots</div>` : ''}
         ${this.snapshots.map(s => html`
@@ -1672,9 +1709,18 @@ class MuPanel extends LitElement {
             <div class="browser-item-art">${icons.camera}</div>
             <div class="browser-item-info"><div class="browser-item-title">${s.name}</div></div>
             <div class="browser-item-actions" style="opacity:1">
-              <button class="action-btn" @click=${() => this._loadSnapshotToQueue(s.snapshotId)} title="Restore to queue">▶</button>
-              <button class="action-btn secondary" @click=${() => this._createPlaylistFromSnapshot(s.snapshotId, s.name)} title="Create playlist">📋</button>
-              <button class="icon-btn" @click=${() => this._deleteSnapshot(s.snapshotId)} title="Delete">${icons.close}</button>
+              ${this._createPlaylistSnapshotId === s.snapshotId ? html`
+                <input type="text" .value=${this._createPlaylistName}
+                  @input=${e => this._createPlaylistName = e.target.value}
+                  @keydown=${e => e.key === 'Enter' && this._confirmCreatePlaylistFromSnapshot()}
+                  placeholder="Playlist name..." style="background:var(--primary-background-color);color:var(--primary-text-color);border:1px solid var(--mu-border);border-radius:4px;padding:3px 6px;font-size:12px;width:120px" />
+                <button class="action-btn" @click=${() => this._confirmCreatePlaylistFromSnapshot()}>OK</button>
+                <button class="action-btn secondary" @click=${() => this._cancelCreatePlaylistFromSnapshot()}>✕</button>
+              ` : html`
+                <button class="action-btn" @click=${() => this._loadSnapshotToQueue(s.snapshotId)} title="Restore to queue">▶</button>
+                <button class="action-btn secondary" @click=${() => this._startCreatePlaylistFromSnapshot(s.snapshotId, s.name)} title="Create playlist">📋</button>
+                <button class="icon-btn" @click=${() => this._deleteSnapshot(s.snapshotId)} title="Delete">${icons.close}</button>
+              `}
             </div>
           </div>
         `)}
@@ -1687,8 +1733,6 @@ class MuPanel extends LitElement {
       this._callWS('mu/zone_controllers_list'),
       this._callWS('mu/zones_list'),
     ]);
-    console.log('Zone controllers:', controllers);
-    console.log('Zones:', zones);
     this.zoneControllers = controllers || [];
     this.zones = zones || [];
   }
