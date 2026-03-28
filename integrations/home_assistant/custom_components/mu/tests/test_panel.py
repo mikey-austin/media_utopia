@@ -91,3 +91,55 @@ def test_panel_no_prompt_or_confirm():
             assert False, f"Found blocking prompt() on line {i}: {stripped}"
         if re.search(r'\bconfirm\s*\(', stripped):
             assert False, f"Found blocking confirm() on line {i}: {stripped}"
+
+
+def test_panel_has_playlist_load():
+    """Panel should have _loadPlaylist method."""
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'www', 'mu-panel.js')
+    with open(path) as f:
+        content = f.read()
+    assert '_loadPlaylist' in content
+
+
+def test_panel_has_delete_confirmation():
+    """Panel should have delete confirmation flow."""
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'www', 'mu-panel.js')
+    with open(path) as f:
+        content = f.read()
+    assert '_startDelete' in content
+    assert '_confirmDelete' in content
+    assert '_pendingDelete' in content
+
+
+def test_panel_has_rename_playlist():
+    """Panel should support inline playlist renaming."""
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'www', 'mu-panel.js')
+    with open(path) as f:
+        content = f.read()
+    assert '_startRenamePlaylist' in content
+    assert '_confirmRenamePlaylist' in content
+
+
+def test_panel_has_position_interpolation():
+    """Panel should interpolate position client-side."""
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'www', 'mu-panel.js')
+    with open(path) as f:
+        content = f.read()
+    assert '_interpolatePosition' in content
+    assert '_interpolatedPos' in content
+
+
+def test_panel_has_lease_guards():
+    """Panel should check lease before transport operations."""
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'www', 'mu-panel.js')
+    with open(path) as f:
+        content = f.read()
+    assert 'Acquire control first' in content
+
+
+def test_panel_has_queue_loading_state():
+    """Panel should show loading state during queue operations."""
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'www', 'mu-panel.js')
+    with open(path) as f:
+        content = f.read()
+    assert 'queueLoading' in content
