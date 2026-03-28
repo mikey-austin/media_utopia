@@ -1519,10 +1519,23 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		return nil, 0
 	}
 
+	start0 := time.Now()
+	var total int64
+	defer func() {
+		elapsed := time.Since(start0)
+		if elapsed > 100*time.Millisecond {
+			m.log.Warn("slow search",
+				zap.String("query", query),
+				zap.Duration("elapsed", elapsed),
+				zap.Int64("results", total))
+		}
+	}()
+
 	// Try semantic search first if embeddings are available
 	if m.embedProvider != nil && m.vectorIndex != nil {
 		semanticResults, semanticTotal := m.semanticSearch(query, start, count)
 		if len(semanticResults) > 0 {
+			total = semanticTotal
 			return semanticResults, semanticTotal
 		}
 	}
@@ -1533,8 +1546,8 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 	defer m.mu.RUnlock()
 
 	// Cap the number of collected matches to avoid unbounded allocation and
-	// sorting costs.  500 is well above any practical pagination window.
-	const maxSearchResults = 500
+	// sorting costs.  This should be well above any practical pagination window.
+	const maxSearchResults = 1000 // Increase from 500 to accommodate larger libraries
 
 	items := make([]libraryItem, 0)
 	for _, item := range m.index.Items {
@@ -1564,22 +1577,78 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 			break
 		}
 	}
-	// Sort using precomputed lowercase keys to avoid per-comparison allocations
-	type sortable struct {
-		item    libraryItem
-		sortKey string
+	// Score results by relevance instead of sorting alphabetically
+	type scoredItem struct {
+		item  libraryItem
+		score int
 	}
-	sortItems := make([]sortable, len(items))
+
+	scored := make([]scoredItem, len(items))
+	queryLower := strings.ToLower(query)
 	for i, it := range items {
-		sortItems[i] = sortable{item: it, sortKey: strings.ToLower(it.Name)}
+		s := 0
+		nameLower := strings.ToLower(it.Name)
+
+		// Exact name match (highest priority)
+		if nameLower == queryLower {
+			s += 100
+		} else if strings.HasPrefix(nameLower, queryLower) {
+			s += 80
+		}
+
+		// Check if all terms appear in the name/title
+		allInName := true
+		for _, term := range terms {
+			if !strings.Contains(nameLower, term) {
+				allInName = false
+				break
+			}
+		}
+		if allInName {
+			s += 50
+		}
+
+		// Check artist match
+		for _, artist := range it.Artists {
+			artistLower := strings.ToLower(artist)
+			for _, term := range terms {
+				if strings.Contains(artistLower, term) {
+					s += 20
+					break
+				}
+			}
+		}
+
+		// Check album match
+		if it.Album != "" {
+			albumLower := strings.ToLower(it.Album)
+			for _, term := range terms {
+				if strings.Contains(albumLower, term) {
+					s += 10
+					break
+				}
+			}
+		}
+
+		// Shorter names score higher (more relevant matches tend to be shorter)
+		if len(nameLower) < 30 {
+			s += 5
+		}
+
+		scored[i] = scoredItem{item: it, score: s}
 	}
-	sort.Slice(sortItems, func(i, j int) bool {
-		return sortItems[i].sortKey < sortItems[j].sortKey
+
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score // Higher score first
+		}
+		return strings.ToLower(scored[i].item.Name) < strings.ToLower(scored[j].item.Name)
 	})
-	for i, si := range sortItems {
+
+	for i, si := range scored {
 		items[i] = si.item
 	}
-	total := int64(len(items))
+	total = int64(len(items))
 	return paginate(items, start, count), total
 }
 
