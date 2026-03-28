@@ -86,6 +86,7 @@ func TestQueueLoadPlaylist(t *testing.T) {
 	module := &Module{
 		log:    zap.NewNop(),
 		client: client,
+		dedup:  mu.NewCommandDedup(128),
 		engine: engine,
 		config: Config{
 			NodeID:    "mu:renderer:test",
@@ -172,6 +173,7 @@ func TestQueueLoadSnapshotCommand(t *testing.T) {
 	module := &Module{
 		log:    zap.NewNop(),
 		client: client,
+		dedup:  mu.NewCommandDedup(128),
 		engine: engine,
 		config: Config{
 			NodeID:    "mu:renderer:test",
@@ -285,6 +287,7 @@ func TestLoadCommandErrorDoesNotCorruptState(t *testing.T) {
 	module := &Module{
 		log:    zap.NewNop(),
 		client: client,
+		dedup:  mu.NewCommandDedup(128),
 		engine: engine,
 		config: Config{
 			NodeID:    "mu:renderer:test",
