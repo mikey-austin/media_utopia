@@ -32,16 +32,20 @@ Each module implements a simple contract:
 
 Modules are registered with the supervisor and started only if enabled.
 
-Planned modules:
+Implemented modules:
 
-- `playlist`: playlist server (required for v1)
+- `playlist`: playlist server with durable playlists and snapshots
 - `renderer_gstreamer`: native renderer using GStreamer pipelines
 - `renderer_kodi`: Kodi renderer via JSON-RPC
 - `renderer_vlc`: VLC renderer via HTTP RC
-- `bridge_upnp_library`: UPnP library bridge
-- `bridge_jellyfin_library`: Jellyfin library bridge
+- `renderer_upnp`: UPnP/DLNA renderer bridge (auto-discovery)
+- `bridge_upnp_library`: UPnP media server library bridge
+- `bridge_jellyfin_library`: Jellyfin library bridge with caching
+- `fs_library`: filesystem library with metadata enrichment and semantic search
 - `podcast`: RSS/Podcast library module
-- `go2rtc`: go2rtc library module
+- `go2rtc`: go2rtc camera/RTSP library module
+- `zone_snapcast`: Snapcast multi-room zone controller
+- `embedded_mqtt`: embedded Mochi MQTT broker
 
 ## Configuration Model
 
@@ -83,7 +87,7 @@ key = "/etc/mud/key.pem"
 [modules.playlist]
 enabled = true
 name = "Office Playlists"
-provider = "plsrv"
+provider = "playlist"
 resource = "default"
 storage_path = "/var/lib/mud/playlists"
 
