@@ -289,3 +289,56 @@ def test_rewrite_artwork_url_for_browser():
     # Without a real HA instance, it should fall back to the proxy path
     assert "/api/mu/artwork" in result
     assert "url=" in result
+
+
+# ---------------------------------------------------------------------------
+# _cache_metadata
+# ---------------------------------------------------------------------------
+
+def test_cache_metadata_eviction():
+    """Test that _cache_metadata evicts old entries when cache is full."""
+    bridge = _make_bridge()
+    bridge._metadata_cache = {}
+    # Fill cache to just over limit
+    for i in range(10001):
+        bridge._metadata_cache[f"key-{i}"] = {"title": f"Track {i}"}
+    assert len(bridge._metadata_cache) == 10001
+    # Cache one more - should trigger eviction
+    bridge._cache_metadata("new-key", {"title": "New"})
+    assert len(bridge._metadata_cache) <= 10001 - 2000 + 1  # evicted 2000, added 1
+    assert "new-key" in bridge._metadata_cache
+    # Oldest keys should be evicted
+    assert "key-0" not in bridge._metadata_cache
+
+
+# ---------------------------------------------------------------------------
+# _resolve_renderer
+# ---------------------------------------------------------------------------
+
+def test_resolve_renderer_by_name():
+    """Test _resolve_renderer matches by name case-insensitively."""
+    bridge = _make_bridge()
+    bridge._renderers = {
+        "mu:renderer:gst:default": {"name": "Living Room"},
+        "mu:renderer:vlc:default": {"name": "Bedroom"},
+    }
+    assert bridge._resolve_renderer("mu:renderer:gst:default") == "mu:renderer:gst:default"
+    assert bridge._resolve_renderer("Living Room") == "mu:renderer:gst:default"
+    assert bridge._resolve_renderer("living room") == "mu:renderer:gst:default"
+    assert bridge._resolve_renderer("nonexistent") is None
+
+
+# ---------------------------------------------------------------------------
+# _resolve_library
+# ---------------------------------------------------------------------------
+
+def test_resolve_library_by_prefix():
+    """Test _resolve_library recognizes mu:library: prefix."""
+    bridge = _make_bridge()
+    bridge._libraries = {
+        "mu:library:jellyfin:default": {"name": "Jellyfin"},
+    }
+    assert bridge._resolve_library("mu:library:jellyfin:default") == "mu:library:jellyfin:default"
+    assert bridge._resolve_library("Jellyfin") == "mu:library:jellyfin:default"
+    assert bridge._resolve_library("jellyfin") == "mu:library:jellyfin:default"
+    assert bridge._resolve_library("nonexistent") is None
