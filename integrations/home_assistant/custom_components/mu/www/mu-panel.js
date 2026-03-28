@@ -731,6 +731,48 @@ const styles = css`
   }
 
   .search-bar .action-btn svg { width: 14px; height: 14px; vertical-align: middle; }
+
+  .eq-bars {
+    display: flex;
+    gap: 1px;
+    align-items: flex-end;
+    height: 14px;
+    width: 14px;
+    flex-shrink: 0;
+  }
+
+  .eq-bar {
+    width: 3px;
+    background: var(--mu-accent);
+    border-radius: 1px;
+    animation: eq 0.8s ease-in-out infinite alternate;
+  }
+
+  .eq-bar:nth-child(1) { height: 60%; animation-delay: -0.4s; }
+  .eq-bar:nth-child(2) { height: 100%; animation-delay: -0.2s; }
+  .eq-bar:nth-child(3) { height: 40%; animation-delay: -0.6s; }
+
+  .paused .eq-bar { animation-play-state: paused; }
+
+  @keyframes eq {
+    from { height: 20%; }
+    to { height: 100%; }
+  }
+
+  .volume-overlay {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0,0,0,0.8);
+    color: white;
+    padding: 16px 24px;
+    border-radius: 12px;
+    font-size: 24px;
+    font-weight: 500;
+    z-index: 200;
+    pointer-events: none;
+  }
 `;
 
 const icons = {
@@ -800,6 +842,7 @@ class MuPanel extends LitElement {
     _createPlaylistSnapshotId: { state: true },
     _createPlaylistName: { state: true },
     queueLoading: { state: true },
+    volumeOverlay: { state: true },
   };
 
   constructor() {
@@ -838,6 +881,8 @@ class MuPanel extends LitElement {
     this._createPlaylistSnapshotId = null;
     this._createPlaylistName = '';
     this.queueLoading = false;
+    this.volumeOverlay = null;
+    this._volumeOverlayTimer = null;
     this._refreshInterval = null;
     this._localSeekPos = null;
     this._localVolume = null;
@@ -1041,6 +1086,9 @@ class MuPanel extends LitElement {
     if (!this.rendererState?.playback) return;
     const vol = Math.max(0, Math.min(1, (this.rendererState.playback.volume || 0) + delta));
     this._localVolume = vol;
+    this.volumeOverlay = Math.round(vol * 100);
+    if (this._volumeOverlayTimer) clearTimeout(this._volumeOverlayTimer);
+    this._volumeOverlayTimer = setTimeout(() => { this.volumeOverlay = null; }, 1000);
     this.requestUpdate();
     this._callWS('mu/volume', { renderer_id: this.selectedRenderer, volume: vol });
   }
@@ -1593,6 +1641,7 @@ class MuPanel extends LitElement {
         ${this._renderQueue()}
       </div>
       ${this.toast ? html`<div class="toast">${this.toast}</div>` : ''}
+      ${this.volumeOverlay !== null ? html`<div class="volume-overlay">\u{1F50A} ${this.volumeOverlay}%</div>` : ''}
     `;
   }
 
@@ -2193,11 +2242,11 @@ class MuPanel extends LitElement {
         </div>
 
         <div class="transport">
-          <button class="transport-btn ${shuffle ? 'active' : ''}" @click=${this._toggleShuffle} ?disabled=${!this.leaseOwned} title="Shuffle">${icons.shuffle}</button>
-          <button class="transport-btn" @click=${() => this._transport('prev')} ?disabled=${!this.leaseOwned}>${icons.prev}</button>
-          <button class="transport-btn primary" @click=${() => this._transport('toggle')} ?disabled=${!this.leaseOwned}>${playing ? icons.pause : icons.play}</button>
-          <button class="transport-btn" @click=${() => this._transport('next')} ?disabled=${!this.leaseOwned}>${icons.next}</button>
-          <button class="transport-btn ${repeatMode !== 'off' ? 'active' : ''}" @click=${this._cycleRepeat} ?disabled=${!this.leaseOwned} title="Repeat: ${repeatMode}">${repeatMode === 'one' ? icons.repeatOne : icons.repeat}</button>
+          <button class="transport-btn ${shuffle ? 'active' : ''}" @click=${this._toggleShuffle} ?disabled=${!this.leaseOwned} title="Shuffle" aria-label="Toggle shuffle">${icons.shuffle}</button>
+          <button class="transport-btn" @click=${() => this._transport('prev')} ?disabled=${!this.leaseOwned} aria-label="Previous track">${icons.prev}</button>
+          <button class="transport-btn primary" @click=${() => this._transport('toggle')} ?disabled=${!this.leaseOwned} aria-label="${playing ? 'Pause' : 'Play'}">${playing ? icons.pause : icons.play}</button>
+          <button class="transport-btn" @click=${() => this._transport('next')} ?disabled=${!this.leaseOwned} aria-label="Next track">${icons.next}</button>
+          <button class="transport-btn ${repeatMode !== 'off' ? 'active' : ''}" @click=${this._cycleRepeat} ?disabled=${!this.leaseOwned} title="Repeat: ${repeatMode}" aria-label="Cycle repeat mode">${repeatMode === 'one' ? icons.repeatOne : icons.repeat}</button>
         </div>
 
         <div class="progress-section">
@@ -2248,8 +2297,15 @@ class MuPanel extends LitElement {
            @dragleave=${this._onDragLeave} 
            @drop=${e => this._onDrop(e, idx)}>
            ${icons.drag}
-        </div>  
+        </div>
         ${entry.art_url ? html`<img class="queue-item-art" src="${entry.art_url}"/>` : html`<div class="queue-item-art">${icons.music}</div>`}
+        ${idx === curIdx && this.rendererState?.playback?.status === 'playing' ? html`
+          <div class="eq-bars">
+            <div class="eq-bar"></div>
+            <div class="eq-bar"></div>
+            <div class="eq-bar"></div>
+          </div>
+        ` : ''}
         <div class="queue-item-info">
           <div class="queue-item-title">${entry.title || 'Unknown'}</div>
           <div class="queue-item-artist">${entry.artist || ''}</div>
