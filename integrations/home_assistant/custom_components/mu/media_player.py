@@ -31,6 +31,11 @@ try:
 except ImportError:  # pragma: no cover - older HA compatibility
     MediaPlayerRepeatMode = None
 
+try:
+    from homeassistant.components.media_player import MediaPlayerDeviceClass
+except ImportError:  # pragma: no cover - older HA compatibility
+    MediaPlayerDeviceClass = None
+
 REPEAT_ALL = MediaPlayerRepeatMode.ALL if MediaPlayerRepeatMode else "all"
 REPEAT_OFF = MediaPlayerRepeatMode.OFF if MediaPlayerRepeatMode else "off"
 REPEAT_ONE = MediaPlayerRepeatMode.ONE if MediaPlayerRepeatMode else "one"
@@ -109,6 +114,8 @@ class MuRendererEntity(MediaPlayerEntity):
     """Media player entity backed by a mu renderer node."""
 
     _attr_should_poll = False
+    if MediaPlayerDeviceClass:
+        _attr_device_class = MediaPlayerDeviceClass.SPEAKER
 
     def __init__(self, bridge, node_id: str) -> None:
         self._bridge = bridge
@@ -192,6 +199,14 @@ class MuRendererEntity(MediaPlayerEntity):
         return self._bridge.rewrite_artwork_url(self._metadata().get("artworkUrl"), for_internal=True)
 
     @property
+    def media_image_remotely_accessible(self) -> bool:
+        """Artwork is proxied through HA, so it's accessible remotely."""
+        url = self.media_image_url
+        if url and url.startswith("/api/mu/artwork"):
+            return True
+        return False
+
+    @property
     def media_content_id(self) -> str | None:
         state = self._bridge.get_renderer_state(self._node_id)
         current = state.get("current") or {}
@@ -237,7 +252,17 @@ class MuRendererEntity(MediaPlayerEntity):
             | MediaPlayerEntityFeature.REPEAT_SET
             | MediaPlayerEntityFeature.PLAY_MEDIA
             | MediaPlayerEntityFeature.BROWSE_MEDIA
+            | MediaPlayerEntityFeature.TURN_ON
+            | MediaPlayerEntityFeature.TURN_OFF
         )
+
+    async def async_turn_on(self) -> None:
+        """Turn on (start playback)."""
+        await self._bridge.async_play(self._node_id)
+
+    async def async_turn_off(self) -> None:
+        """Turn off (stop playback)."""
+        await self._bridge.async_stop(self._node_id)
 
     async def async_media_play(self) -> None:
         _LOGGER.debug("play %s", self._node_id)
@@ -277,12 +302,12 @@ class MuRendererEntity(MediaPlayerEntity):
 
     async def async_set_repeat(self, repeat: str) -> None:
         _LOGGER.debug("repeat %s %s", self._node_id, repeat)
-        repeat_value = (repeat or "").lower()
-        if repeat_value in {"one", "single"}:
+        if repeat == REPEAT_ONE:
             await self._bridge.async_repeat_mode(self._node_id, "one")
-            return
-        enabled = repeat_value in {"all", "on", "true"}
-        await self._bridge.async_repeat(self._node_id, enabled)
+        elif repeat == REPEAT_ALL:
+            await self._bridge.async_repeat_mode(self._node_id, "all")
+        else:
+            await self._bridge.async_repeat_mode(self._node_id, "off")
 
     async def async_play_media(
         self, media_type: str, media_id: str, **kwargs: Any
