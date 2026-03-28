@@ -47,9 +47,15 @@ func snapshotSaveCommand() *cobra.Command {
 				selector = args[0]
 				name = args[1]
 			}
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.SnapshotSave(ctx, selector, name, server)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Snapshot %q saved\n", name)
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
@@ -100,9 +106,15 @@ Modes:
 				selector = args[0]
 				snapshotID = args[1]
 			}
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueLoadSnapshot(ctx, selector, snapshotID, modeValue, resolveValue, server)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Snapshot loaded")
+			}
+			return nil
 		},
 	}
 
@@ -154,7 +166,13 @@ func snapshotRemoveCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			return app.service.SnapshotRemove(ctx, args[0], server)
+			if err := app.service.SnapshotRemove(ctx, args[0], server); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Snapshot deleted")
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")

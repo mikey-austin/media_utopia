@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -64,7 +65,13 @@ func renewCommand() *cobra.Command {
 			defer cancel()
 
 			selector := selectorArg(args)
-			return app.service.RenewLease(ctx, selector, ttl)
+			if err := app.service.RenewLease(ctx, selector, ttl); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Lease renewed")
+			}
+			return nil
 		},
 	}
 
@@ -88,7 +95,13 @@ func releaseCommand() *cobra.Command {
 			defer cancel()
 
 			selector := selectorArg(args)
-			return app.service.ReleaseLease(ctx, selector)
+			if err := app.service.ReleaseLease(ctx, selector); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Lease released")
+			}
+			return nil
 		},
 	}
 	return cmd

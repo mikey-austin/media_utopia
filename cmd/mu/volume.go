@@ -59,9 +59,15 @@ Use --mute and --unmute to control mute state independently.`,
 			if arg == "" && mutePtr == nil {
 				return fmt.Errorf("volume value required (0-100, +N, or -N)")
 			}
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.SetVolume(ctx, selector, arg, mutePtr)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Volume updated")
+			}
+			return nil
 		},
 	}
 

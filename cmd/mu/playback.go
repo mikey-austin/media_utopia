@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/spf13/cobra"
 )
@@ -30,9 +31,15 @@ playback begins at the current position unless --index is specified.`,
 			if cmd.Flags().Changed("index") {
 				idxPtr = &index
 			}
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackPlay(ctx, selector, idxPtr)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Playback started")
+			}
+			return nil
 		},
 	}
 
@@ -57,9 +64,15 @@ func pauseCommand() *cobra.Command {
 			defer cancel()
 
 			selector := selectorArg(args)
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackPause(ctx, selector)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Playback paused")
+			}
+			return nil
 		},
 	}
 }
@@ -80,9 +93,15 @@ func toggleCommand() *cobra.Command {
 			defer cancel()
 
 			selector := selectorArg(args)
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackToggle(ctx, selector)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Playback toggled")
+			}
+			return nil
 		},
 	}
 }
@@ -103,9 +122,15 @@ func stopCommand() *cobra.Command {
 			defer cancel()
 
 			selector := selectorArg(args)
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackStop(ctx, selector)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Playback stopped")
+			}
+			return nil
 		},
 	}
 }
@@ -137,9 +162,15 @@ Duration suffixes like "s" and "m" are also supported.`,
 				selector = args[0]
 				seekArg = args[1]
 			}
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackSeek(ctx, selector, seekArg)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Position updated")
+			}
+			return nil
 		},
 	}
 	cmd.Flags().ParseErrorsWhitelist.UnknownFlags = true
@@ -162,9 +193,15 @@ func nextCommand() *cobra.Command {
 			defer cancel()
 
 			selector := selectorArg(args)
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackNext(ctx, selector)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Skipped to next track")
+			}
+			return nil
 		},
 	}
 }
@@ -185,9 +222,15 @@ func prevCommand() *cobra.Command {
 			defer cancel()
 
 			selector := selectorArg(args)
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.PlaybackPrev(ctx, selector)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Went to previous track")
+			}
+			return nil
 		},
 	}
 }

@@ -114,9 +114,15 @@ func queueClearCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 			selector := selectorArg(args)
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueClear(ctx, selector)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Queue cleared")
+			}
+			return nil
 		},
 	}
 }
@@ -145,9 +151,15 @@ func queueJumpCommand() *cobra.Command {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueJump(ctx, selector, index)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Jumped to index %d\n", index)
+			}
+			return nil
 		},
 	}
 }
@@ -175,9 +187,15 @@ Use 'mu queue list --full' to see queue entry IDs.`,
 				selector = args[0]
 				arg = args[1]
 			}
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueRemove(ctx, selector, arg)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Entry removed")
+			}
+			return nil
 		},
 	}
 }
@@ -214,9 +232,15 @@ func queueMoveCommand() *cobra.Command {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueMove(ctx, selector, from, to)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Moved entry %d to %d\n", from, to)
+			}
+			return nil
 		},
 	}
 }
@@ -237,9 +261,15 @@ func queueShuffleCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 			selector := selectorArg(args)
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueShuffle(ctx, selector, seed)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Queue shuffled")
+			}
+			return nil
 		},
 	}
 
@@ -290,9 +320,15 @@ Modes:
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueRepeat(ctx, selector, mode)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Repeat mode set to %s\n", mode)
+			}
+			return nil
 		},
 	}
 }
@@ -346,9 +382,15 @@ track, or --at to insert at a specific position.`,
 				selector = args[0]
 				items = args[1:]
 			}
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueAdd(ctx, selector, items, position, indexPtr, resolveValue)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Added %d item(s) to queue\n", len(items))
+			}
+			return nil
 		},
 	}
 
@@ -410,9 +452,15 @@ func queueSetCommand() *cobra.Command {
 				revPtr = &ifRev
 			}
 			selector := selectorArg(args)
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueSet(ctx, selector, entries, revPtr)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Queue replaced (%d entries)\n", len(entries))
+			}
+			return nil
 		},
 	}
 

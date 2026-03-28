@@ -108,7 +108,13 @@ from an existing session snapshot.`,
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			return app.service.PlaylistCreate(ctx, args[0], fromSnapshot, server)
+			if err := app.service.PlaylistCreate(ctx, args[0], fromSnapshot, server); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Playlist %q created\n", args[0])
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
@@ -142,7 +148,13 @@ func playlistAddCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.service.PlaylistAdd(ctx, args[0], args[1:], resolveValue, server)
+			if err := app.service.PlaylistAdd(ctx, args[0], args[1:], resolveValue, server); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Added %d item(s) to playlist\n", len(args[1:]))
+			}
+			return nil
 		},
 	}
 
@@ -166,7 +178,13 @@ Use 'mu playlist show --full' to see entry IDs.`,
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			return app.service.PlaylistRemove(ctx, args[0], args[1:], server)
+			if err := app.service.PlaylistRemove(ctx, args[0], args[1:], server); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Removed %d entry(ies) from playlist\n", len(args[1:]))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
@@ -189,7 +207,13 @@ func playlistDeleteCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			return app.service.PlaylistDelete(ctx, args[0], server)
+			if err := app.service.PlaylistDelete(ctx, args[0], server); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Playlist deleted")
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
@@ -240,9 +264,15 @@ Modes:
 				selector = args[0]
 				playlistID = args[1]
 			}
-			return app.runWithLeaseRetry(ctx, selector, func() error {
+			if err := app.runWithLeaseRetry(ctx, selector, func() error {
 				return app.service.QueueLoadPlaylist(ctx, selector, playlistID, modeValue, resolveValue, server)
-			})
+			}); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Println("Playlist loaded")
+			}
+			return nil
 		},
 	}
 
@@ -266,7 +296,13 @@ func playlistRenameCommand() *cobra.Command {
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			return app.service.PlaylistRename(ctx, args[0], args[1], server)
+			if err := app.service.PlaylistRename(ctx, args[0], args[1], server); err != nil {
+				return err
+			}
+			if !app.quiet && !app.json {
+				fmt.Printf("Playlist renamed to %q\n", args[1])
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "playlist server selector")
