@@ -1269,6 +1269,22 @@ class MudBridge:
         )
         return reply is not None and reply.get("type") == "ack"
 
+    async def async_playlist_add_items(
+        self, playlist_id: str, items: list[str]
+    ) -> bool:
+        """Add items to an existing playlist."""
+        if self._playlist_server is None or not items:
+            return False
+        entries = []
+        for item_id in items:
+            entries.append({"ref": {"id": item_id}})
+        reply = await self._request(
+            self._playlist_server["nodeId"],
+            "playlist.addItems",
+            {"playlistId": playlist_id, "entries": entries},
+        )
+        return reply is not None and reply.get("type") == "ack"
+
     async def async_playlist_remove_item(self, playlist_id: str, entry_id: str) -> bool:
         """Remove an item from a playlist."""
         if self._playlist_server is None:
