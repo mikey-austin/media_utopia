@@ -1137,8 +1137,11 @@ class MuPanel extends LitElement {
   }
 
   _onKeydown(e) {
-    // Don't intercept when typing in inputs
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    // Don't intercept when typing in inputs (check both target and composedPath for shadow DOM)
+    const target = e.composedPath?.()?.[0] || e.target;
+    const tag = target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (target?.isContentEditable) return;
     if (!this.selectedRenderer) return;
 
     switch (e.key) {
@@ -2114,7 +2117,7 @@ class MuPanel extends LitElement {
               <button class="action-btn" @click=${e => { e.stopPropagation(); this._loadPlaylist(pl.playlistId, 'replace'); }} title="Play">&#9654;</button>
               <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._loadPlaylist(pl.playlistId, 'append'); }} title="Add to queue">+</button>
               ${this._pendingDelete?.id === pl.playlistId ? html`
-                <button class="action-btn" style="color:#f44336" @click=${e => { e.stopPropagation(); this._confirmDelete(); }}>Confirm?</button>
+                <button class="action-btn" style="background:#f44336;color:white" @click=${e => { e.stopPropagation(); this._confirmDelete(); }}>Confirm?</button>
               ` : html`
                 <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._startDelete('playlist', pl.playlistId); }} title="Delete">&#128465;</button>
               `}
@@ -2154,7 +2157,7 @@ class MuPanel extends LitElement {
                 <button class="action-btn" @click=${e => { e.stopPropagation(); this._loadSnapshotToQueue(s.snapshotId); }} title="Restore to queue">&#9654;</button>
                 <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._startCreatePlaylistFromSnapshot(s.snapshotId, s.name); }} title="Create playlist">&#128203;</button>
                 ${this._pendingDelete?.id === s.snapshotId ? html`
-                  <button class="action-btn" style="color:#f44336" @click=${e => { e.stopPropagation(); this._confirmDelete(); }}>Confirm?</button>
+                  <button class="action-btn" style="background:#f44336;color:white" @click=${e => { e.stopPropagation(); this._confirmDelete(); }}>Confirm?</button>
                 ` : html`
                   <button class="action-btn secondary" @click=${e => { e.stopPropagation(); this._startDelete('snapshot', s.snapshotId); }} title="Delete">&#128465;</button>
                 `}
