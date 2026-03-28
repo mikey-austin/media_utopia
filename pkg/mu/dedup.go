@@ -1,6 +1,28 @@
 package mu
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
+
+// ShouldDedup returns true if a command type should be deduplicated.
+// Session commands (acquire/renew/release) are excluded because their
+// replies contain state (lease tokens) that cannot be cached. Queue
+// read commands (queue.get) are excluded because they are idempotent.
+func ShouldDedup(cmdType string) bool {
+	// Never dedup session commands — their replies contain unique tokens
+	if strings.HasPrefix(cmdType, "session.") {
+		return false
+	}
+	// Never dedup read-only commands
+	switch cmdType {
+	case "queue.get", "library.browse", "library.search", "library.resolve",
+		"library.resolveBatch", "library.rescan",
+		"playlist.list", "playlist.get", "snapshot.list", "snapshot.get":
+		return false
+	}
+	return true
+}
 
 // CommandDedup tracks recently processed command IDs to prevent duplicate
 // execution from MQTT QoS 1 redelivery. It uses a fixed-size ring buffer

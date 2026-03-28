@@ -445,7 +445,7 @@ func (m *Module) handleMessage(msg paho.Message) {
 		return
 	}
 
-	if m.dedup.Seen(cmd.ID) {
+	if mu.ShouldDedup(cmd.Type) && m.dedup.Seen(cmd.ID) {
 		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
 		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
 		payload, _ := json.Marshal(reply)
