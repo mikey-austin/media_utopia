@@ -50,10 +50,16 @@ Examples:
 
 ### MQTT QoS / retained (normative)
 
-- `/cmd` publishes: **QoS 1**, **not retained**
-- replies to `replyTo`: **QoS 1**, **not retained**
-- `/evt` publishes: QoS 0 or 1, **not retained**
-- `/presence` and `/state`: **retained**
+- `/cmd` publishes: **QoS 0**, **not retained**
+  - QoS 0 is preferred over QoS 1 to prevent MQTT broker redelivery causing
+    duplicate command processing. Commands use timeout-based retry at the
+    application layer instead.
+  - Receivers MUST deduplicate by command `id` regardless of publisher QoS.
+- replies to `replyTo`: **QoS 0**, **not retained**
+- `/evt` publishes: **QoS 0**, **not retained**
+- `/presence` and `/state`: **QoS 1**, **retained**
+  - Retained messages use QoS 1 because they are idempotent (last-write-wins)
+    and must survive broker restarts.
 
 ---
 
@@ -95,6 +101,52 @@ mu/v1/node/<nodeId>/cmd
 * `lease` (object, required for any mutation): lease/session authorization.
 * `ifRevision` (number, optional): optimistic concurrency guard.
 * `body` (object, required): command arguments.
+
+---
+
+## 1.1 Command Idempotency (normative)
+
+Every command envelope includes a unique `id` field. This field serves two purposes:
+
+1. **Correlation**: Matches commands to their replies.
+2. **Deduplication**: Prevents duplicate processing from MQTT redelivery.
+
+### Receiver Requirements
+
+All command receivers (renderers, libraries, playlist servers) MUST:
+
+1. Track recently processed command IDs (minimum buffer size: 64 entries).
+2. On receiving a command with a previously-seen ID, return the cached reply
+   **without re-executing the command**.
+3. Only track IDs for **mutating** commands. Read-only commands (e.g., `queue.get`,
+   `library.browse`) are safe to process multiple times.
+
+### Mutating Commands
+
+The following command types are mutating and MUST be deduplicated:
+
+- Queue: `queue.set`, `queue.add`, `queue.remove`, `queue.move`, `queue.clear`,
+  `queue.shuffle`, `queue.setShuffle`, `queue.setRepeat`,
+  `queue.loadPlaylist`, `queue.loadSnapshot`
+- Playback: `playback.play`, `playback.pause`, `playback.stop`,
+  `playback.next`, `playback.prev`, `playback.toggle`,
+  `playback.seek`, `playback.setVolume`, `playback.setMute`
+- Session: `session.acquire`, `session.renew`, `session.release`
+- Playlist: `playlist.create`, `playlist.add`, `playlist.addItems`,
+  `playlist.remove`, `playlist.move`, `playlist.delete`, `playlist.rename`
+- Snapshot: `snapshot.save`, `snapshot.delete`
+
+### Rationale
+
+MQTT QoS 1 guarantees "at least once" delivery, which means the broker may
+redeliver a message if the PUBACK is delayed or lost. Without deduplication,
+this causes operations like `queue.add` to execute twice, adding the same
+track to the queue twice. While we now recommend QoS 0 for commands, the
+deduplication requirement remains because:
+
+- Legacy controllers may still publish at QoS 1
+- Network conditions can cause similar duplication at the TCP layer
+- Defense in depth prevents subtle data corruption
 
 ---
 
@@ -471,6 +523,29 @@ mu/v1/node/R/cmd
   }
 }
 ```
+
+### Queue Revision Guards (optional)
+
+Queue state includes a monotonically increasing `revision` number. Controllers
+MAY include `ifRevision` in the command envelope to implement optimistic
+concurrency control:
+
+```json
+{
+  "id": "...",
+  "type": "queue.add",
+  "ifRevision": 42,
+  "body": { "position": "end", "entries": [...] }
+}
+```
+
+If `ifRevision` is present and does not match the current queue revision,
+the receiver MUST reject the command with error code `REVISION_MISMATCH`.
+
+This is particularly useful for:
+- Multi-controller environments where two controllers may modify the queue simultaneously
+- "Compare and swap" queue replacement (`queue.set` with revision guard)
+- Preventing race conditions in automation scripts
 
 ### 8.2 `queue.add` (append / next / at)
 
