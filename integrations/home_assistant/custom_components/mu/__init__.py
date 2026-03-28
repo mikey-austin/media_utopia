@@ -66,8 +66,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await bridge.async_start()
     domain_data[entry.entry_id] = {"bridge": bridge}
     _LOGGER.debug("Bridge started for entry %s", entry.entry_id)
+    entry.async_on_unload(entry.add_update_listener(_async_update_options))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+async def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options update."""
+    _LOGGER.info("Options updated, reloading integration")
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def _register_panel(hass: HomeAssistant) -> None:
