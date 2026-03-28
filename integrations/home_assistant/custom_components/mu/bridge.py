@@ -289,6 +289,11 @@ class MudBridge:
         cmd_id = payload.get("id")
         if not cmd_id:
             return
+        reply_type = payload.get("type", "?")
+        _LOGGER.warning(
+            "DIAG reply cmd_id=%s type=%s ok=%s",
+            cmd_id[:12] if cmd_id else "?", reply_type, payload.get("ok"),
+        )
         future = self._pending.pop(cmd_id, None)
         if future and not future.done():
             future.set_result(payload)
@@ -2141,7 +2146,11 @@ class MudBridge:
                 "token": lease.token,
             }
         topic = f"{self.topic_base}/node/{node_id}/cmd"
-        _LOGGER.debug("publish cmd topic=%s payload=%s", topic, payload)
+        _LOGGER.warning(
+            "DIAG publish cmd_id=%s type=%s node=%s entries=%d",
+            cmd_id, cmd_type, node_id.split(":")[-1],
+            len(body.get("entries", [])),
+        )
         await self._publish(topic, payload, retain=False)
 
     async def _publish(self, topic: str, payload: Any, retain: bool) -> None:

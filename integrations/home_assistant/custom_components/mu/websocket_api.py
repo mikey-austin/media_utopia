@@ -612,7 +612,7 @@ async def ws_queue_add(
     renderer_id = msg["renderer_id"]
     mode = msg["mode"]
     items = msg["items"]
-    _LOGGER.debug("ws_queue_add called: renderer=%s mode=%s items=%s", renderer_id, mode, items)
+    _LOGGER.warning("DIAG ws_queue_add: renderer=%s mode=%s items=%s", renderer_id, mode, items)
 
     success = await bridge.async_queue_add(renderer_id, items, mode)
     connection.send_result(msg["id"], {"success": success})

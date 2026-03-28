@@ -1493,6 +1493,9 @@ class MuPanel extends LitElement {
     if (!this.selectedRenderer || !item.itemId) return;
     const libId = this.browserPath[0]?.id;
     if (!libId) return;
+    // Diagnostic: prevent double-click from firing twice
+    if (this._addInProgress) { console.warn('[MU] _addToQueue blocked: already in progress'); return; }
+    this._addInProgress = true;
     this.queueLoading = true;
     try {
       if (item.isContainer) {
@@ -1510,11 +1513,14 @@ class MuPanel extends LitElement {
         return;
       }
 
+      console.warn('[MU] queue_add: mode=%s items=1 itemId=%s', mode, item.itemId);
       await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: [`lib:${libId}:${item.itemId}`] });
       await this._loadQueue();
+      console.warn('[MU] queue_add done: queueLen=%d', this.queue?.length);
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
     } finally {
       this.queueLoading = false;
+      this._addInProgress = false;
     }
   }
 
