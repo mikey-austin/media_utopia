@@ -134,6 +134,16 @@ class MuZoneEntity(MediaPlayerEntity):
         state = zone.get("state") or {}
         if not state.get("connected", True):
             return MediaPlayerState.OFF
+        # Check if matched renderer is playing
+        renderer_id = self._get_matching_renderer()
+        if renderer_id:
+            renderer_state = self._bridge.get_renderer_state(renderer_id)
+            playback = renderer_state.get("playback") or {}
+            status = (playback.get("status") or "").lower()
+            if status == "playing":
+                return MediaPlayerState.PLAYING
+            if status == "paused":
+                return MediaPlayerState.PAUSED
         return MediaPlayerState.IDLE
 
     @property

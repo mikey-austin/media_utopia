@@ -58,6 +58,8 @@ class LeaseSensorManager:
             LeaseIDSensor(self._bridge, node_id),
             LeaseTTLSecondsSensor(self._bridge, node_id),
             QueueLengthSensor(self._bridge, node_id),
+            QueueIndexSensor(self._bridge, node_id),
+            PlaybackStatusSensor(self._bridge, node_id),
         ]
         self._sensors[node_id] = sensors
         self._async_add_entities(sensors)
@@ -230,6 +232,76 @@ class QueueLengthSensor(LeaseSensorBase):
         if isinstance(length, int):
             return length
         return None
+
+
+class QueueIndexSensor(LeaseSensorBase):
+    """Sensor for the current queue playback index."""
+
+    _attr_icon = "mdi:numeric"
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_renderer_queue_index_{safe}"
+
+    @property
+    def name(self) -> str | None:
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        base = renderer.get("name", self._node_id)
+        return f"{base} Queue Index"
+
+    @property
+    def native_value(self) -> int | None:
+        index = self._queue().get("index")
+        if isinstance(index, int):
+            return index
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        queue = self._queue()
+        return {
+            "queue_length": queue.get("length", 0),
+            "queue_revision": queue.get("revision", 0),
+        }
+
+
+class PlaybackStatusSensor(LeaseSensorBase):
+    """Sensor for the current playback status."""
+
+    _attr_icon = "mdi:play-circle-outline"
+    _attr_entity_category = None  # Not diagnostic - useful metric
+
+    @property
+    def unique_id(self) -> str:
+        safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
+        return f"mu_renderer_playback_status_{safe}"
+
+    @property
+    def name(self) -> str | None:
+        renderer = self._bridge.get_renderer(self._node_id) or {}
+        base = renderer.get("name", self._node_id)
+        return f"{base} Playback Status"
+
+    @property
+    def native_value(self) -> str | None:
+        state = self._bridge.get_renderer_state(self._node_id)
+        playback = state.get("playback") or {}
+        status = playback.get("status")
+        if isinstance(status, str) and status:
+            return status.lower()
+        return "unknown"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        state = self._bridge.get_renderer_state(self._node_id)
+        current = state.get("current") or {}
+        metadata = current.get("metadata") or {}
+        return {
+            "media_title": metadata.get("title"),
+            "media_artist": metadata.get("artist"),
+            "media_album": metadata.get("album"),
+        }
 
 
 class ZoneSensorManager:
