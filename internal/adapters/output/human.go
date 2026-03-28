@@ -308,7 +308,7 @@ func renderPlaylists(result core.PlaylistListResult) (string, error) {
 
 func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
 	if len(result.Entries) == 0 {
-		return "Playlist is empty.\n", nil
+		return fmt.Sprintf("Playlist: %s (0 tracks)\n", result.Name), nil
 	}
 	header := fmt.Sprintf("Playlist: %s (%d tracks)\n\n", result.Name, len(result.Entries))
 
