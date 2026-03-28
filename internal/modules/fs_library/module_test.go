@@ -3456,3 +3456,274 @@ func TestBrowseRootCategories(t *testing.T) {
 		}
 	}
 }
+
+// --- Task 1: Repair function tests ---
+
+func TestParseFilenameAdvanced(t *testing.T) {
+	tests := []struct {
+		name        string
+		filename    string
+		wantTitle   string
+		wantArtists []string
+		wantAlbum   string
+	}{
+		{"simple artist title", "Pink Floyd - Comfortably Numb.mp3", "Comfortably Numb", []string{"Pink Floyd"}, ""},
+		{"track number", "01. Comfortably Numb.mp3", "Comfortably Numb", nil, ""},
+		{"track number with dash", "01 - Comfortably Numb.mp3", "Comfortably Numb", nil, ""},
+		{"just filename", "Comfortably Numb.mp3", "Comfortably Numb", nil, ""},
+		{"with flac ext", "Artist - Title.flac", "Title", []string{"Artist"}, ""},
+		{"with m4a ext", "Artist - Title.m4a", "Title", []string{"Artist"}, ""},
+		{"three parts", "Artist - Album - Title.mp3", "Title", []string{"Artist"}, "Album"},
+		{"track number three parts", "01 - Artist - Title.mp3", "Title", []string{"Artist"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseFilename(tt.filename)
+			if result.Title != tt.wantTitle {
+				t.Errorf("title = %q, want %q", result.Title, tt.wantTitle)
+			}
+			if tt.wantArtists != nil {
+				if len(result.Artists) != len(tt.wantArtists) {
+					t.Errorf("artists = %v, want %v", result.Artists, tt.wantArtists)
+				} else {
+					for i, a := range result.Artists {
+						if a != tt.wantArtists[i] {
+							t.Errorf("artists[%d] = %q, want %q", i, a, tt.wantArtists[i])
+						}
+					}
+				}
+			}
+			if tt.wantAlbum != "" && result.Album != tt.wantAlbum {
+				t.Errorf("album = %q, want %q", result.Album, tt.wantAlbum)
+			}
+		})
+	}
+}
+
+func TestCleanTitle(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Song (Official Video)", "Song"},
+		{"Song [Official Audio]", "Song"},
+		{"Song (Lyrics)", "Song"},
+		{"Song [Lyrics]", "Song"},
+		{"Song (HQ)", "Song"},
+		{"Song [Live]", "Song"},
+		{"Song (Explicit)", "Song"},
+		{"  Song  ", "Song"},
+		{"Song_With_Underscores", "Song With Underscores"},
+		{"Already Clean", "Already Clean"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := cleanTitle(tt.input)
+			if got != tt.want {
+				t.Errorf("cleanTitle(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanAlbum(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Album (Deluxe Edition)", "Album"},
+		{"Album [Remastered Version]", "Album"},
+		{"Album (Special)", "Album"},
+		{"Album (Expanded Edition)", "Album"},
+		{"Album Disc 2", "Album"},
+		{"Album [CD 1]", "Album"},
+		{"Already Clean", "Already Clean"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := cleanAlbum(tt.input)
+			if got != tt.want {
+				t.Errorf("cleanAlbum(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanArtist(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Artist feat. Other", "Artist"},
+		{"Artist ft. Other", "Artist"},
+		{"Artist featuring Someone", "Artist"},
+		{"Solo Artist", "Solo Artist"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := cleanArtist(tt.input)
+			if got != tt.want {
+				t.Errorf("cleanArtist(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsTrackNumber(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"01", true},
+		{"1", true},
+		{"123", true},
+		{"1234", false},
+		{"abc", false},
+		{"", false},
+		{"0", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isTrackNumber(tt.input)
+			if got != tt.want {
+				t.Errorf("isTrackNumber(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDuplicateIndexFull(t *testing.T) {
+	idx := NewDuplicateIndex()
+
+	// First item
+	dup := idx.Add("item1", "hash-a")
+	if dup {
+		t.Error("first item should not be duplicate")
+	}
+
+	// Same hash = duplicate
+	dup = idx.Add("item2", "hash-a")
+	if !dup {
+		t.Error("second item with same hash should be duplicate")
+	}
+
+	// Different hash = not duplicate
+	dup = idx.Add("item3", "hash-b")
+	if dup {
+		t.Error("item with different hash should not be duplicate")
+	}
+
+	// IsDuplicate
+	if !idx.IsDuplicate("item1") {
+		t.Error("item1 should be duplicate (shares hash with item2)")
+	}
+	if !idx.IsDuplicate("item2") {
+		t.Error("item2 should be duplicate")
+	}
+	if idx.IsDuplicate("item3") {
+		t.Error("item3 should not be duplicate (unique hash)")
+	}
+
+	// Original
+	if orig := idx.Original("item2"); orig != "item1" {
+		t.Errorf("original of item2 = %q, want item1", orig)
+	}
+
+	// GetDuplicates
+	groups := idx.GetDuplicates()
+	if len(groups) != 1 {
+		t.Errorf("expected 1 duplicate group, got %d", len(groups))
+	}
+
+	// Clear
+	idx.Clear()
+	if idx.IsDuplicate("item1") {
+		t.Error("item1 should not be duplicate after clear")
+	}
+}
+
+func TestRepairMetadataFromFilename(t *testing.T) {
+	item := mediaItem{
+		Title:   "",
+		Artists: nil,
+		Album:   "",
+		Name:    "Pink Floyd - Comfortably Numb.mp3",
+	}
+
+	result := repairMetadata(item, RepairPolicyBalanced)
+	if result.Title == "" {
+		t.Error("expected title to be repaired from filename")
+	}
+	if len(result.Artists) == 0 {
+		t.Error("expected artist to be repaired from filename")
+	}
+}
+
+func TestRepairMetadataNonePolicy(t *testing.T) {
+	item := mediaItem{
+		Title:   "Original Title",
+		Artists: []string{"Original Artist"},
+		Album:   "Original Album",
+	}
+
+	result := repairMetadata(item, RepairPolicyNone)
+	if result.Title != "Original Title" {
+		t.Errorf("expected original title, got %q", result.Title)
+	}
+}
+
+// --- Task 2: Search edge case tests ---
+
+func TestSearchEmptyQuery(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "Artist", "Album")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mod := newTestModule(t, root, []string{".mp3"})
+
+	items, total := mod.search("", 0, 50)
+	if len(items) != 0 || total != 0 {
+		t.Errorf("empty query should return no results, got %d items, %d total", len(items), total)
+	}
+}
+
+func TestSearchWhitespaceQuery(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "Artist", "Album")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mod := newTestModule(t, root, []string{".mp3"})
+
+	items, total := mod.search("   ", 0, 50)
+	if len(items) != 0 || total != 0 {
+		t.Errorf("whitespace query should return no results, got %d items, %d total", len(items), total)
+	}
+}
+
+// --- Task 3: Container hash tests ---
+
+func TestContainerHash(t *testing.T) {
+	h1 := containerHash("album", "Pink Floyd", "The Wall")
+	h2 := containerHash("album", "Pink Floyd", "The Wall")
+	h3 := containerHash("album", "Pink Floyd", "Animals")
+
+	if h1 != h2 {
+		t.Error("same inputs should produce same hash")
+	}
+	if h1 == h3 {
+		t.Error("different inputs should produce different hash")
+	}
+	if len(h1) != 32 {
+		t.Errorf("hash length = %d, want 32 (MD5 hex)", len(h1))
+	}
+}
