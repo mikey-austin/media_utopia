@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
+	"github.com/mikey-austin/media_utopia/internal/adapters/output"
+	"github.com/mikey-austin/media_utopia/internal/core"
 	"github.com/spf13/cobra"
 )
 
@@ -68,7 +71,11 @@ func suggestShowCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printer.Print(result)
+			if !app.json {
+				raw, _ := result.Data.(json.RawMessage)
+				return app.printer.Print(output.SuggestShowOutput{Payload: raw})
+			}
+			return app.printer.Print(core.RawResult{Data: result.Data})
 		},
 	}
 

@@ -622,6 +622,98 @@ func TestRenderSuggestions(t *testing.T) {
 	}
 }
 
+func TestRenderSuggestShow(t *testing.T) {
+	p := HumanPrinter{}
+
+	tests := []struct {
+		name     string
+		input    SuggestShowOutput
+		contains []string
+	}{
+		{
+			name: "empty suggestion",
+			input: SuggestShowOutput{
+				Payload: json.RawMessage(`{"suggestionId":"sug-1","name":"Empty Mix","entries":[]}`),
+			},
+			contains: []string{"Suggestion: Empty Mix (0 tracks)", "No tracks."},
+		},
+		{
+			name: "suggestion with tracks",
+			input: SuggestShowOutput{
+				Payload: json.RawMessage(`{
+					"suggestionId": "sug-2",
+					"name": "Jazz Night",
+					"entries": [
+						{
+							"itemId": "item-1",
+							"metadata": {
+								"title": "Blue in Green",
+								"artist": "Miles Davis",
+								"album": "Kind of Blue",
+								"durationMs": 327000
+							}
+						},
+						{
+							"itemId": "item-2",
+							"metadata": {
+								"title": "Take Five",
+								"artist": "Dave Brubeck",
+								"album": "Time Out",
+								"durationMs": 324000
+							}
+						}
+					]
+				}`),
+			},
+			contains: []string{
+				"Suggestion: Jazz Night (2 tracks)",
+				"TITLE", "ARTIST", "ALBUM", "LEN",
+				"Blue in Green", "Miles Davis", "Kind of Blue", "5:27",
+				"Take Five", "Dave Brubeck", "Time Out", "5:24",
+			},
+		},
+		{
+			name: "suggestion with missing metadata",
+			input: SuggestShowOutput{
+				Payload: json.RawMessage(`{
+					"suggestionId": "sug-3",
+					"name": "Sparse Mix",
+					"entries": [
+						{
+							"itemId": "item-no-meta"
+						}
+					]
+				}`),
+			},
+			contains: []string{
+				"Suggestion: Sparse Mix (1 tracks)",
+				"item-no-meta",
+			},
+		},
+		{
+			name: "invalid JSON falls back",
+			input: SuggestShowOutput{
+				Payload: json.RawMessage(`not valid json`),
+			},
+			contains: []string{"not valid json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := p.Render(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\noutput:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
 func TestRenderLibraryResolve(t *testing.T) {
 	p := HumanPrinter{}
 
@@ -638,7 +730,7 @@ func TestRenderLibraryResolve(t *testing.T) {
 					Sources: []mu.ResolvedSource{},
 				},
 			},
-			contains: []string{"no sources"},
+			contains: []string{"Item: item-1", "Sources: (none)"},
 		},
 		{
 			name: "multiple sources",
@@ -651,7 +743,53 @@ func TestRenderLibraryResolve(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"URL", "MIME", "http://example.com/a.flac", "audio/flac", "http://example.com/b.mp3", "audio/mpeg"},
+			contains: []string{
+				"Item: item-2",
+				"Sources: (2)",
+				"http://example.com/a.flac (audio/flac)",
+				"http://example.com/b.mp3 (audio/mpeg)",
+			},
+		},
+		{
+			name: "with metadata",
+			input: core.LibraryResolveResult{
+				Item: mu.LibraryResolveReply{
+					ItemID: "item-3",
+					Metadata: map[string]any{
+						"title":      "Great Song",
+						"artist":     "Cool Band",
+						"album":      "Best Album",
+						"durationMs": json.Number("240000"),
+					},
+					Sources: []mu.ResolvedSource{
+						{URL: "http://example.com/c.flac", Mime: "audio/flac"},
+					},
+				},
+			},
+			contains: []string{
+				"Item: Great Song",
+				"Artist: Cool Band",
+				"Album: Best Album",
+				"Duration: 4:00",
+				"Sources: (1)",
+				"http://example.com/c.flac (audio/flac)",
+			},
+		},
+		{
+			name: "source with empty mime",
+			input: core.LibraryResolveResult{
+				Item: mu.LibraryResolveReply{
+					ItemID: "item-4",
+					Sources: []mu.ResolvedSource{
+						{URL: "http://example.com/d.bin", Mime: ""},
+					},
+				},
+			},
+			contains: []string{
+				"Item: item-4",
+				"Sources: (1)",
+				"http://example.com/d.bin (unknown)",
+			},
 		},
 	}
 

@@ -1,6 +1,7 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,6 +33,11 @@ type QueueListOutput struct {
 	Result core.QueueResult
 	Offset int64
 	Count  int64
+}
+
+// SuggestShowOutput wraps raw suggest show JSON for human-readable rendering.
+type SuggestShowOutput struct {
+	Payload json.RawMessage
 }
 
 // Render returns human output as a string.
@@ -77,6 +83,8 @@ func renderHuman(v any) (string, error) {
 		return renderLibraryRescan(data)
 	case LibraryItemsOutput:
 		return renderLibraryItemsOutput(data)
+	case SuggestShowOutput:
+		return renderSuggestShow(data)
 	case core.RawResult:
 		return renderRaw(data)
 	default:
@@ -382,15 +390,101 @@ func renderSuggestions(result core.SuggestListResult) (string, error) {
 	return renderTable([]string{"NAME", "SUGGESTION_ID", "REVISION"}, rows)
 }
 
+func renderSuggestShow(data SuggestShowOutput) (string, error) {
+	var suggestion struct {
+		SuggestionID string `json:"suggestionId"`
+		Name         string `json:"name"`
+		Entries      []struct {
+			ItemID   string         `json:"itemId"`
+			Metadata map[string]any `json:"metadata,omitempty"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(data.Payload, &suggestion); err != nil {
+		// Fall back to raw JSON if we can't parse
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, data.Payload, "", "  "); err != nil {
+			return string(data.Payload), nil
+		}
+		return buf.String() + "\n", nil
+	}
+
+	header := fmt.Sprintf("Suggestion: %s (%d tracks)\n\n", suggestion.Name, len(suggestion.Entries))
+
+	if len(suggestion.Entries) == 0 {
+		return header + "No tracks.\n", nil
+	}
+
+	rows := make([][]string, 0, len(suggestion.Entries))
+	for idx, entry := range suggestion.Entries {
+		title := entry.ItemID
+		artist := ""
+		album := ""
+		length := ""
+		if entry.Metadata != nil {
+			if val, ok := entry.Metadata["title"].(string); ok && val != "" {
+				title = val
+			}
+			if val, ok := entry.Metadata["artist"].(string); ok {
+				artist = val
+			}
+			if val, ok := entry.Metadata["album"].(string); ok {
+				album = val
+			}
+			length = formatDuration(entry.Metadata["durationMs"])
+		}
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", idx),
+			truncateCell(title, 64),
+			truncateCell(artist, 32),
+			truncateCell(album, 40),
+			length,
+		})
+	}
+	table, err := renderTable([]string{"INDEX", "TITLE", "ARTIST", "ALBUM", "LEN"}, rows)
+	if err != nil {
+		return "", err
+	}
+	return header + table, nil
+}
+
 func renderLibraryResolve(result core.LibraryResolveResult) (string, error) {
+	var buf strings.Builder
+
+	// Show title/artist if available in metadata
+	title := result.Item.ItemID
+	if result.Item.Metadata != nil {
+		if val, ok := result.Item.Metadata["title"].(string); ok && val != "" {
+			title = val
+		}
+	}
+	buf.WriteString(fmt.Sprintf("Item: %s\n", title))
+
+	if result.Item.Metadata != nil {
+		if artist, ok := result.Item.Metadata["artist"].(string); ok && artist != "" {
+			buf.WriteString(fmt.Sprintf("Artist: %s\n", artist))
+		}
+		if album, ok := result.Item.Metadata["album"].(string); ok && album != "" {
+			buf.WriteString(fmt.Sprintf("Album: %s\n", album))
+		}
+		dur := formatDuration(result.Item.Metadata["durationMs"])
+		if dur != "" {
+			buf.WriteString(fmt.Sprintf("Duration: %s\n", dur))
+		}
+	}
+
 	if len(result.Item.Sources) == 0 {
-		return "no sources\n", nil
+		buf.WriteString("Sources: (none)\n")
+	} else {
+		buf.WriteString(fmt.Sprintf("Sources: (%d)\n", len(result.Item.Sources)))
+		for _, src := range result.Item.Sources {
+			mime := src.Mime
+			if mime == "" {
+				mime = "unknown"
+			}
+			buf.WriteString(fmt.Sprintf("  - %s (%s)\n", src.URL, mime))
+		}
 	}
-	rows := make([][]string, 0, len(result.Item.Sources))
-	for _, src := range result.Item.Sources {
-		rows = append(rows, []string{src.URL, src.Mime})
-	}
-	return renderTable([]string{"URL", "MIME"}, rows)
+	return buf.String(), nil
 }
 
 func renderLibraryRescan(result core.LibraryRescanResult) (string, error) {
