@@ -65,6 +65,7 @@ type Module struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	reconnectChan chan struct{} // signals that reconnection is needed
+	dedup         *mu.CommandDedup
 }
 
 // NewModule creates a new Snapcast zone module.
@@ -83,6 +84,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		zoneToClient:  make(map[string]string),
 		groupMap:      make(map[string]string),
 		reconnectChan: make(chan struct{}, 1),
+		dedup:         mu.NewCommandDedup(128),
 	}
 	snapClient.SetUpdateCallback(func() {
 		// Re-discover on server notifications
@@ -440,6 +442,14 @@ func (m *Module) publishZoneState(zone *Zone) error {
 func (m *Module) handleMessage(msg paho.Message) {
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
+		return
+	}
+
+	if m.dedup.Seen(cmd.ID) {
+		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
+		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+		payload, _ := json.Marshal(reply)
+		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
 		return
 	}
 

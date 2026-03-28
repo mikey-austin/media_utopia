@@ -67,6 +67,8 @@ type Module struct {
 	// State publish debouncing
 	stateDirty   int32         // atomic flag: 1 if state needs publishing
 	debounceChan chan struct{} // signals state change for debouncer
+
+	dedup *mu.CommandDedup
 }
 
 // NewModule creates a renderer module.
@@ -106,6 +108,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		replyHandlers: make(map[string]chan mu.ReplyEnvelope),
 		replyTopic:    replyTopic,
 		debounceChan:  make(chan struct{}, 1),
+		dedup:         mu.NewCommandDedup(128),
 	}, nil
 }
 
@@ -250,6 +253,14 @@ func (m *Module) handleReply(msg paho.Message) {
 
 // processCommand handles a single command with timing metrics.
 func (m *Module) processCommand(cmd mu.CommandEnvelope, recvTime time.Time) {
+	if m.dedup.Seen(cmd.ID) {
+		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
+		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+		payload, _ := json.Marshal(reply)
+		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
+		return
+	}
+
 	m.log.Debug("command received",
 		zap.String("id", cmd.ID),
 		zap.String("type", cmd.Type),
