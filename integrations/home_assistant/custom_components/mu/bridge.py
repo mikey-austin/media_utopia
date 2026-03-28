@@ -293,10 +293,14 @@ class MudBridge:
         elif kind == "playlist":
             self._playlist_servers[node_id] = payload
             await self._publish_playlist_server_availability(node_id, "online")
-            # Auto-select first server if none selected
             if self._selected_playlist_server is None:
+                # Try to verify this server responds before auto-selecting
                 self._selected_playlist_server = node_id
-                _LOGGER.debug("auto-selected playlist server: %s", node_id)
+                _LOGGER.info("auto-selected playlist server: %s", node_id)
+            elif self._selected_playlist_server not in self._playlist_servers:
+                # Previously selected server disappeared, switch to this one
+                self._selected_playlist_server = node_id
+                _LOGGER.info("switched playlist server to %s (previous not found)", node_id)
             # Only refresh immediately if bridge is ready and this is the selected server
             if getattr(self, "_ready", False) and node_id == self._selected_playlist_server:
                 await self._refresh_playlists()
@@ -423,6 +427,11 @@ class MudBridge:
         """Get the full info dict for a renderer."""
         return self._renderers.get(node_id)
 
+    def _mark_all_offline(self) -> None:
+        """Mark all renderers as offline (e.g., on MQTT disconnect)."""
+        for node_id, info in self._renderers.items():
+            info["online"] = False
+        _LOGGER.warning("marked all renderers offline")
 
     def register_zone_listener(self, callback) -> None:
         if callback not in self._zone_listeners:
@@ -1835,6 +1844,8 @@ class MudBridge:
             {"owner": self.identity},
         )
         if reply is None or reply.get("type") != "ack":
+            # Try to switch to another playlist server
+            await self._try_switch_playlist_server()
             return
         body = reply.get("body") or {}
         playlists = body.get("playlists") or []
@@ -1849,6 +1860,25 @@ class MudBridge:
                     pl["size"] = len(entries)
             self._playlists[playlist_id] = pl
             await self._ensure_playlist_discovery(playlist_id, pl)
+
+    async def _try_switch_playlist_server(self) -> None:
+        """Try switching to a different playlist server if the current one is unresponsive."""
+        current = self._selected_playlist_server
+        for node_id in self._playlist_servers:
+            if node_id == current:
+                continue
+            _LOGGER.info("trying playlist server %s (current %s unresponsive)", node_id, current)
+            self._selected_playlist_server = node_id
+            reply = await self._request(
+                node_id, "playlist.list", {"owner": self.identity},
+                timeout_seconds=5,
+            )
+            if reply is not None and reply.get("type") == "ack":
+                _LOGGER.info("switched to playlist server %s", node_id)
+                return
+        # No server responded, restore original
+        self._selected_playlist_server = current
+        _LOGGER.warning("no playlist servers responding")
 
     async def _ensure_playlist_discovery(
         self, playlist_id: str, playlist: dict[str, Any]
@@ -1934,9 +1964,12 @@ class MudBridge:
         lease = self._leases.get(node_id)
         now = int(time.time())
         if lease is None:
+            _LOGGER.debug("no lease for %s, acquiring", node_id)
             return await self._acquire_lease(node_id)
-        if lease.expires_at-now >= LEASE_RENEW_THRESHOLD_SECONDS:
+        remaining = lease.expires_at - now
+        if remaining >= LEASE_RENEW_THRESHOLD_SECONDS:
             return lease
+        _LOGGER.debug("lease for %s expires in %ds, renewing", node_id, remaining)
         return await self._renew_lease(node_id, lease)
 
     async def _acquire_lease(self, node_id: str) -> Lease | None:
