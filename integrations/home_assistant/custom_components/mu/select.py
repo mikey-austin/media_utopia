@@ -135,6 +135,7 @@ class PlaylistRendererSelect(SelectEntity):
     """Select entity to choose renderer for a playlist."""
 
     _attr_should_poll = False
+    _attr_icon = "mdi:cast-audio"
 
     def __init__(self, bridge, selection_manager: PlaylistSelectionManager, playlist_id: str) -> None:
         self._bridge = bridge
@@ -150,7 +151,7 @@ class PlaylistRendererSelect(SelectEntity):
     def name(self) -> str | None:
         playlist = self._bridge.get_playlist(self._playlist_id) or {}
         pl_name = playlist.get("name", self._playlist_id)
-        return f"Renderer for {pl_name}"
+        return f"{pl_name} Renderer"
 
     @property
     def options(self) -> list[str]:
