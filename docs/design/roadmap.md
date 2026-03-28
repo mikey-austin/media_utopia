@@ -1,27 +1,54 @@
-# Roadmap (suggested)
+# Roadmap
 
-This is a pragmatic implementation order that quickly yields a working system
-with HA control and real audio endpoints.
+## v1.0 — Minimum Viable (COMPLETE)
 
-## v1.0 (minimum viable, end-to-end)
-1) Playlist server (required)
-2) UPnP renderer bridge (unlocks existing renderers)
-3) `mu` CLI reference client
-4) Home Assistant MQTT Discovery mapping
-5) UPnP library bridge (reuse Synology UPnP server without new media server)
+- [x] Playlist server (durable playlists + snapshots)
+- [x] GStreamer native renderer
+- [x] `mu` CLI reference client
+- [x] Home Assistant MQTT Discovery mapping
+- [x] UPnP renderer bridge
+- [x] UPnP library bridge
 
-## v1.1 (quality & breadth)
-- Jellyfin library bridge
-- Kodi renderer bridge
-- richer queue listing (paging, metadata enrichment)
-- improved UPnP end-of-track detection heuristics
+## v1.1 — Quality & Breadth (COMPLETE)
 
-## v1.2 (suggestions)
-- advisor node type
-- suggestion objects in playlist server
-- HA entities for “suggestion list” + “apply/promote” actions
+- [x] Jellyfin library bridge
+- [x] Kodi renderer bridge
+- [x] VLC renderer bridge
+- [x] Queue paging and metadata enrichment
+- [x] Filesystem library with metadata parsing
+- [x] Podcast/RSS library
+- [x] go2rtc camera library
 
-## v2 (optional futures)
-- multiroom sync primitives (prepare/startAt wall-clock)
-- richer permissions / sharing for playlists
-- custom HA media browser integration
+## v1.2 — Intelligence & Multi-Room (COMPLETE)
+
+- [x] Suggestion support in playlist server
+- [x] Snapcast zone controller integration
+- [x] Home Assistant custom panel (Lit web component)
+- [x] Filesystem library enrichment (MusicBrainz, Discogs, Wikipedia)
+- [x] Semantic search with embeddings (Ollama)
+- [x] AcoustID fingerprint fallback for metadata
+- [x] LLM-generated album summaries
+- [x] Metadata repair and deduplication
+
+## v1.3 — Robustness (IN PROGRESS)
+
+- [x] MQTT command deduplication (QoS redelivery fix)
+- [x] Playlist server failover (auto-switch on timeout)
+- [x] WebSocket state subscriptions (replace polling)
+- [x] Client-side position interpolation
+- [x] Options flow for HA integration reconfiguration
+- [x] Relevance-based search ranking
+- [x] Incremental embedding updates
+- [ ] Command idempotency in all receivers (ring buffer dedup)
+- [ ] Health/liveness protocol (presence re-announce, LWT)
+- [ ] Event type specification and implementation
+
+## v2.0 — Future
+
+- [ ] Multi-room sync primitives (prepare/startAt wall-clock)
+- [ ] Playlist sharing and permissions
+- [ ] Advisor node type (AI-driven suggestions)
+- [ ] HNSW approximate nearest neighbor for 100K+ libraries
+- [ ] Prometheus metrics export
+- [ ] Per-module health endpoints
+- [ ] TLS mutual authentication for MQTT
