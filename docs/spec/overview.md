@@ -105,3 +105,34 @@ Libraries announce their capabilities in presence:
   "ts": 1774700000
 }
 ```
+
+## Error Codes
+
+When a command fails, the reply envelope contains an `err` object with a `code` and `message`. The following error codes are defined:
+
+### Session/Lease Errors
+
+| Code | Description | Client Action |
+|------|-------------|---------------|
+| `LEASE_REQUIRED` | Command requires a lease but none was provided | Acquire a lease first |
+| `LEASE_MISMATCH` | Provided lease token does not match current session | Reacquire lease and retry |
+| `LEASE_EXPIRED` | Lease has expired | Acquire a new lease |
+| `SESSION_CONFLICT` | Another controller holds the lease | Wait or force-acquire |
+
+### Queue Errors
+
+| Code | Description | Client Action |
+|------|-------------|---------------|
+| `REVISION_MISMATCH` | Queue revision guard failed (optimistic concurrency) | Reload queue and retry |
+| `INDEX_OUT_OF_RANGE` | Queue index is beyond queue bounds | Reload queue state |
+| `ENTRY_NOT_FOUND` | Queue entry ID does not exist | Reload queue |
+
+### General Errors
+
+| Code | Description | Client Action |
+|------|-------------|---------------|
+| `INVALID` | Malformed command body | Check command format |
+| `NOT_FOUND` | Referenced resource not found | Verify node/item IDs |
+| `TIMEOUT` | Operation timed out | Retry |
+| `UNSUPPORTED` | Command not supported by this node | Check capabilities |
+| `INTERNAL` | Internal error | Report bug |
