@@ -107,6 +107,8 @@ class LeaseSensorBase(SensorEntity):
 class LeaseOwnerSensor(LeaseSensorBase):
     """Sensor for the current lease owner."""
 
+    _attr_icon = "mdi:account-key"
+
     @property
     def unique_id(self) -> str:
         safe = self._node_id.replace(":", "_").replace("@", "_").replace("/", "_")
@@ -137,6 +139,8 @@ class LeaseOwnerSensor(LeaseSensorBase):
 
 class LeaseIDSensor(LeaseSensorBase):
     """Sensor for the current lease session id."""
+
+    _attr_icon = "mdi:identifier"
 
     @property
     def unique_id(self) -> str:
@@ -169,6 +173,8 @@ class LeaseIDSensor(LeaseSensorBase):
 
 class LeaseTTLSecondsSensor(LeaseSensorBase):
     """Sensor for the remaining lease TTL in seconds."""
+
+    _attr_icon = "mdi:timer-outline"
 
     if SensorDeviceClass:
         _attr_device_class = SensorDeviceClass.DURATION
@@ -203,6 +209,9 @@ class LeaseTTLSecondsSensor(LeaseSensorBase):
 
 class QueueLengthSensor(LeaseSensorBase):
     """Sensor for the current renderer queue length."""
+
+    _attr_icon = "mdi:playlist-music"
+    _attr_entity_category = None
 
     @property
     def unique_id(self) -> str:

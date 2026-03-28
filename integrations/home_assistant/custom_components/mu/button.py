@@ -6,6 +6,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -94,6 +95,7 @@ class LeaseButton(ButtonEntity):
     """Base class for renderer lease buttons."""
 
     _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, bridge, node_id: str, suffix: str, label: str) -> None:
         self._bridge = bridge
@@ -127,6 +129,8 @@ class LeaseButton(ButtonEntity):
 
 
 class LeaseAcquireButton(LeaseButton):
+    _attr_icon = "mdi:lock-open-variant"
+
     def __init__(self, bridge, node_id: str) -> None:
         super().__init__(bridge, node_id, "acquire", "Acquire Lease")
 
@@ -135,6 +139,8 @@ class LeaseAcquireButton(LeaseButton):
 
 
 class LeaseRenewButton(LeaseButton):
+    _attr_icon = "mdi:lock-clock"
+
     def __init__(self, bridge, node_id: str) -> None:
         super().__init__(bridge, node_id, "renew", "Renew Lease")
 
@@ -143,6 +149,8 @@ class LeaseRenewButton(LeaseButton):
 
 
 class LeaseReleaseButton(LeaseButton):
+    _attr_icon = "mdi:lock-open"
+
     def __init__(self, bridge, node_id: str) -> None:
         super().__init__(bridge, node_id, "release", "Release Lease")
 
@@ -154,6 +162,7 @@ class PlaylistLoadButton(ButtonEntity):
     """Button to load a playlist into a selected renderer."""
 
     _attr_should_poll = False
+    _attr_icon = "mdi:playlist-play"
 
     def __init__(self, bridge, selection_manager: PlaylistSelectionManager, playlist_id: str) -> None:
         self._bridge = bridge
@@ -196,6 +205,8 @@ class SnapshotSaveButton(ButtonEntity):
     """Button to save a snapshot with the current queue."""
 
     _attr_should_poll = False
+    _attr_icon = "mdi:content-save"
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, bridge, node_id: str) -> None:
         self._bridge = bridge

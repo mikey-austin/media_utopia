@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.components.text import TextEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -56,6 +57,8 @@ class SnapshotNameEntity(TextEntity):
     """Text input for snapshot name."""
 
     _attr_should_poll = False
+    _attr_icon = "mdi:label-outline"
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min = 0
     _attr_native_max = 128
 
