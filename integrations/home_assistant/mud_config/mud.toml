@@ -1,5 +1,5 @@
 [server]
-broker = "mqtt://mqtt:2883"
+broker = "mqtt://localhost:2883"
 identity = "mud@ha"
 log_level = "debug"
 log_format = "text"
@@ -13,10 +13,29 @@ provider = "playlist"
 resource = "local"
 storage_path = "/config/playlists"
 
-[modules.renderer_gstreamer]
+[modules.renderer_gstreamer.living_room]
 enabled = true
-name = "HA Renderer"
+name = "Living Room"
 provider = "gstreamer"
-resource = "default"
-pipeline = "playbin uri={url} volume={volume} audio-sink=pulsesink video-sink=fakesink"
+resource = "living-room"
+pipeline = "playbin uri={url} volume={volume} audio-sink=fakesink video-sink=fakesink"
 publish_state = true
+
+[modules.renderer_gstreamer.bedroom]
+enabled = true
+name = "Bedroom"
+provider = "gstreamer"
+resource = "bedroom"
+pipeline = "playbin uri={url} volume={volume} audio-sink=fakesink video-sink=fakesink"
+publish_state = true
+
+[modules.fs_library]
+enabled = true
+name = "Local Music"
+provider = "filesystem"
+resource = "local"
+roots = ["/config/music"]
+include_exts = [".mp3", ".flac", ".ogg", ".wav", ".m4a"]
+http_listen = ":8484"
+http_base_url = "http://localhost:8484"
+metadata_mode = "ffprobe"

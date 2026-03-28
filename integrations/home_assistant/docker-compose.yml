@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:latest
@@ -15,8 +13,6 @@ services:
       - /etc/ssl/certs:/etc/ssl/certs:ro
     environment:
       - TZ=UTC
-      - SSL_CERT_FILE=/config/ca/ca.crt
-      - SSL_CERT_DIR=/config/ca
       - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
       - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     depends_on:
@@ -41,24 +37,17 @@ services:
     image: media_utopia_mud
     container_name: media_utopia_mud
     restart: unless-stopped
+    network_mode: host
     depends_on:
       - mqtt
-    devices:
-      - "/dev/snd:/dev/snd"
-    group_add:
-      - audio
     user: "1000:1000"
     volumes:
       - ./mud_config:/config
-      - /run/user/1000/pipewire-0:/run/user/1000/pipewire-0
-      - /run/user/1000/pulse/native:/run/user/1000/pulse/native
-      - ${HOME}/.config/pulse/cookie:/tmp/.config/pulse/cookie:ro
     environment:
       - HOME=/tmp
       - XDG_CACHE_HOME=/tmp/.cache
       - XDG_CONFIG_HOME=/tmp/.config
       - XDG_DATA_HOME=/tmp/.local/share
       - XDG_RUNTIME_DIR=/tmp
-      - PULSE_SERVER=unix:/run/user/1000/pulse/native
     entrypoint: ["/usr/local/bin/mud"]
     command: ["--config", "/config/mud.toml"]
