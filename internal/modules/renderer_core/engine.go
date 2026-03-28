@@ -35,6 +35,11 @@ type Engine struct {
 	Name    string
 	State   mu.RendererState
 	Updated int64
+
+	// recentCmds tracks recently processed command IDs to deduplicate
+	// MQTT QoS 1 redeliveries. Only mutating commands are tracked.
+	recentCmds    [64]string
+	recentCmdNext int
 }
 
 // NewEngine creates a renderer engine with default state.
@@ -58,6 +63,15 @@ func NewEngine(nodeID string, name string, driver Driver) *Engine {
 // HandleCommand executes a command and returns reply.
 func (e *Engine) HandleCommand(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 	reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+
+	// Deduplicate mutating commands (MQTT QoS 1 can redeliver).
+	// Read-only commands (queue.get, session.*) are safe to process twice.
+	if isMutatingCommand(cmd.Type) {
+		if e.seenCommand(cmd.ID) {
+			return reply // Already processed, return ack without re-executing
+		}
+		e.recordCommand(cmd.ID)
+	}
 
 	switch cmd.Type {
 	case "session.acquire":
@@ -531,4 +545,35 @@ func errorReply(cmd mu.CommandEnvelope, code string, message string) mu.ReplyEnv
 func ptrQueueState(state mu.QueueState) *mu.QueueState {
 	copy := state
 	return &copy
+}
+
+// isMutatingCommand returns true for commands that change state.
+// These must be deduplicated to prevent MQTT QoS 1 redelivery issues.
+func isMutatingCommand(cmdType string) bool {
+	switch cmdType {
+	case "queue.set", "queue.add", "queue.remove", "queue.move",
+		"queue.clear", "queue.shuffle", "queue.setShuffle",
+		"queue.setRepeat", "queue.loadPlaylist", "queue.loadSnapshot",
+		"playback.play", "playback.pause", "playback.stop",
+		"playback.next", "playback.prev", "playback.toggle",
+		"playback.seek", "playback.setVolume", "playback.setMute":
+		return true
+	}
+	return false
+}
+
+// seenCommand checks if a command ID was recently processed.
+func (e *Engine) seenCommand(id string) bool {
+	for _, seen := range e.recentCmds {
+		if seen == id {
+			return true
+		}
+	}
+	return false
+}
+
+// recordCommand adds a command ID to the recent ring buffer.
+func (e *Engine) recordCommand(id string) {
+	e.recentCmds[e.recentCmdNext%len(e.recentCmds)] = id
+	e.recentCmdNext++
 }

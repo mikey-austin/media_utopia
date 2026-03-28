@@ -2156,7 +2156,12 @@ class MudBridge:
     async def _publish(self, topic: str, payload: Any, retain: bool) -> None:
         if isinstance(payload, (dict, list)):
             payload = json.dumps(payload)
-        await mqtt.async_publish(self.hass, topic, payload, qos=1, retain=retain)
+        # Use QoS 0 for commands (non-retained) to prevent MQTT redelivery
+        # causing duplicate processing. Commands have timeout-based retry.
+        # Use QoS 1 only for retained messages (discovery, state) where
+        # guaranteed delivery matters and duplicates are idempotent.
+        qos = 1 if retain else 0
+        await mqtt.async_publish(self.hass, topic, payload, qos=qos, retain=retain)
 
     async def _publish_discovery(self, topic: str, payload: Any) -> None:
         self._discovery_topics.add(topic)
