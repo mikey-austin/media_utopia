@@ -238,6 +238,28 @@ class MudBridge:
             DOMAIN, "shuffle_queue", _shuffle_queue, schema=renderer_schema
         )
 
+        async def _save_snapshot(call):
+            renderer = call.data.get("renderer")
+            name = call.data.get("name")
+            if not renderer or not name:
+                _LOGGER.warning("save_snapshot: renderer and name are required")
+                return
+            renderer_id = self._resolve_renderer(renderer)
+            if renderer_id is None:
+                _LOGGER.warning("save_snapshot: renderer %r not found", renderer)
+                return
+            success = await self.async_save_snapshot(renderer_id, name)
+            if not success:
+                _LOGGER.warning("save_snapshot: failed to save %r for %s", name, renderer_id)
+
+        snapshot_schema = vol.Schema({
+            vol.Required("renderer"): str,
+            vol.Required("name"): str,
+        })
+        self.hass.services.async_register(
+            DOMAIN, "save_snapshot", _save_snapshot, schema=snapshot_schema
+        )
+
     async def _playlist_loop(self) -> None:
         # Immediate refresh on startup if playlist server already known
         if self._playlist_server is not None:
@@ -1166,6 +1188,13 @@ class MudBridge:
     async def async_queue_clear(self, node_id: str) -> bool:
         """Clear the queue."""
         reply = await self._request_with_lease(node_id, "queue.clear", {})
+        return reply is not None and reply.get("type") == "ack"
+
+    async def async_queue_shuffle(self, node_id: str) -> bool:
+        """Shuffle the queue."""
+        reply = await self._request_with_lease(
+            node_id, "queue.shuffle", {"seed": int(time.time())}
+        )
         return reply is not None and reply.get("type") == "ack"
 
     async def async_playlist_create(self, name: str) -> str | None:

@@ -60,3 +60,22 @@ shuffle_queue:
       example: "living-room"
       selector:
         text:
+
+save_snapshot:
+  name: Save Snapshot
+  description: Save the current queue state as a named snapshot.
+  fields:
+    renderer:
+      name: Renderer
+      description: Name or ID of the renderer whose queue to snapshot.
+      required: true
+      example: "living-room"
+      selector:
+        text:
+    name:
+      name: Snapshot Name
+      description: Name for the snapshot.
+      required: true
+      example: "Friday Night Mix"
+      selector:
+        text:
