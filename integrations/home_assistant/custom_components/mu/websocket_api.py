@@ -229,7 +229,13 @@ async def ws_subscribe_renderer_state(
             # Connection likely closed, ignore
             pass
 
-    bridge.register_renderer_state_listener(state_changed)
+    unsub = bridge.register_renderer_state_listener(state_changed)
+
+    @callback
+    def on_close() -> None:
+        unsub()
+
+    connection.subscriptions[msg_id] = on_close
     connection.send_result(msg_id)
 
 
@@ -271,7 +277,13 @@ async def ws_subscribe_queue(
         except Exception:
             pass
 
-    bridge.register_renderer_state_listener(state_changed)
+    unsub = bridge.register_renderer_state_listener(state_changed)
+
+    @callback
+    def on_close() -> None:
+        unsub()
+
+    connection.subscriptions[msg_id] = on_close
     connection.send_result(msg_id)
 
 

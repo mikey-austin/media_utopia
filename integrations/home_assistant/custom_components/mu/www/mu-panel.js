@@ -1112,7 +1112,15 @@ class MuPanel extends LitElement {
   }
 
   async _selectRenderer(e) {
+    // Unsubscribe from old renderer FIRST to stop stale state events
+    if (this._stateUnsubscribe) {
+      this._stateUnsubscribe();
+      this._stateUnsubscribe = null;
+    }
     this.selectedRenderer = e.target.value;
+    // Clear stale state immediately so UI shows the new renderer's loading state
+    this.rendererState = null;
+    this.queue = [];
     await this._loadRendererState();
     await this._loadQueue();
     this._subscribeRendererState();

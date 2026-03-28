@@ -387,8 +387,15 @@ class MudBridge:
         for node_id in list(self._renderers.keys()):
             self._notify_renderer_listener(callback, node_id)
 
-    def register_renderer_state_listener(self, callback) -> None:
+    def register_renderer_state_listener(self, callback) -> Callable:
+        """Register a state listener. Returns an unregister function."""
         self._renderer_state_listeners.append(callback)
+        def unregister():
+            try:
+                self._renderer_state_listeners.remove(callback)
+            except ValueError:
+                pass
+        return unregister
 
     def list_libraries(self) -> list[tuple[str, str]]:
         items = []
