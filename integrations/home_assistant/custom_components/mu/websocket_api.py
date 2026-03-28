@@ -84,7 +84,7 @@ async def ws_renderers(
     """List all discovered MU renderers."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderers = []
@@ -119,13 +119,13 @@ async def ws_renderer_state(
     """Get state for a specific renderer."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
     state = bridge.get_renderer_state(renderer_id)
     if not state:
-        connection.send_error(msg["id"], "not_found", f"Renderer {renderer_id} not found")
+        connection.send_error(msg["id"], "not_found", f"Renderer '{renderer_id}' not found or offline")
         return
 
     session = state.get("session") or {}
@@ -178,56 +178,57 @@ async def ws_subscribe_renderer_state(
     """Subscribe to renderer state changes."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
+    msg_id = msg["id"]
 
     @callback
     def state_changed(node_id: str, state: dict[str, Any]) -> None:
         if node_id != renderer_id:
             return
-        session = state.get("session") or {}
-        playback = state.get("playback") or {}
-        queue = state.get("queue") or {}
-        current = state.get("current") or {}
-        metadata = current.get("metadata") or {}
+        try:
+            session = state.get("session") or {}
+            playback = state.get("playback") or {}
+            queue = state.get("queue") or {}
+            current = state.get("current") or {}
+            metadata = current.get("metadata") or {}
 
-        connection.send_message(websocket_api.event_message(msg["id"], {
-            "session": {
-                "owned": session.get("owner") == bridge.identity,
-                "owner": session.get("owner", ""),
-                "expires_in_s": max(0, int(session.get("leaseExpiresAt") or 0) - int(time.time())),
-            },
-            "playback": {
-                "status": playback.get("status", "idle"),
-                "position_ms": playback.get("positionMs", 0),
-                "duration_ms": playback.get("durationMs", 0),
-                "volume": playback.get("volume", 1.0),
-                "mute": playback.get("mute", False),
-            },
-            "current": {
-                "title": metadata.get("title", ""),
-                "artist": metadata.get("artist", ""),
-                "album": metadata.get("album", ""),
-                "art_url": bridge.rewrite_artwork_url(metadata.get("artworkUrl")),
-            },
-            "queue": {
-                "revision": queue.get("revision", 0),
-                "length": queue.get("length", 0),
-                "index": queue.get("index", 0),
-                "shuffle": queue.get("shuffle", False),
-                "repeat": queue.get("repeat", False),
-                "repeatMode": queue.get("repeatMode", "off"),
-            },
-        }))
+            connection.send_message(websocket_api.event_message(msg_id, {
+                "session": {
+                    "owned": session.get("owner") == bridge.identity,
+                    "owner": session.get("owner", ""),
+                    "expires_in_s": max(0, int(session.get("leaseExpiresAt") or 0) - int(time.time())),
+                },
+                "playback": {
+                    "status": playback.get("status", "idle"),
+                    "position_ms": playback.get("positionMs", 0),
+                    "duration_ms": playback.get("durationMs", 0),
+                    "volume": playback.get("volume", 1.0),
+                    "mute": playback.get("mute", False),
+                },
+                "current": {
+                    "title": metadata.get("title", ""),
+                    "artist": metadata.get("artist", ""),
+                    "album": metadata.get("album", ""),
+                    "art_url": bridge.rewrite_artwork_url(metadata.get("artworkUrl")),
+                },
+                "queue": {
+                    "revision": queue.get("revision", 0),
+                    "length": queue.get("length", 0),
+                    "index": queue.get("index", 0),
+                    "shuffle": queue.get("shuffle", False),
+                    "repeat": queue.get("repeat", False),
+                    "repeatMode": queue.get("repeatMode", "off"),
+                },
+            }))
+        except Exception:
+            # Connection likely closed, ignore
+            pass
 
     bridge.register_renderer_state_listener(state_changed)
-    connection.send_result(msg["id"])
-
-    # Note: In a full implementation, we'd track the listener and remove it
-    # on disconnect. For now, the listener is lightweight (just a closure)
-    # and will be garbage collected when the bridge is stopped.
+    connection.send_result(msg_id)
 
 
 # --- Lease Management ---
@@ -246,7 +247,7 @@ async def ws_lease_status(
     """Get lease status for a renderer."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -274,7 +275,7 @@ async def ws_lease_acquire(
     """Acquire lease for a renderer."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -298,7 +299,7 @@ async def ws_lease_release(
     """Release lease for a renderer."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -323,7 +324,7 @@ async def ws_transport(
     """Execute transport command."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -364,7 +365,7 @@ async def ws_seek(
     """Seek to position."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_seek(msg["renderer_id"], msg["position_ms"] / 1000)
@@ -386,7 +387,7 @@ async def ws_volume(
     """Set volume or mute state."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -411,7 +412,7 @@ async def ws_shuffle(
     """Set shuffle mode."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_shuffle(msg["renderer_id"], msg["shuffle"])
@@ -432,7 +433,7 @@ async def ws_repeat_mode(
     """Set repeat mode (off, all, one)."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_repeat_mode(msg["renderer_id"], msg["mode"])
@@ -455,7 +456,7 @@ async def ws_queue_get(
     """Get queue entries for a renderer."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -534,7 +535,7 @@ async def ws_queue_add(
     """Add items to queue."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -561,7 +562,7 @@ async def ws_queue_remove(
     """Remove item from queue."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -588,7 +589,7 @@ async def ws_queue_move(
     """Move queue entry (drag-drop reorder)."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -613,7 +614,7 @@ async def ws_queue_clear(
     """Clear queue."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.async_queue_clear(msg["renderer_id"])
@@ -634,7 +635,7 @@ async def ws_queue_jump(
     """Jump to queue index."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_queue_jump(msg["renderer_id"], msg["index"])
@@ -654,7 +655,7 @@ async def ws_playlists_list(
     """List all playlists."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     playlists = []
@@ -681,7 +682,7 @@ async def ws_playlist_get(
     """Get playlist contents."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     playlist = await bridge.async_fetch_playlist(msg["playlist_id"])
@@ -724,7 +725,7 @@ async def ws_playlist_create(
     """Create a new playlist."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     playlist_id = await bridge.async_playlist_create(msg["name"])
@@ -748,7 +749,7 @@ async def ws_playlist_rename(
     """Rename a playlist."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.async_playlist_rename(msg["playlist_id"], msg["name"])
@@ -771,7 +772,7 @@ async def ws_playlist_add(
     """Add item to playlist."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.async_playlist_add_item(
@@ -797,7 +798,7 @@ async def ws_playlist_remove(
     """Remove item from playlist."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.async_playlist_remove_item(msg["playlist_id"], msg["entry_id"])
@@ -820,7 +821,7 @@ async def ws_playlist_move(
     """Move playlist entry (reorder)."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.async_playlist_move(
@@ -845,7 +846,7 @@ async def ws_playlist_delete(
     """Delete a playlist."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.async_delete_playlist(msg["playlist_id"])
@@ -867,7 +868,7 @@ async def ws_queue_load_playlist(
     """Load playlist into renderer queue."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_load_playlist(
@@ -891,7 +892,7 @@ async def ws_snapshots_list(
     """List all snapshots."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     snapshots_raw = await bridge.async_list_snapshots()
@@ -913,7 +914,7 @@ async def ws_snapshot_save(
     """Save current queue as snapshot."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.async_save_snapshot(msg["renderer_id"], msg["name"])
@@ -935,7 +936,7 @@ async def ws_queue_load_snapshot(
     """Load snapshot into renderer queue."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_load_snapshot(msg["renderer_id"], msg["snapshot_id"])
@@ -955,7 +956,7 @@ async def ws_snapshot_delete(
     """Delete a snapshot."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.async_remove_snapshot(msg["snapshot_id"])
@@ -976,7 +977,7 @@ async def ws_playlist_from_snapshot(
     """Create a playlist from a snapshot."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     # Use the bridge's playlist.create with snapshotId
@@ -999,7 +1000,7 @@ async def ws_libraries_list(
     """List all discovered libraries."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     libraries = []
@@ -1027,7 +1028,7 @@ async def ws_library_browse(
     """Browse library container."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     result = await bridge.async_browse_library(
@@ -1093,7 +1094,7 @@ async def ws_library_search(
     """Search library."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     result = await bridge.async_search_library(
@@ -1152,7 +1153,7 @@ async def ws_zone_controllers_list(
     """List zone controllers with sources and zones."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     controllers = []
@@ -1179,7 +1180,7 @@ async def ws_zones_list(
     """List all zones with current state."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     zones = []
@@ -1214,7 +1215,7 @@ async def ws_zone_set_volume(
     """Set volume for a zone."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_zone_set_volume(msg["zone_id"], msg["volume"])
@@ -1235,7 +1236,7 @@ async def ws_zone_set_mute(
     """Set mute for a zone."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_zone_set_mute(msg["zone_id"], msg["mute"])
@@ -1256,7 +1257,7 @@ async def ws_zone_select_source(
     """Select source for a zone."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     await bridge.async_zone_select_source(msg["zone_id"], msg["source_id"])
@@ -1276,7 +1277,7 @@ async def ws_playlist_servers_list(
     """List all discovered playlist servers."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     servers = []
@@ -1303,7 +1304,7 @@ async def ws_playlist_server_select(
     """Select which playlist server to use."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     success = await bridge.select_playlist_server(msg["node_id"])
@@ -1327,7 +1328,7 @@ async def ws_playlist_save_from_queue(
     """Save current queue contents to a playlist (replaces all items)."""
     bridge = _get_bridge(hass)
     if bridge is None:
-        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
     renderer_id = msg["renderer_id"]
@@ -1348,6 +1349,6 @@ async def ws_playlist_save_from_queue(
         connection.send_error(msg["id"], "save_failed", "Failed to save queue to playlist")
         return
 
-    connection.send_result(msg["id"], {"success": True, "itemCount": len(item_ids)})
+    connection.send_result(msg["id"], {"success": True, "playlistId": playlist_id, "itemCount": len(item_ids)})
 
 
