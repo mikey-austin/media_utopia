@@ -796,6 +796,7 @@ class MuPanel extends LitElement {
     searchTotal: { state: true },
     searchLibraryId: { state: true },
     _snapshotSaving: { state: true },
+    _creatingPlaylist: { state: true },
     _createPlaylistSnapshotId: { state: true },
     _createPlaylistName: { state: true },
     queueLoading: { state: true },
@@ -833,6 +834,7 @@ class MuPanel extends LitElement {
     this.searchTotal = 0;
     this.searchLibraryId = '';
     this._snapshotSaving = false;
+    this._creatingPlaylist = false;
     this._createPlaylistSnapshotId = null;
     this._createPlaylistName = '';
     this.queueLoading = false;
@@ -1197,16 +1199,26 @@ class MuPanel extends LitElement {
 
   async _shuffleQueue() {
     if (!this.selectedRenderer) return;
-    // Use the bridge's shuffle queue command which physically rearranges queue
-    await this._callWS('mu/shuffle', { renderer_id: this.selectedRenderer, shuffle: true });
-    await this._loadQueue();
-    this._showToast('Shuffled');
+    this.queueLoading = true;
+    try {
+      await this._callWS('mu/queue_shuffle', { renderer_id: this.selectedRenderer });
+      await this._loadQueue();
+      this._showToast('Queue shuffled');
+    } finally {
+      this.queueLoading = false;
+    }
   }
 
   async _queueJump(idx) {
     if (!this.selectedRenderer) return;
     await this._callWS('mu/queue_jump', { renderer_id: this.selectedRenderer, index: idx });
     await this._loadRendererState();
+  }
+
+  async _jumpToTrack(idx) {
+    if (!this.selectedRenderer) return;
+    await this._callWS('mu/queue_jump', { renderer_id: this.selectedRenderer, index: idx });
+    this._showToast(`Playing track ${idx + 1}`);
   }
 
   async _queueRemove(id) {
@@ -1482,6 +1494,30 @@ class MuPanel extends LitElement {
     } else {
       this._showToast('Failed to delete');
     }
+  }
+
+  async _createPlaylist() {
+    this._creatingPlaylist = true;
+    this.requestUpdate();
+  }
+
+  async _confirmCreatePlaylist() {
+    const input = this.shadowRoot.querySelector('.new-playlist-name-input');
+    const name = input?.value?.trim();
+    if (!name) { this._showToast('Enter a name'); return; }
+    this._creatingPlaylist = false;
+    const r = await this._callWS('mu/playlist_create', { name });
+    if (r?.playlistId) {
+      this._showToast('Playlist created');
+      await this._loadPlaylists();
+    } else {
+      this._showToast('Failed to create playlist');
+    }
+  }
+
+  _cancelCreatePlaylist() {
+    this._creatingPlaylist = false;
+    this.requestUpdate();
   }
 
   _startCreatePlaylistFromSnapshot(snapshotId, snapshotName) {
@@ -1783,6 +1819,21 @@ class MuPanel extends LitElement {
           <select class="renderer-select" @change=${(e) => this._selectPlaylistServer(e)}>
             ${this.playlistServers.map(s => html`<option value="${s.nodeId}" ?selected=${s.nodeId === this.selectedPlaylistServer}>${s.name}</option>`)}
           </select>
+          <button class="action-btn" @click=${() => this._createPlaylist()} title="Create new playlist">+ New</button>
+        </div>
+      ` : html`
+        <div class="pane-header">
+          <span class="pane-title">Playlists</span>
+          <button class="action-btn" @click=${() => this._createPlaylist()} title="Create new playlist">+ New</button>
+        </div>
+      `}
+      ${this._creatingPlaylist ? html`
+        <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--mu-border)">
+          <input class="new-playlist-name-input" type="text" placeholder="Playlist name..."
+            style="flex:1;background:var(--primary-background-color);color:var(--primary-text-color);border:1px solid var(--mu-border);border-radius:4px;padding:4px 8px;font-size:13px"
+            @keydown=${e => e.key === 'Enter' && this._confirmCreatePlaylist()} />
+          <button class="action-btn" @click=${() => this._confirmCreatePlaylist()}>Create</button>
+          <button class="action-btn secondary" @click=${() => this._cancelCreatePlaylist()}>Cancel</button>
         </div>
       ` : ''}
       <div class="browser-list">
@@ -1790,7 +1841,7 @@ class MuPanel extends LitElement {
       ${this.playlists.map(pl => html`
         <div class="browser-item">
           <div class="browser-item-art">${icons.playlist}</div>
-          <div class="browser-item-info"><div class="browser-item-title">${pl.name}</div><div class="browser-item-subtitle">${pl.size || 0} items</div></div>
+          <div class="browser-item-info"><div class="browser-item-title">${pl.name}</div><div class="browser-item-subtitle">${pl.size || 0} track${(pl.size || 0) !== 1 ? 's' : ''}</div></div>
           <div class="browser-item-actions" style="opacity:1">
             <button class="action-btn" @click=${() => this._loadPlaylistToQueue(pl.playlistId, 'replace')}>▶</button>
             <button class="action-btn secondary" @click=${() => this._loadPlaylistToQueue(pl.playlistId, 'append')}>+</button>
@@ -2168,7 +2219,7 @@ class MuPanel extends LitElement {
 
   _renderQueueItem(entry, idx, curIdx) {
     return html`
-      <div class="queue-item ${idx === curIdx ? 'playing' : ''} ${this.dragIndex === idx ? 'dragging' : ''} ${this.dragOverIndex === idx ? 'drag-over' : ''}" data-index="${idx}" @click=${() => this._queueJump(idx)}>
+      <div class="queue-item ${idx === curIdx ? 'playing' : ''} ${this.dragIndex === idx ? 'dragging' : ''} ${this.dragOverIndex === idx ? 'drag-over' : ''}" data-index="${idx}" @click=${() => this._queueJump(idx)} @dblclick=${() => this._jumpToTrack(idx)}>
         <div class="queue-drag-handle"
            @touchstart=${e => { e.stopPropagation(); this._onTouchStart(e, idx); }}
            @touchmove=${e => this._onTouchMove(e)}
