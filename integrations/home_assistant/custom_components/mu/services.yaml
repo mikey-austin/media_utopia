@@ -1,56 +1,62 @@
 load_playlist:
   name: Load Playlist
-  description: Load a playlist into a renderer queue.
+  description: Load a playlist into a renderer's playback queue.
   fields:
     renderer:
       name: Renderer
-      description: Renderer node id or name.
+      description: Name or ID of the target renderer.
       required: true
+      example: "living-room"
       selector:
         text:
     playlist:
       name: Playlist
-      description: Playlist id or name.
+      description: Name or ID of the playlist to load.
       required: true
+      example: "Evening Jazz"
       selector:
         text:
     mode:
       name: Mode
-      description: Load mode (replace, append, next).
-      default: replace
+      description: How to load the playlist into the queue.
+      default: "replace"
       selector:
         select:
           options:
-            - replace
-            - append
-            - next
+            - "replace"
+            - "append"
+            - "next"
     resolve:
       name: Resolve
-      description: Resolve mode (auto, yes, no).
-      default: auto
+      description: Whether to resolve library references to playable URLs.
+      default: "auto"
       selector:
         select:
           options:
-            - auto
+            - "auto"
             - "yes"
             - "no"
+
 clear_queue:
   name: Clear Queue
-  description: Clear the renderer queue.
+  description: Remove all entries from a renderer's playback queue.
   fields:
     renderer:
       name: Renderer
-      description: Renderer node id or name.
+      description: Name or ID of the target renderer.
       required: true
+      example: "living-room"
       selector:
         text:
+
 shuffle_queue:
   name: Shuffle Queue
-  description: Shuffle the renderer queue.
+  description: Randomly reorder the entries in a renderer's playback queue.
   fields:
     renderer:
       name: Renderer
-      description: Renderer node id or name.
+      description: Name or ID of the target renderer.
       required: true
+      example: "living-room"
       selector:
         text:

@@ -2,14 +2,23 @@
   "config": {
     "step": {
       "user": {
-        "title": "Media Utopia",
-        "description": "Configure MQTT discovery and topic settings for Media Utopia (Mu).",
+        "title": "Media Utopia Configuration",
+        "description": "Configure the connection to your Media Utopia system.",
         "data": {
-          "topic_base": "Mu topic base",
-          "discovery_prefix": "Home Assistant discovery prefix",
-          "entity_prefix": "Entity topic prefix",
-          "identity": "Controller identity",
-          "playlist_refresh_seconds": "Playlist refresh interval (seconds)"
+          "topic_base": "MQTT Topic Base",
+          "discovery_prefix": "MQTT Discovery Prefix",
+          "entity_prefix": "Entity Prefix",
+          "identity": "Controller Identity",
+          "playlist_refresh_seconds": "Playlist Refresh Interval (seconds)",
+          "artwork_base_url": "Artwork Base URL (optional)"
+        },
+        "data_description": {
+          "topic_base": "The base MQTT topic used by Media Utopia (default: mu/v1).",
+          "discovery_prefix": "The MQTT discovery prefix for Home Assistant (default: homeassistant).",
+          "entity_prefix": "Prefix for entity naming (default: mu/ha).",
+          "identity": "Identity string for this controller (default: homeassistant).",
+          "playlist_refresh_seconds": "How often to refresh playlists from the server (default: 30).",
+          "artwork_base_url": "Override base URL for artwork images. Leave empty to auto-detect."
         }
       }
     }

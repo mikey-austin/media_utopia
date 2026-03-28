@@ -5,11 +5,13 @@ import voluptuous as vol
 from homeassistant import config_entries
 
 from .const import (
+    CONF_ARTWORK_BASE_URL,
     CONF_DISCOVERY_PREFIX,
     CONF_ENTITY_PREFIX,
     CONF_IDENTITY,
     CONF_PLAYLIST_REFRESH,
     CONF_TOPIC_BASE,
+    DEFAULT_ARTWORK_BASE_URL,
     DEFAULT_DISCOVERY_PREFIX,
     DEFAULT_ENTITY_PREFIX,
     DEFAULT_IDENTITY,
@@ -38,6 +40,7 @@ class MudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(
                     CONF_PLAYLIST_REFRESH, default=DEFAULT_PLAYLIST_REFRESH
                 ): vol.Coerce(int),
+                vol.Optional(CONF_ARTWORK_BASE_URL, default=DEFAULT_ARTWORK_BASE_URL): str,
             }
         )
 
