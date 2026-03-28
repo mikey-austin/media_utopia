@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
@@ -10,6 +11,8 @@ from aiohttp import ClientError, ClientTimeout, web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+_LOGGER = logging.getLogger(__name__)
 
 ARTWORK_PROXY_PATH = "/api/mu/artwork"
 ARTWORK_PROXY_NAME = "api:mu:artwork"
@@ -26,6 +29,22 @@ class ArtworkProxyView(HomeAssistantView):
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self._timeout = ClientTimeout(total=10)
+
+    async def head(self, request: web.Request) -> web.Response:
+        """Handle HEAD request for artwork."""
+        upstream = request.query.get("url")
+        if not upstream:
+            return web.Response(status=400, text="Missing url parameter")
+        parsed = urlparse(upstream)
+        if parsed.scheme not in {"http", "https"}:
+            return web.Response(status=400, text="Invalid url")
+        return web.Response(
+            status=200,
+            headers={
+                "Content-Type": "image/jpeg",
+                "Cache-Control": ARTWORK_PROXY_CACHE_CONTROL,
+            },
+        )
 
     async def get(self, request: web.Request) -> web.StreamResponse:
         """Proxy the artwork request."""
@@ -56,7 +75,9 @@ class ArtworkProxyView(HomeAssistantView):
                         headers[header] = resp.headers[header]
 
                 return web.Response(body=body, headers=headers)
-        except (asyncio.TimeoutError, ClientError):
+        except (asyncio.TimeoutError, ClientError) as err:
+            _LOGGER.debug("Artwork fetch failed for %s: %s", upstream, err)
             return web.Response(status=504, text="Upstream fetch failed")
-        except Exception:
+        except Exception as err:
+            _LOGGER.warning("Artwork proxy error: %s", err)
             return web.Response(status=500, text="Internal error")
