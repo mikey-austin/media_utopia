@@ -60,6 +60,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_playlist_server_select)
     websocket_api.async_register_command(hass, ws_playlist_save_from_queue)
     websocket_api.async_register_command(hass, ws_subscribe_renderer_state)
+    websocket_api.async_register_command(hass, ws_queue_shuffle)
+    websocket_api.async_register_command(hass, ws_subscribe_queue)
 
 
 def _get_bridge(hass: HomeAssistant):
@@ -225,6 +227,48 @@ async def ws_subscribe_renderer_state(
             }))
         except Exception:
             # Connection likely closed, ignore
+            pass
+
+    bridge.register_renderer_state_listener(state_changed)
+    connection.send_result(msg_id)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "mu/subscribe_queue",
+    vol.Required("renderer_id"): str,
+})
+@websocket_api.async_response
+async def ws_subscribe_queue(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Subscribe to queue revision changes. Sends events when the queue revision changes."""
+    bridge = _get_bridge(hass)
+    if bridge is None:
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
+        return
+
+    renderer_id = msg["renderer_id"]
+    msg_id = msg["id"]
+    last_rev = [None]  # mutable container for closure
+
+    @callback
+    def state_changed(node_id: str, state: dict[str, Any]) -> None:
+        if node_id != renderer_id:
+            return
+        queue = state.get("queue") or {}
+        rev = queue.get("revision")
+        if rev == last_rev[0]:
+            return
+        last_rev[0] = rev
+        try:
+            connection.send_message(websocket_api.event_message(msg_id, {
+                "revision": rev,
+                "length": queue.get("length", 0),
+                "index": queue.get("index", 0),
+            }))
+        except Exception:
             pass
 
     bridge.register_renderer_state_listener(state_changed)
@@ -640,6 +684,26 @@ async def ws_queue_jump(
 
     await bridge.async_queue_jump(msg["renderer_id"], msg["index"])
     connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "mu/queue_shuffle",
+    vol.Required("renderer_id"): str,
+})
+@websocket_api.async_response
+async def ws_queue_shuffle(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Shuffle the queue."""
+    bridge = _get_bridge(hass)
+    if bridge is None:
+        connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
+        return
+
+    success = await bridge.async_queue_shuffle(msg["renderer_id"])
+    connection.send_result(msg["id"], {"success": success})
 
 
 # --- Playlists ---
