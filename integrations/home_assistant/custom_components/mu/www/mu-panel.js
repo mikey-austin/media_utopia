@@ -834,6 +834,7 @@ class MuPanel extends LitElement {
     this._touchDragTimer = null;
     this._touchDragItem = null;
     this._touchDragStartY = 0;
+    this._stateUnsubscribe = null;
   }
 
   connectedCallback() {
@@ -847,11 +848,18 @@ class MuPanel extends LitElement {
     this._boundVolEnd = this._onVolEnd.bind(this);
     this._boundZoneVolMove = this._onZoneVolMove.bind(this);
     this._boundZoneVolEnd = this._onZoneVolEnd.bind(this);
+    this._boundKeydown = this._onKeydown.bind(this);
+    document.addEventListener('keydown', this._boundKeydown);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this._refreshInterval) clearInterval(this._refreshInterval);
+    if (this._stateUnsubscribe) {
+      this._stateUnsubscribe();
+      this._stateUnsubscribe = null;
+    }
+    document.removeEventListener('keydown', this._boundKeydown);
     document.removeEventListener('mousemove', this._boundMouseMove);
     document.removeEventListener('mouseup', this._boundMouseUp);
     document.removeEventListener('mousemove', this._boundSeekMove);
@@ -869,7 +877,9 @@ class MuPanel extends LitElement {
     await this._loadPlaylists();
     await this._loadSnapshots();
     this.loading = false;
-    this._refreshInterval = setInterval(() => this._refreshState(), 2000);
+    this._subscribeRendererState();
+    // Keep a slower poll as fallback (every 10s) in case subscription misses
+    this._refreshInterval = setInterval(() => this._refreshState(), 10000);
   }
 
   async _callWS(type, data = {}) {
@@ -949,10 +959,91 @@ class MuPanel extends LitElement {
   }
   async _refreshState() { await this._loadRendererState(); }
 
+  async _subscribeRendererState() {
+    if (!this.selectedRenderer || !this.hass) return;
+    // Unsubscribe from previous
+    if (this._stateUnsubscribe) {
+      this._stateUnsubscribe();
+      this._stateUnsubscribe = null;
+    }
+    try {
+      this._stateUnsubscribe = await this.hass.connection.subscribeMessage(
+        (event) => this._onRendererStateEvent(event),
+        { type: 'mu/subscribe_renderer_state', renderer_id: this.selectedRenderer }
+      );
+    } catch (err) {
+      console.warn('State subscription failed, using poll fallback:', err);
+    }
+  }
+
+  _onRendererStateEvent(event) {
+    if (!event) return;
+    const oldRev = this.rendererState?.queue?.revision;
+    this.rendererState = event;
+    this.leaseOwned = event.session?.owned || false;
+    if (event.queue?.revision !== oldRev) {
+      this._loadQueue();
+    }
+  }
+
+  _onKeydown(e) {
+    // Don't intercept when typing in inputs
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    if (!this.selectedRenderer) return;
+
+    switch (e.key) {
+      case ' ':
+        e.preventDefault();
+        this._transport(this.rendererState?.playback?.status === 'playing' ? 'pause' : 'play');
+        break;
+      case 'ArrowRight':
+        if (e.shiftKey) { this._transport('next'); }
+        else { this._seekRelative(10000); } // +10s
+        break;
+      case 'ArrowLeft':
+        if (e.shiftKey) { this._transport('prev'); }
+        else { this._seekRelative(-10000); } // -10s
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        this._adjustVolume(0.05);
+        break;
+      case 'ArrowDown':
+        e.preventDefault();
+        this._adjustVolume(-0.05);
+        break;
+      case 'm':
+        this._toggleMute();
+        break;
+    }
+  }
+
+  async _seekRelative(deltaMs) {
+    if (!this.rendererState?.playback) return;
+    const pos = (this.rendererState.playback.position_ms || 0) + deltaMs;
+    const clamped = Math.max(0, Math.min(pos, this.rendererState.playback.duration_ms || 0));
+    await this._callWS('mu/seek', { renderer_id: this.selectedRenderer, position_ms: clamped });
+  }
+
+  async _adjustVolume(delta) {
+    if (!this.rendererState?.playback) return;
+    const vol = Math.max(0, Math.min(1, (this.rendererState.playback.volume || 0) + delta));
+    this._localVolume = vol;
+    this.requestUpdate();
+    this._callWS('mu/volume', { renderer_id: this.selectedRenderer, volume: vol });
+  }
+
+  async _toggleMute() {
+    if (!this.rendererState?.playback) return;
+    const muted = !this.rendererState.playback.mute;
+    await this._callWS('mu/volume', { renderer_id: this.selectedRenderer, mute: muted });
+  }
+
   async _selectRenderer(e) {
     this.selectedRenderer = e.target.value;
     await this._loadRendererState();
     await this._loadQueue();
+    this._subscribeRendererState();
   }
 
   async _acquireLease() {
@@ -1970,6 +2061,17 @@ class MuPanel extends LitElement {
   }
 
   _renderQueue() {
+    if (!this.selectedRenderer && !this.renderers.length) {
+      return html`<div class="queue-pane ${this.mobileView === 'browser' ? 'hidden' : ''}">
+        <div class="pane-header"><span class="pane-title">Media Utopia</span></div>
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:12px;color:var(--mu-secondary)">
+          <svg viewBox="0 0 24 24" style="width:48px;height:48px;opacity:0.3"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          <div>Waiting for renderers...</div>
+          <div style="font-size:12px">Make sure a mu renderer is running and connected to MQTT</div>
+        </div>
+      </div>`;
+    }
+
     const st = this.rendererState;
     const pb = st?.playback || {};
     const cur = st?.current || {};
@@ -2008,7 +2110,7 @@ class MuPanel extends LitElement {
           <button class="transport-btn" @click=${() => this._transport('prev')} ?disabled=${!this.leaseOwned}>${icons.prev}</button>
           <button class="transport-btn primary" @click=${() => this._transport('toggle')} ?disabled=${!this.leaseOwned}>${playing ? icons.pause : icons.play}</button>
           <button class="transport-btn" @click=${() => this._transport('next')} ?disabled=${!this.leaseOwned}>${icons.next}</button>
-          <button class="transport-btn ${repeatMode !== 'off' ? 'active' : ''}" @click=${this._cycleRepeat} ?disabled=${!this.leaseOwned} title="Repeat">${repeatMode === 'one' ? icons.repeatOne : icons.repeat}</button>
+          <button class="transport-btn ${repeatMode !== 'off' ? 'active' : ''}" @click=${this._cycleRepeat} ?disabled=${!this.leaseOwned} title="Repeat: ${repeatMode}">${repeatMode === 'one' ? icons.repeatOne : icons.repeat}</button>
         </div>
 
         <div class="progress-section">
