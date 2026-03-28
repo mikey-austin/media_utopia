@@ -84,8 +84,8 @@ const styles = css`
   .now-playing-art {
     width: 56px;
     height: 56px;
-    border-radius: 4px;
-    background: var(--mu-border);
+    border-radius: 6px;
+    background: linear-gradient(135deg, rgba(3,169,244,0.15) 0%, rgba(3,169,244,0.05) 100%);
     object-fit: cover;
     flex-shrink: 0;
     display: flex;
@@ -112,7 +112,7 @@ const styles = css`
     align-items: center;
     justify-content: center;
     gap: 2px;
-    padding: 6px 10px;
+    padding: 10px 10px 6px;
     border-bottom: 1px solid var(--mu-border);
     flex-shrink: 0;
   }
@@ -157,6 +157,9 @@ const styles = css`
   }
 
   .progress-fill { height: 100%; background: var(--mu-accent); border-radius: 2px; position: relative; }
+
+  .progress-track:hover { height: 6px; margin-top: -1px; }
+  .progress-track:hover .progress-thumb { width: 12px; height: 12px; right: -6px; top: -3px; }
 
   .progress-thumb {
     position: absolute;
@@ -511,7 +514,7 @@ const styles = css`
   }
 
   .queue-item.dragging { opacity: 0.4; }
-  .queue-item.drag-over { box-shadow: 0 -2px 0 0 var(--mu-accent); }
+  .queue-item.drag-over { border-top: 2px solid var(--mu-accent); margin-top: -2px; }
 
   /* Mobile View Toggle */
   .mobile-view-toggle {
@@ -1140,6 +1143,10 @@ class MuPanel extends LitElement {
 
   async _transport(action) {
     if (!this.selectedRenderer) return;
+    if (!this.leaseOwned) {
+      this._showToast('Acquire control first');
+      return;
+    }
     await this._callWS('mu/transport', { renderer_id: this.selectedRenderer, action });
     await this._loadRendererState();
   }
@@ -1281,6 +1288,10 @@ class MuPanel extends LitElement {
 
   async _queueJump(idx) {
     if (!this.selectedRenderer) return;
+    if (!this.leaseOwned) {
+      this._showToast('Acquire control first');
+      return;
+    }
     await this._callWS('mu/queue_jump', { renderer_id: this.selectedRenderer, index: idx });
     await this._loadRendererState();
   }
@@ -1293,12 +1304,20 @@ class MuPanel extends LitElement {
 
   async _queueRemove(id) {
     if (!this.selectedRenderer) return;
+    if (!this.leaseOwned) {
+      this._showToast('Acquire control first');
+      return;
+    }
     await this._callWS('mu/queue_remove', { renderer_id: this.selectedRenderer, queue_entry_id: id });
     await this._loadQueue();
   }
 
   async _queueClear() {
     if (!this.selectedRenderer) return;
+    if (!this.leaseOwned) {
+      this._showToast('Acquire control first');
+      return;
+    }
     await this._callWS('mu/queue_clear', { renderer_id: this.selectedRenderer });
     await this._loadQueue();
     this._showToast('Cleared');
@@ -2254,10 +2273,10 @@ class MuPanel extends LitElement {
         </div>
 
         <div class="now-playing">
-          ${cur.art_url ? html`<img class="now-playing-art" src="${cur.art_url}"/>` : html`<div class="now-playing-art">${icons.music}</div>`}
+          ${cur.art_url ? html`<img class="now-playing-art" src="${cur.art_url}" @error=${e => e.target.style.display = 'none'}/>` : html`<div class="now-playing-art">${icons.music}</div>`}
           <div class="now-playing-info">
             <div class="now-playing-title">${cur.title || 'Nothing playing'}</div>
-            <div class="now-playing-artist">${cur.artist || ''}</div>
+            ${cur.artist ? html`<div class="now-playing-artist">${cur.artist}${cur.album ? html` — <span style="opacity:0.7">${cur.album}</span>` : ''}</div>` : ''}
           </div>
         </div>
 
@@ -2318,6 +2337,7 @@ class MuPanel extends LitElement {
            @drop=${e => this._onDrop(e, idx)}>
            ${icons.drag}
         </div>
+        <span class="queue-item-num" style="min-width:20px;text-align:right;font-size:12px;color:var(--mu-secondary);flex-shrink:0">${idx + 1}</span>
         ${entry.art_url ? html`<img class="queue-item-art" src="${entry.art_url}"/>` : html`<div class="queue-item-art">${icons.music}</div>`}
         ${idx === curIdx && this.rendererState?.playback?.status === 'playing' ? html`
           <div class="eq-bars">
