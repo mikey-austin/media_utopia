@@ -178,30 +178,37 @@ class MudBridge:
             mode = call.data.get("mode", "replace")
             resolve = call.data.get("resolve", "auto")
             if not renderer or not playlist:
+                _LOGGER.warning("load_playlist: renderer and playlist are required")
                 return
             renderer_id = self._resolve_renderer(renderer)
             if renderer_id is None:
+                _LOGGER.warning("load_playlist: renderer %r not found", renderer)
                 return
             playlist_id = await self._resolve_playlist_id(playlist)
             if playlist_id is None:
+                _LOGGER.warning("load_playlist: playlist %r not found", playlist)
                 return
             await self.async_load_playlist(renderer_id, playlist_id, mode, resolve)
 
         async def _clear_queue(call):
             renderer = call.data.get("renderer")
             if not renderer:
+                _LOGGER.warning("clear_queue: renderer is required")
                 return
             renderer_id = self._resolve_renderer(renderer)
             if renderer_id is None:
+                _LOGGER.warning("clear_queue: renderer %r not found", renderer)
                 return
             await self._send_renderer_command(renderer_id, "queue.clear", {})
 
         async def _shuffle_queue(call):
             renderer = call.data.get("renderer")
             if not renderer:
+                _LOGGER.warning("shuffle_queue: renderer is required")
                 return
             renderer_id = self._resolve_renderer(renderer)
             if renderer_id is None:
+                _LOGGER.warning("shuffle_queue: renderer %r not found", renderer)
                 return
             await self._send_renderer_command(
                 renderer_id, "queue.shuffle", {"seed": int(time.time())}
@@ -245,12 +252,12 @@ class MudBridge:
         while True:
             try:
                 await asyncio.sleep(self.playlist_refresh)
-                if self._playlist_server is not None:
+                if self._selected_playlist_server is not None:
                     await self._refresh_playlists()
             except asyncio.CancelledError:
                 return
             except Exception:
-                continue
+                _LOGGER.debug("playlist refresh failed", exc_info=True)
 
     async def _on_reply(self, msg) -> None:
         try:
@@ -299,6 +306,15 @@ class MudBridge:
         elif kind == "zone":
             self._zones[node_id] = payload
             self._notify_zone_listeners(node_id)
+
+    def _cache_metadata(self, key: str, metadata: dict[str, Any]) -> None:
+        """Cache metadata with size limit."""
+        if len(self._metadata_cache) > 10000:
+            # Evict oldest entries (dict preserves insertion order in Python 3.7+)
+            to_remove = list(self._metadata_cache.keys())[:2000]
+            for k in to_remove:
+                del self._metadata_cache[k]
+        self._metadata_cache[key] = metadata
 
     def _invalidate_library_cache(self, library_id: str) -> None:
         """Remove cached metadata for items belonging to a library.
@@ -604,7 +620,7 @@ class MudBridge:
         metadata = (reply.get("body") or {}).get("metadata") or {}
         if metadata:
             metadata = self._normalize_metadata(metadata)
-            self._metadata_cache[item_id] = metadata
+            self._cache_metadata(item_id, metadata)
         return metadata
 
     async def _fetch_metadata_batch(
@@ -665,7 +681,7 @@ class MudBridge:
                 if not ref:
                     continue
                 metadata = self._normalize_metadata(metadata)
-                self._metadata_cache[ref] = metadata
+                self._cache_metadata(ref, metadata)
                 results[ref] = metadata
         return results
 
