@@ -185,6 +185,7 @@ async def ws_subscribe_renderer_state(
 
     renderer_id = msg["renderer_id"]
     msg_id = msg["id"]
+    last_sent: dict[str, Any] = {}  # Track last sent values for dedup
 
     @callback
     def state_changed(node_id: str, state: dict[str, Any]) -> None:
@@ -197,29 +198,43 @@ async def ws_subscribe_renderer_state(
             current = state.get("current") or {}
             metadata = current.get("metadata") or {}
 
+            # Only send when something meaningful changes (not just position).
+            # This prevents flooding the WS with position-only updates.
+            status = playback.get("status", "idle")
+            title = metadata.get("title", "")
+            vol = playback.get("volume", 1.0)
+            mute = playback.get("mute", False)
+            q_rev = queue.get("revision", 0)
+            q_idx = queue.get("index", 0)
+            owner = session.get("owner", "")
+            sig = (status, title, vol, mute, q_rev, q_idx, owner)
+            if sig == last_sent.get("sig"):
+                return
+            last_sent["sig"] = sig
+
             connection.send_message(websocket_api.event_message(msg_id, {
                 "session": {
-                    "owned": session.get("owner") == bridge.identity,
-                    "owner": session.get("owner", ""),
+                    "owned": owner == bridge.identity,
+                    "owner": owner,
                     "expires_in_s": max(0, int(session.get("leaseExpiresAt") or 0) - int(time.time())),
                 },
                 "playback": {
-                    "status": playback.get("status", "idle"),
+                    "status": status,
                     "position_ms": playback.get("positionMs", 0),
                     "duration_ms": playback.get("durationMs", 0),
-                    "volume": playback.get("volume", 1.0),
-                    "mute": playback.get("mute", False),
+                    "volume": vol,
+                    "mute": mute,
                 },
                 "current": {
-                    "title": metadata.get("title", ""),
+                    "title": title,
                     "artist": metadata.get("artist", ""),
                     "album": metadata.get("album", ""),
                     "art_url": bridge.rewrite_artwork_url(metadata.get("artworkUrl")),
                 },
                 "queue": {
-                    "revision": queue.get("revision", 0),
+                    "revision": q_rev,
                     "length": queue.get("length", 0),
-                    "index": queue.get("index", 0),
+                    "index": q_idx,
                     "shuffle": queue.get("shuffle", False),
                     "repeat": queue.get("repeat", False),
                     "repeatMode": queue.get("repeatMode", "off"),

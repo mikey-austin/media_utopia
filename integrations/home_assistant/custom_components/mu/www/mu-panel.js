@@ -894,6 +894,9 @@ class MuPanel extends LitElement {
     this._touchDragStartY = 0;
     this._stateUnsubscribe = null;
     this._searchDebounce = null;
+    this._positionTimer = null;
+    this._interpolatedPos = 0;
+    this._lastPosUpdate = 0;
   }
 
   connectedCallback() {
@@ -914,6 +917,7 @@ class MuPanel extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this._refreshInterval) clearInterval(this._refreshInterval);
+    if (this._positionTimer) clearInterval(this._positionTimer);
     if (this._stateUnsubscribe) {
       this._stateUnsubscribe();
       this._stateUnsubscribe = null;
@@ -940,6 +944,26 @@ class MuPanel extends LitElement {
     this._subscribeRendererState();
     // Keep a slower poll as fallback (every 10s) in case subscription misses
     this._refreshInterval = setInterval(() => this._refreshState(), 10000);
+    // Client-side position interpolation (1s tick) avoids needing server push for progress bar
+    this._positionTimer = setInterval(() => this._interpolatePosition(), 1000);
+  }
+
+  _interpolatePosition() {
+    const pb = this.rendererState?.playback;
+    if (!pb || pb.status !== 'playing' || this._localSeekPos !== null) return;
+    const now = Date.now();
+    if (this._lastPosUpdate === 0) {
+      this._lastPosUpdate = now;
+      this._interpolatedPos = pb.position_ms || 0;
+      return;
+    }
+    const elapsed = now - this._lastPosUpdate;
+    this._lastPosUpdate = now;
+    this._interpolatedPos = Math.min(
+      (this._interpolatedPos || 0) + elapsed,
+      pb.duration_ms || 0
+    );
+    this.requestUpdate();
   }
 
   async _callWS(type, data = {}) {
@@ -1053,6 +1077,9 @@ class MuPanel extends LitElement {
     const oldRev = prev?.queue?.revision;
     this.rendererState = event;
     this.leaseOwned = event.session?.owned || false;
+    // Reset position interpolation to server value
+    this._interpolatedPos = event.playback?.position_ms || 0;
+    this._lastPosUpdate = Date.now();
     if (event.queue?.revision !== oldRev) {
       this._loadQueue();
     }
@@ -2254,7 +2281,7 @@ class MuPanel extends LitElement {
     const sess = st?.session || {};
     const playing = pb.status === 'playing';
     // Use local values when dragging, otherwise use server state
-    const pos = this._localSeekPos !== null ? this._localSeekPos : (pb.position_ms || 0);
+    const pos = this._localSeekPos !== null ? this._localSeekPos : (this._interpolatedPos || pb.position_ms || 0);
     const dur = pb.duration_ms || 1;
     const vol = this._localVolume !== null ? this._localVolume : (pb.volume ?? 1);
     const shuffle = q.shuffle || false;
