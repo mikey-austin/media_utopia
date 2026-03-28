@@ -60,6 +60,9 @@ type Module struct {
 	cmdQueue chan cmdWork
 	ctx      context.Context
 
+	// Command deduplication
+	dedup *mu.CommandDedup
+
 	// Persistent reply handling
 	replyMu       sync.RWMutex
 	replyHandlers map[string]chan mu.ReplyEnvelope
@@ -100,6 +103,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		config:        cfg,
 		cmdTopic:      cmdTopic,
 		cmdQueue:      make(chan cmdWork, 64),
+		dedup:         mu.NewCommandDedup(128),
 		replyHandlers: make(map[string]chan mu.ReplyEnvelope),
 		replyTopic:    replyTopic,
 	}, nil
@@ -248,6 +252,13 @@ func (m *Module) handleReply(msg paho.Message) {
 
 // processCommand handles a single command.
 func (m *Module) processCommand(cmd mu.CommandEnvelope) {
+	if m.dedup.Seen(cmd.ID) {
+		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
+		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+		payload, _ := json.Marshal(reply)
+		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
+		return
+	}
 	m.mu.Lock()
 	reply := m.dispatch(cmd)
 	m.mu.Unlock()

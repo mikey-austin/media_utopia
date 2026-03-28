@@ -51,6 +51,7 @@ type Module struct {
 	upnp    *pupnp.Client
 	config  Config
 	render  map[string]*rendererInstance // keyed by device ID
+	dedup   *mu.CommandDedup
 	mu      sync.Mutex
 	closing chan struct{}
 }
@@ -118,6 +119,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		upnp:    upnpClient,
 		config:  cfg,
 		render:  map[string]*rendererInstance{},
+		dedup:   mu.NewCommandDedup(128),
 		closing: make(chan struct{}),
 	}, nil
 }
@@ -285,6 +287,13 @@ func (m *Module) handleRendererMessage(r *rendererInstance, msg paho.Message) {
 	var cmd mu.CommandEnvelope
 	if err := json.Unmarshal(msg.Payload(), &cmd); err != nil {
 		m.log.Warn("invalid renderer command", zap.String("node", r.nodeID), zap.Error(err))
+		return
+	}
+	if m.dedup.Seen(cmd.ID) {
+		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
+		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+		payload, _ := json.Marshal(reply)
+		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
 		return
 	}
 	r.mu.Lock()
