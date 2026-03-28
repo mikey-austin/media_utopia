@@ -87,6 +87,7 @@ class MuZoneEntity(MediaPlayerEntity):
     """A zone speaker entity for Snapcast."""
 
     _attr_should_poll = False
+    _attr_icon = "mdi:speaker"
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
     _attr_supported_features = (
         MediaPlayerEntityFeature.VOLUME_SET
