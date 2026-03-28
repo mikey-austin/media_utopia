@@ -243,7 +243,8 @@ func (c *mbClient) searchRelease(ctx context.Context, artist, album string) (*MB
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("musicbrainz search: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, fmt.Errorf("musicbrainz search failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var searchResp mbSearchResponse
@@ -287,7 +288,8 @@ func (c *mbClient) fetchReleaseGroup(ctx context.Context, id string) (*MBMetadat
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("musicbrainz release-group: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, fmt.Errorf("musicbrainz release-group failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var rg mbReleaseGroup
@@ -512,7 +514,8 @@ func (c *discogsClient) searchRelease(ctx context.Context, artist, album string)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("discogs search: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, fmt.Errorf("discogs search failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var searchResp discogsSearchResponse
@@ -558,7 +561,8 @@ func (c *discogsClient) fetchMaster(ctx context.Context, masterID int) (*Discogs
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("discogs master: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, fmt.Errorf("discogs master failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var master discogsMasterResponse
@@ -806,7 +810,8 @@ func (c *mbClient) fetchArtist(ctx context.Context, artistID string) (*ArtistInf
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("musicbrainz artist: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, "", fmt.Errorf("musicbrainz artist failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var ar mbArtistResponse
@@ -871,7 +876,8 @@ func (c *discogsClient) fetchRelease(ctx context.Context, releaseID int) (string
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("discogs release: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return "", nil, fmt.Errorf("discogs release failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var release discogsReleaseResponse
@@ -912,7 +918,8 @@ func (c *discogsClient) fetchArtist(ctx context.Context, artistID int) (*discogs
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("discogs artist: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, fmt.Errorf("discogs artist failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	var artist discogsArtistResponse
@@ -1120,6 +1127,7 @@ type artistCacheEntry struct {
 // enrichAlbums queries MusicBrainz and Discogs for each target, writes sidecars,
 // and rebuilds embeddings if any albums were enriched.
 func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
+	startTime := time.Now()
 	m.log.Info("enrichment starting",
 		zap.Int("albums", len(targets)),
 		zap.Bool("summary_gen_available", m.summaryGen != nil))
@@ -1143,10 +1151,19 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 	// Shared HTTP client for Wikipedia requests
 	wikiClient := &http.Client{Timeout: 15 * time.Second}
 
-	enriched := 0
+	var enriched, skipped, failed int
 	for _, t := range targets {
 		if ctx.Err() != nil {
+			m.log.Info("enrichment cancelled", zap.Int("processed", enriched+skipped+failed))
 			break
+		}
+
+		// Log sidecar version upgrades
+		if existing, err := readSidecar(t.Dir); err == nil && existing.Version < currentSidecarVersion {
+			m.log.Debug("upgrading sidecar",
+				zap.String("path", sidecarPath(t.Dir)),
+				zap.Int("from", existing.Version),
+				zap.Int("to", currentSidecarVersion))
 		}
 
 		meta := &AlbumMetadata{
@@ -1166,6 +1183,10 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 		} else {
 			meta.MusicBrainz = mbMeta
 		}
+		if ctx.Err() != nil {
+			m.log.Info("enrichment cancelled", zap.Int("processed", enriched+skipped+failed))
+			break
+		}
 
 		// 2. Query Discogs master
 		dcMeta, err := dc.searchRelease(ctx, t.Artist, t.Album)
@@ -1176,6 +1197,10 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 				zap.Error(err))
 		} else {
 			meta.Discogs = dcMeta
+		}
+		if ctx.Err() != nil {
+			m.log.Info("enrichment cancelled", zap.Int("processed", enriched+skipped+failed))
+			break
 		}
 
 		// 2b. AcoustID fingerprint fallback (when MB text search missed)
@@ -1225,6 +1250,11 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 			}
 		}
 
+		if ctx.Err() != nil {
+			m.log.Info("enrichment cancelled", zap.Int("processed", enriched+skipped+failed))
+			break
+		}
+
 		// 3. Discogs: fetch main release for fuller notes + credits
 		if meta.Discogs != nil && meta.Discogs.MainReleaseID > 0 {
 			notes, credits, err := dc.fetchRelease(ctx, meta.Discogs.MainReleaseID)
@@ -1241,6 +1271,11 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 		// 3b. Extract instruments from Discogs tracklist credits
 		if meta.Discogs != nil && len(meta.Discogs.Credits) > 0 {
 			meta.Discogs.Instruments = extractInstruments(meta.Discogs.Credits)
+		}
+
+		if ctx.Err() != nil {
+			m.log.Info("enrichment cancelled", zap.Int("processed", enriched+skipped+failed))
+			break
 		}
 
 		// 4. Fetch artist info (with caching)
@@ -1311,6 +1346,11 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 					}
 				}
 			}
+		}
+
+		if ctx.Err() != nil {
+			m.log.Info("enrichment cancelled", zap.Int("processed", enriched+skipped+failed))
+			break
 		}
 
 		// 5. Wikipedia summaries
@@ -1393,6 +1433,7 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 			m.log.Warn("failed to write sidecar",
 				zap.String("dir", t.Dir),
 				zap.Error(err))
+			failed++
 			continue
 		}
 
@@ -1407,12 +1448,16 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 			m.log.Debug("album enriched",
 				zap.String("artist", t.Artist),
 				zap.String("album", t.Album))
+		} else {
+			skipped++
 		}
 	}
 
 	m.log.Info("enrichment complete",
 		zap.Int("enriched", enriched),
-		zap.Int("total", len(targets)))
+		zap.Int("skipped", skipped),
+		zap.Int("failed", failed),
+		zap.Duration("elapsed", time.Since(startTime)))
 
 	// Rebuild embeddings if any albums were enriched
 	if enriched > 0 {
