@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -183,7 +183,7 @@ class MuRendererEntity(MediaPlayerEntity):
         ts = state.get("ts")
         if ts is None:
             return None
-        return dt_util.as_utc(datetime.utcfromtimestamp(float(ts)))
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc)
 
     @property
     def media_image_url(self) -> str | None:

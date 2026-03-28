@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from homeassistant.components.select import SelectEntity
@@ -39,7 +40,7 @@ class PlaylistSelectionManager:
         self._selections: dict[str, str] = {}
         self._options: list[str] = []
         self._name_to_id: dict[str, str] = {}
-        self._listeners: list[callable] = []
+        self._listeners: list[Callable] = []
         self.refresh_renderers()
         self._bridge.register_renderer_listener(self._on_renderer)
 

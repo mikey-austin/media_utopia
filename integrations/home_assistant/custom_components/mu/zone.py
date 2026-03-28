@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -13,6 +14,8 @@ from homeassistant.components.media_player import (
     MediaPlayerState,
     MediaPlayerDeviceClass,
 )
+
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 
@@ -297,8 +300,6 @@ class MuZoneEntity(MediaPlayerEntity):
         renderer_id = self._get_matching_renderer()
         if not renderer_id:
             return None
-        from datetime import datetime
-        from homeassistant.util import dt as dt_util
         state = self._bridge.get_renderer_state(renderer_id)
         playback = state.get("playback") or {}
         status = (playback.get("status") or "").lower()
@@ -307,4 +308,4 @@ class MuZoneEntity(MediaPlayerEntity):
         ts = state.get("ts")
         if ts is None:
             return None
-        return dt_util.as_utc(datetime.utcfromtimestamp(float(ts)))
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc)
