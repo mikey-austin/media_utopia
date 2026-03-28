@@ -405,11 +405,38 @@ func (idx *VectorIndex) Clear() {
 	idx.mu.Unlock()
 }
 
+// Get returns the vector for the given key, or nil and false if not present.
+func (idx *VectorIndex) Get(id string) ([]float32, bool) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	vec, ok := idx.vectors[id]
+	return vec, ok
+}
+
 // Size returns the number of vectors in the index.
 func (idx *VectorIndex) Size() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return len(idx.vectors)
+}
+
+// RemoveStale removes vectors whose base item ID (the portion before the first
+// ":" suffix) is not present in currentIDs. This is used during incremental
+// embedding rebuilds to prune vectors for deleted items without clearing the
+// entire index.
+func (idx *VectorIndex) RemoveStale(currentIDs map[string]bool) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	for key := range idx.vectors {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 0 {
+			continue
+		}
+		itemID := parts[0]
+		if !currentIDs[itemID] {
+			delete(idx.vectors, key)
+		}
+	}
 }
 
 // SimilarityResult represents a similarity search result.
@@ -451,6 +478,17 @@ func (idx *VectorIndex) Search(query []float32, limit int) []SimilarityResult {
 const (
 	vectorSuffixCard    = ":card"
 	vectorSuffixSummary = ":summary"
+
+	// DefaultSimilarityThreshold is the minimum cosine similarity score for
+	// a result to be considered relevant in semantic search. Cosine similarity
+	// ranges from -1 to 1 where 1 is identical. 0.5 is a reasonable cutoff
+	// for "somewhat related" content; higher values (0.6-0.7) are more strict.
+	DefaultSimilarityThreshold float32 = 0.5
+
+	// DefaultCardWeight and DefaultSummaryWeight control the relative
+	// importance of card vs summary vectors in dual-vector search.
+	DefaultCardWeight    float32 = 0.6
+	DefaultSummaryWeight float32 = 0.4
 )
 
 // SearchDual performs weighted dual-vector search, combining card and summary vectors.

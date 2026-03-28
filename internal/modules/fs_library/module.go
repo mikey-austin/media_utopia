@@ -1610,7 +1610,7 @@ func (m *Module) semanticSearch(query string, start int64, count int64) ([]libra
 	}
 	// Request more to allow for pagination
 	searchLimit := int(start) + limit + 10
-	similar := m.vectorIndex.SearchDual(queryVec, 0.6, 0.4, searchLimit)
+	similar := m.vectorIndex.SearchDual(queryVec, DefaultCardWeight, DefaultSummaryWeight, searchLimit)
 	if len(similar) == 0 {
 		// Fallback for legacy index without :card/:summary suffixes
 		similar = m.vectorIndex.Search(queryVec, searchLimit)
@@ -1660,10 +1660,7 @@ func (m *Module) semanticSearch(query string, start int64, count int64) ([]libra
 	}
 
 	// Filter by minimum similarity threshold
-	// Note: Cosine similarity ranges from -1 to 1, where 1 is identical.
-	// A threshold of 0.5 is a reasonable cutoff for "somewhat related" content.
-	// Higher values (0.6-0.7) would be more strict.
-	const minSimilarity = 0.5
+	minSimilarity := DefaultSimilarityThreshold
 	filtered := make([]SimilarityResult, 0, len(similar))
 	for _, r := range similar {
 		if r.Score >= minSimilarity {
@@ -1748,12 +1745,21 @@ func (m *Module) buildEmbeddings(ctx context.Context, items map[string]mediaItem
 		zap.Int("total_items", len(items)),
 		zap.String("provider", m.embedProvider.Name()))
 
-	// Clear old vectors
-	m.vectorIndex.Clear()
+	// Build set of current item IDs for tracking what to keep
+	currentIDs := make(map[string]bool, len(items))
+	for id := range items {
+		currentIDs[id] = true
+	}
 
-	// Collect items needing embeddings (card + optional summary)
+	// Remove vectors for items that no longer exist instead of clearing all
+	m.vectorIndex.RemoveStale(currentIDs)
+
+	// Collect items needing embeddings (card + optional summary).
+	// Items already present in the vector index with matching cached text
+	// are skipped entirely to make incremental rebuilds fast.
 	var inputs []EmbedInput
 	cached := 0
+	skipped := 0
 
 	for id, item := range items {
 		var enrich *AlbumMetadata
@@ -1772,14 +1778,25 @@ func (m *Module) buildEmbeddings(ctx context.Context, items map[string]mediaItem
 		}
 		cardID := id + vectorSuffixCard
 		if m.embedCache != nil {
-			if vec, ok := m.embedCache.Get(cardID, cardText); ok {
-				m.vectorIndex.Add(cardID, vec)
-				cached++
+			if _, ok := m.embedCache.Get(cardID, cardText); ok {
+				if _, inIdx := m.vectorIndex.Get(cardID); inIdx {
+					// Already in index with same text — nothing to do
+					skipped++
+				} else {
+					// Cached but not in index (e.g. first run after restart)
+					vec, _ := m.embedCache.Get(cardID, cardText)
+					m.vectorIndex.Add(cardID, vec)
+					cached++
+				}
 			} else {
 				inputs = append(inputs, EmbedInput{ID: cardID, Text: cardText})
 			}
 		} else {
-			inputs = append(inputs, EmbedInput{ID: cardID, Text: cardText})
+			if _, inIdx := m.vectorIndex.Get(cardID); !inIdx {
+				inputs = append(inputs, EmbedInput{ID: cardID, Text: cardText})
+			} else {
+				skipped++
+			}
 		}
 
 		// Summary vector (only if non-empty)
@@ -1787,30 +1804,42 @@ func (m *Module) buildEmbeddings(ctx context.Context, items map[string]mediaItem
 		if summaryText != "" {
 			summaryID := id + vectorSuffixSummary
 			if m.embedCache != nil {
-				if vec, ok := m.embedCache.Get(summaryID, summaryText); ok {
-					m.vectorIndex.Add(summaryID, vec)
-					cached++
+				if _, ok := m.embedCache.Get(summaryID, summaryText); ok {
+					if _, inIdx := m.vectorIndex.Get(summaryID); inIdx {
+						skipped++
+					} else {
+						vec, _ := m.embedCache.Get(summaryID, summaryText)
+						m.vectorIndex.Add(summaryID, vec)
+						cached++
+					}
 				} else {
 					inputs = append(inputs, EmbedInput{ID: summaryID, Text: summaryText})
 				}
 			} else {
-				inputs = append(inputs, EmbedInput{ID: summaryID, Text: summaryText})
+				if _, inIdx := m.vectorIndex.Get(summaryID); !inIdx {
+					inputs = append(inputs, EmbedInput{ID: summaryID, Text: summaryText})
+				} else {
+					skipped++
+				}
 			}
 		}
 	}
 
-	if cached > 0 {
-		m.log.Debug("loaded embeddings from cache", zap.Int("count", cached))
+	if cached > 0 || skipped > 0 {
+		m.log.Debug("incremental embedding status",
+			zap.Int("loaded_from_cache", cached),
+			zap.Int("already_in_index", skipped))
 	}
 
 	if len(inputs) == 0 {
-		m.log.Debug("all embeddings loaded from cache, nothing to compute")
+		m.log.Debug("all embeddings up to date, nothing to compute")
 		return
 	}
 
 	m.log.Info("building embeddings",
 		zap.Int("to_compute", len(inputs)),
-		zap.Int("from_cache", cached))
+		zap.Int("from_cache", cached),
+		zap.Int("already_indexed", skipped))
 
 	// Log sample of texts being embedded
 	sampleSize := 3
@@ -1862,8 +1891,9 @@ func (m *Module) buildEmbeddings(ctx context.Context, items map[string]mediaItem
 	}
 
 	m.log.Info("embeddings built",
-		zap.Int("to_compute", len(inputs)),
+		zap.Int("computed", len(inputs)),
 		zap.Int("from_cache", cached),
+		zap.Int("already_indexed", skipped),
 		zap.Int("vector_index_size", m.vectorIndex.Size()))
 }
 
