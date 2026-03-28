@@ -1035,7 +1035,19 @@ class MuPanel extends LitElement {
 
   _onRendererStateEvent(event) {
     if (!event) return;
-    const oldRev = this.rendererState?.queue?.revision;
+    const prev = this.rendererState;
+    // Skip if nothing meaningful changed (avoid flicker from frequent state publishes)
+    if (prev
+        && prev.playback?.status === event.playback?.status
+        && prev.current?.title === event.current?.title
+        && prev.current?.artist === event.current?.artist
+        && prev.queue?.revision === event.queue?.revision
+        && prev.playback?.volume === event.playback?.volume
+        && prev.playback?.mute === event.playback?.mute
+        && prev.session?.owned === event.session?.owned) {
+      return; // No meaningful change, skip re-render
+    }
+    const oldRev = prev?.queue?.revision;
     this.rendererState = event;
     this.leaseOwned = event.session?.owned || false;
     if (event.queue?.revision !== oldRev) {
