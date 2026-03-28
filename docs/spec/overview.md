@@ -136,3 +136,38 @@ When a command fails, the reply envelope contains an `err` object with a `code` 
 | `TIMEOUT` | Operation timed out | Retry |
 | `UNSUPPORTED` | Command not supported by this node | Check capabilities |
 | `INTERNAL` | Internal error | Report bug |
+
+## Events
+
+Nodes publish events to `mu/v1/node/<nodeId>/evt` (QoS 0, not retained).
+Events are informational — clients MUST NOT rely on events for state; always
+read `/state` for the canonical state.
+
+### Event Envelope
+
+```json
+{
+  "type": "track.changed",
+  "ts": 1774700000,
+  "data": { ... }
+}
+```
+
+### Standard Event Types
+
+| Event Type | Publisher | Description |
+|-----------|----------|-------------|
+| `playback.started` | Renderer | Playback began (includes `itemId`) |
+| `playback.stopped` | Renderer | Playback stopped (user or end-of-queue) |
+| `playback.paused` | Renderer | Playback paused |
+| `playback.resumed` | Renderer | Playback resumed from pause |
+| `playback.ended` | Renderer | Current track finished naturally |
+| `playback.error` | Renderer | Playback error (includes `error` message) |
+| `track.changed` | Renderer | Current track changed (includes new `itemId`) |
+| `queue.changed` | Renderer | Queue was modified (includes new `revision`) |
+| `volume.changed` | Renderer | Volume or mute state changed |
+| `session.acquired` | Renderer | Lease acquired (includes `owner`) |
+| `session.released` | Renderer | Lease released |
+| `session.expired` | Renderer | Lease expired without renewal |
+| `library.scan.started` | Library | Rescan started |
+| `library.scan.complete` | Library | Rescan completed (includes `items` count) |
