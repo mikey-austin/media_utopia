@@ -22,5 +22,29 @@
         }
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Media Utopia Options",
+        "description": "Update your Media Utopia integration settings.",
+        "data": {
+          "topic_base": "MQTT Topic Base",
+          "discovery_prefix": "MQTT Discovery Prefix",
+          "entity_prefix": "Entity Prefix",
+          "identity": "Controller Identity",
+          "playlist_refresh_seconds": "Playlist Refresh Interval (seconds)",
+          "artwork_base_url": "Artwork Base URL (optional)"
+        },
+        "data_description": {
+          "topic_base": "The base MQTT topic used by Media Utopia (default: mu/v1).",
+          "discovery_prefix": "The MQTT discovery prefix for Home Assistant (default: homeassistant).",
+          "entity_prefix": "Prefix for entity naming (default: mu/ha).",
+          "identity": "Identity string for this controller (default: homeassistant).",
+          "playlist_refresh_seconds": "How often to refresh playlists from the server (default: 30).",
+          "artwork_base_url": "Override base URL for artwork images. Leave empty to auto-detect."
+        }
+      }
+    }
   }
 }
