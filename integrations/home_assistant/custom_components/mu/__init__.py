@@ -1,10 +1,17 @@
-"""Mud integration."""
+"""Media Utopia integration for Home Assistant.
+
+Provides media player control, playlist management, and library browsing
+via MQTT communication with Media Utopia renderers and services.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
+
+_LOGGER = logging.getLogger(__name__)
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components import mqtt, frontend
@@ -36,6 +43,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(
             "MQTT integration is not configured. Add mqtt: to configuration.yaml."
         )
+    _LOGGER.debug("Setting up Media Utopia integration")
     domain_data = hass.data.setdefault(DOMAIN, {})
     
     # Register HTTP views
@@ -52,10 +60,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not domain_data.get("panel_registered"):
         await _register_panel(hass)
         domain_data["panel_registered"] = True
-    
+        _LOGGER.debug("Custom panel registered")
+
     bridge = MudBridge(hass, entry)
     await bridge.async_start()
     domain_data[entry.entry_id] = {"bridge": bridge}
+    _LOGGER.debug("Bridge started for entry %s", entry.entry_id)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -99,7 +109,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if isinstance(data, dict):
         bridge = data.get("bridge")
     if bridge is not None:
-        await bridge.async_stop()
+        try:
+            await bridge.async_stop()
+        except Exception:
+            _LOGGER.warning("Error stopping MU bridge", exc_info=True)
     return unload_ok
 
 

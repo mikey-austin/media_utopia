@@ -1,7 +1,7 @@
 {
   "domain": "mu",
   "name": "Media Utopia",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "documentation": "https://github.com/mikey-austin/media_utopia",
   "dependencies": ["mqtt"],
   "codeowners": ["@mikey-austin"],
