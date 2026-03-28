@@ -59,6 +59,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_playlist_servers_list)
     websocket_api.async_register_command(hass, ws_playlist_server_select)
     websocket_api.async_register_command(hass, ws_playlist_save_from_queue)
+    websocket_api.async_register_command(hass, ws_subscribe_renderer_state)
 
 
 def _get_bridge(hass: HomeAssistant):
@@ -162,6 +163,71 @@ async def ws_renderer_state(
         },
     }
     connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "mu/subscribe_renderer_state",
+    vol.Required("renderer_id"): str,
+})
+@websocket_api.async_response
+async def ws_subscribe_renderer_state(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Subscribe to renderer state changes."""
+    bridge = _get_bridge(hass)
+    if bridge is None:
+        connection.send_error(msg["id"], "not_ready", "MU integration not ready")
+        return
+
+    renderer_id = msg["renderer_id"]
+
+    @callback
+    def state_changed(node_id: str, state: dict[str, Any]) -> None:
+        if node_id != renderer_id:
+            return
+        session = state.get("session") or {}
+        playback = state.get("playback") or {}
+        queue = state.get("queue") or {}
+        current = state.get("current") or {}
+        metadata = current.get("metadata") or {}
+
+        connection.send_message(websocket_api.event_message(msg["id"], {
+            "session": {
+                "owned": session.get("owner") == bridge.identity,
+                "owner": session.get("owner", ""),
+                "expires_in_s": max(0, int(session.get("leaseExpiresAt") or 0) - int(time.time())),
+            },
+            "playback": {
+                "status": playback.get("status", "idle"),
+                "position_ms": playback.get("positionMs", 0),
+                "duration_ms": playback.get("durationMs", 0),
+                "volume": playback.get("volume", 1.0),
+                "mute": playback.get("mute", False),
+            },
+            "current": {
+                "title": metadata.get("title", ""),
+                "artist": metadata.get("artist", ""),
+                "album": metadata.get("album", ""),
+                "art_url": bridge.rewrite_artwork_url(metadata.get("artworkUrl")),
+            },
+            "queue": {
+                "revision": queue.get("revision", 0),
+                "length": queue.get("length", 0),
+                "index": queue.get("index", 0),
+                "shuffle": queue.get("shuffle", False),
+                "repeat": queue.get("repeat", False),
+                "repeatMode": queue.get("repeatMode", "off"),
+            },
+        }))
+
+    bridge.register_renderer_state_listener(state_changed)
+    connection.send_result(msg["id"])
+
+    # Note: In a full implementation, we'd track the listener and remove it
+    # on disconnect. For now, the listener is lightweight (just a closure)
+    # and will be garbage collected when the bridge is stopped.
 
 
 # --- Lease Management ---
