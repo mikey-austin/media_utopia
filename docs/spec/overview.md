@@ -54,3 +54,54 @@ IDs are opaque outside the provider that minted them.
 - **Multi-instance:** multiple renderers per namespace (`default`, `livingroom`, `patio`).
 - **Bridges:** tie a provider name to a backend (`jellyfin`, `upnp`, `kodi`, `go2rtc`).
 - **Zones:** multi-room audio with zone controller backends (`snapcast`, `pipewire`).
+
+## Capabilities
+
+Renderers announce their capabilities in the `caps` field of their presence message.
+Controllers SHOULD check capabilities before sending commands that require them.
+
+### Standard Capabilities
+
+| Capability | Type | Description |
+|-----------|------|-------------|
+| `seek` | bool | Supports `playback.seek` |
+| `volume` | bool | Supports `playback.setVolume` and `playback.setMute` |
+| `queue` | bool | Supports queue commands (`queue.add`, `queue.remove`, etc.) |
+| `queueResolve` | bool | Renderer can resolve `lib:` references in queue entries |
+| `crossfade` | bool | Supports gapless/crossfade transitions between tracks |
+| `shuffle` | bool | Supports `queue.setShuffle` |
+| `repeat` | bool | Supports `queue.setRepeat` |
+| `gapless` | bool | Supports gapless playback (no silence between tracks) |
+
+### Library Capabilities
+
+Libraries announce their capabilities in presence:
+
+| Capability | Type | Description |
+|-----------|------|-------------|
+| `browse` | bool | Supports `library.browse` |
+| `search` | bool | Supports `library.search` |
+| `resolve` | bool | Supports `library.resolve` |
+| `resolveBatch` | bool | Supports `library.resolveBatch` |
+| `rescan` | bool | Supports `library.rescan` |
+
+### Example Presence with Capabilities
+
+```json
+{
+  "nodeId": "mu:renderer:gstreamer:mud@office:default",
+  "kind": "renderer",
+  "name": "Office Renderer",
+  "caps": {
+    "seek": true,
+    "volume": true,
+    "queue": true,
+    "queueResolve": false,
+    "crossfade": true,
+    "shuffle": true,
+    "repeat": true,
+    "gapless": true
+  },
+  "ts": 1774700000
+}
+```
