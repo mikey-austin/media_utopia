@@ -191,8 +191,8 @@ const styles = css`
     transition: background 0.1s;
   }
 
-  .queue-item:hover, .browser-item:hover { background: rgba(255,255,255,0.05); }
-  .queue-item.playing { background: rgba(3,169,244,0.12); }
+  .queue-item:hover, .browser-item:hover { background: rgba(255,255,255,0.03); }
+  .queue-item.playing { background: rgba(3,169,244,0.08); }
 
   .queue-item-art, .browser-item-art {
     width: 32px;
@@ -233,7 +233,7 @@ const styles = css`
     display: flex;
     gap: 2px;
     opacity: 0;
-    transition: opacity 0.1s;
+    transition: opacity 0.15s;
     flex-shrink: 0;
   }
 
@@ -314,6 +314,17 @@ const styles = css`
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .mobile-toggle {
+    display: none;
+    background: transparent;
+    border: 1px solid var(--mu-border);
+    color: var(--primary-text-color);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
   }
 
   .letter-index {
@@ -546,20 +557,23 @@ const styles = css`
 
   /* Responsive: Tablet (768px and below) */
   @media (max-width: 768px) {
+    .mobile-toggle { display: block; }
+    .browser-pane.hidden, .queue-pane.hidden { display: none !important; }
+
     .browser-pane { min-width: 240px; }
     .queue-pane { min-width: 280px; }
     .resize-handle { display: none; }
-    
+
     .browser-item, .queue-item { padding: 10px 8px; }
     .browser-item-art, .queue-item-art { width: 44px; height: 44px; }
-    
+
     .action-btn { padding: 6px 10px; font-size: 11px; }
     .transport-btn { width: 44px; height: 44px; }
-    
+
     .zone-item { padding: 10px 0; }
     .zone-mute-btn { width: 36px; height: 36px; }
     .zone-volume-slider { height: 8px; }
-    
+
     .letter-index button { padding: 6px 8px; font-size: 12px; }
 
     .search-bar { padding: 8px; }
@@ -723,6 +737,36 @@ const styles = css`
 
   .search-input::placeholder { color: var(--mu-secondary); }
   .search-input:focus { outline: none; border-color: var(--mu-accent); }
+
+  .search-input-wrapper {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .search-input-wrapper .search-input {
+    flex: 1;
+    padding-right: 28px;
+  }
+
+  .search-clear {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent;
+    border: none;
+    color: var(--mu-secondary);
+    cursor: pointer;
+    padding: 2px 4px;
+    font-size: 14px;
+  }
+
+  .search-clear:hover {
+    color: var(--primary-text-color);
+  }
 
   .search-library-select {
     background: var(--primary-background-color);
@@ -1702,6 +1746,9 @@ class MuPanel extends LitElement {
       <div class="main-header">
         <ha-menu-button .hass=${this.hass} .narrow=${this.narrow}></ha-menu-button>
         <div class="main-header-title">Media Utopia</div>
+        <button class="mobile-toggle" @click=${() => { this.mobileView = this.mobileView === 'browser' ? 'player' : 'browser'; }}>
+          ${this.mobileView === 'browser' ? 'Player \u25B8' : '\u25C2 Browse'}
+        </button>
         <ha-icon-button icon="mdi:dots-vertical"></ha-icon-button>
       </div>
       <div class="mobile-view-toggle">
@@ -1740,10 +1787,15 @@ class MuPanel extends LitElement {
     const showSearchResults = this.searchResults !== null;
     return html`
       <div class="search-bar">
-        <input class="search-input" type="text" placeholder="Search library..."
-          .value=${this.searchQuery}
-          @input=${e => this._onSearchInput(e)}
-          @keydown=${e => this._onSearchKeydown(e)} />
+        <div class="search-input-wrapper">
+          <input class="search-input" type="text" placeholder="Search library..."
+            .value=${this.searchQuery}
+            @input=${e => this._onSearchInput(e)}
+            @keydown=${e => this._onSearchKeydown(e)} />
+          ${this.searchQuery ? html`
+            <button class="search-clear" @click=${() => this._clearSearch()} title="Clear search">\u2715</button>
+          ` : ''}
+        </div>
         ${this.libraries.length > 1 ? html`
           <select class="search-library-select"
             .value=${this.searchLibraryId || (this.libraries[0] && this.libraries[0].libraryId) || ''}
@@ -2137,8 +2189,14 @@ class MuPanel extends LitElement {
   }
 
   _renderZonesTab() {
-    if (!this.zones.length) {
-      return html`<div class="browser-list"><div class="empty">No zones available</div></div>`;
+    if (!this.zones?.length && !this.zoneControllers?.length) {
+      return html`<div class="tab-content">
+        <div class="pane-header"><span class="pane-title">Zones</span></div>
+        <div class="empty" style="flex-direction:column;gap:8px;padding:20px">
+          <div>No multi-room zones configured</div>
+          <div style="font-size:11px;opacity:0.6">Connect a Snapcast server to enable multi-room audio</div>
+        </div>
+      </div>`;
     }
 
 
