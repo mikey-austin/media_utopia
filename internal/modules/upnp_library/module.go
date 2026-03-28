@@ -69,6 +69,7 @@ type Module struct {
 	http   *http.Client
 	upnp   *pupnp.Client
 	config Config
+	dedup  *mu.CommandDedup
 
 	cmdTopic string
 	cmdQueue chan cmdWork
@@ -190,6 +191,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		},
 		upnp:           upnpClient,
 		config:         cfg,
+		dedup:          mu.NewCommandDedup(128),
 		cmdTopic:       cmdTopic,
 		cmdQueue:       make(chan cmdWork, 64),
 		cache:          newCache(cfg.CacheSize),
@@ -324,6 +326,14 @@ func (m *Module) commandWorker(ctx context.Context) {
 }
 
 func (m *Module) processCommand(cmd mu.CommandEnvelope, serverID string) {
+	if m.dedup.Seen(cmd.ID) {
+		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
+		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+		payload, _ := json.Marshal(reply)
+		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
+		return
+	}
+
 	started := time.Now()
 	reply := m.dispatch(cmd, serverID)
 	if cmd.ReplyTo == "" {

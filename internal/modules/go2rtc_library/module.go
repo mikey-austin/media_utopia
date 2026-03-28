@@ -53,11 +53,12 @@ type Module struct {
 	config   Config
 	cmdTopic string
 	cmdQueue chan cmdWork
+	dedup    *mu.CommandDedup
 
 	cache    gocache.CacheInterface[[]byte]
 	cacheCtx context.Context
 
-	mu          sync.Mutex
+	streamsMu   sync.Mutex
 	streams     map[string]streamInfo
 	lastRefresh time.Time
 }
@@ -124,6 +125,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		config:   cfg,
 		cmdTopic: cmdTopic,
 		cmdQueue: make(chan cmdWork, 64),
+		dedup:    mu.NewCommandDedup(128),
 		cache:    newCache(cfg.CacheSize),
 		cacheCtx: context.Background(),
 		streams:  make(map[string]streamInfo),
@@ -218,6 +220,14 @@ func (m *Module) commandWorker(ctx context.Context) {
 }
 
 func (m *Module) processCommand(cmd mu.CommandEnvelope) {
+	if m.dedup.Seen(cmd.ID) {
+		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
+		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+		payload, _ := json.Marshal(reply)
+		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
+		return
+	}
+
 	reply := m.dispatch(cmd)
 	if cmd.ReplyTo == "" {
 		return
@@ -519,8 +529,8 @@ func (m *Module) streamEntries(stream streamInfo) []libraryItem {
 }
 
 func (m *Module) refreshStreams() (map[string]streamInfo, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.streamsMu.Lock()
+	defer m.streamsMu.Unlock()
 	if time.Since(m.lastRefresh) < m.config.RefreshInterval && len(m.streams) > 0 {
 		return m.streams, nil
 	}

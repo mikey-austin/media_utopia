@@ -377,6 +377,7 @@ type Module struct {
 	config   Config
 	cmdTopic string
 	cmdQueue chan cmdWork
+	dedup    *mu.CommandDedup
 
 	mu      sync.RWMutex
 	scanMu        sync.Mutex // serializes concurrent scans
@@ -676,6 +677,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		config:        cfg,
 		cmdTopic:      cmdTopic,
 		cmdQueue:      make(chan cmdWork, 64),
+		dedup:         mu.NewCommandDedup(128),
 		index: &libraryIndex{
 			Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}, Containers: map[string]containerInfo{},
 			GenreAlbums: map[string][]genreAlbumRef{}, ArtistLetters: map[string][]string{},
@@ -801,6 +803,14 @@ func (m *Module) commandWorker(ctx context.Context) {
 }
 
 func (m *Module) processCommand(cmd mu.CommandEnvelope) {
+	if m.dedup.Seen(cmd.ID) {
+		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
+		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+		payload, _ := json.Marshal(reply)
+		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
+		return
+	}
+
 	reply := m.dispatch(cmd)
 	if cmd.ReplyTo == "" {
 		return
