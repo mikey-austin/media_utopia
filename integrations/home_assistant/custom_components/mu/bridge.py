@@ -452,6 +452,18 @@ class MudBridge:
             out.append((node_id, info.get("name", node_id)))
         return out
 
+    def list_renderers_full(self) -> list[dict[str, Any]]:
+        """List all known renderers with their online status and capabilities."""
+        result = []
+        for node_id, info in self._renderers.items():
+            result.append({
+                "rendererId": node_id,
+                "name": info.get("name", node_id),
+                "online": info.get("online", False),
+                "caps": info.get("caps", {}),
+            })
+        return result
+
     def get_renderer_info(self, node_id: str) -> dict[str, Any] | None:
         """Get the full info dict for a renderer."""
         return self._renderers.get(node_id)
@@ -787,13 +799,22 @@ class MudBridge:
         """
         if not metadata:
             return metadata
-        art = metadata.get("artworkUrl")
+        result = dict(metadata)
+        # Handle artists array -> artist string (fs_library returns "artists")
+        if "artists" in result and "artist" not in result:
+            artists = result.get("artists", [])
+            if isinstance(artists, list) and artists:
+                result["artist"] = ", ".join(str(a) for a in artists)
+        # Handle durationMs from various formats
+        if "durationMs" not in result and "duration_ms" in result:
+            result["durationMs"] = result.pop("duration_ms")
+        # Rewrite artwork URL
+        art = result.get("artworkUrl")
         if art:
-            metadata = dict(metadata)
             # Only apply base URL rewriting, not proxying
             # Callers will apply proxying based on context (internal vs browser)
-            metadata["artworkUrl"] = self._rewrite_artwork_base(art)
-        return metadata
+            result["artworkUrl"] = self._rewrite_artwork_base(art)
+        return result
 
     async def _resolve_sources_batch(
         self, library_id: str, item_ids: list[str]
