@@ -290,9 +290,11 @@ class MudBridge:
         if not cmd_id:
             return
         reply_type = payload.get("type", "?")
+        err = payload.get("err") or {}
+        err_info = f" err={err.get('code')}:{err.get('message','')}" if err else ""
         _LOGGER.warning(
-            "DIAG reply cmd_id=%s type=%s ok=%s",
-            cmd_id[:12] if cmd_id else "?", reply_type, payload.get("ok"),
+            "DIAG reply cmd_id=%s type=%s ok=%s%s",
+            cmd_id[:12] if cmd_id else "?", reply_type, payload.get("ok"), err_info,
         )
         future = self._pending.pop(cmd_id, None)
         if future and not future.done():
