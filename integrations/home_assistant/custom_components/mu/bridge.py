@@ -1106,7 +1106,14 @@ class MudBridge:
         entries = []
         for item_id in items:
             resolved = await self._resolve_media_entries(item_id)
+            _LOGGER.debug(
+                "queue_add resolve %s -> %d entries", item_id, len(resolved)
+            )
             entries.extend(resolved)
+        _LOGGER.debug(
+            "queue_add node=%s mode=%s items=%d entries=%d",
+            node_id, mode, len(items), len(entries),
+        )
         if not entries:
             return False
 
@@ -1747,27 +1754,26 @@ class MudBridge:
                 return []
             # Check if sources represent multiple tracks (container expansion)
             # or multiple formats of the same track (alternative sources).
-            # If sources have distinct itemIds they are separate tracks;
-            # otherwise they are alternative sources for one item — use only
-            # the first.
+            # Container expansion: each source has a distinct itemId (album tracks).
+            # Single track: sources share the same itemId or have none — use first only.
             distinct_ids = {s.get("itemId") for s in sources if s.get("itemId")}
-            is_container_expansion = len(distinct_ids) > 1
-            entries = []
-            if is_container_expansion:
+            is_container = len(distinct_ids) > 1
+            _LOGGER.debug(
+                "resolve %s: %d sources, %d distinct itemIds, container=%s",
+                media_id, len(sources), len(distinct_ids), is_container,
+            )
+            if is_container:
+                entries = []
                 for source in sources:
-                    source_item_id = source.get("itemId")
-                    if source_item_id:
-                        ref_id = f"lib:{library_id}:{source_item_id}"
-                    else:
-                        ref_id = media_id
+                    sid = source.get("itemId")
+                    ref_id = f"lib:{library_id}:{sid}" if sid else media_id
                     entries.append({"ref": {"id": ref_id}, "resolved": source})
-            else:
-                # Single track — pick best source (first), ignore alternatives
-                source = sources[0]
-                source_item_id = source.get("itemId")
-                ref_id = f"lib:{library_id}:{source_item_id}" if source_item_id else media_id
-                entries.append({"ref": {"id": ref_id}, "resolved": source})
-            return entries
+                return entries
+            # Single track — use only the first source
+            source = sources[0]
+            sid = source.get("itemId")
+            ref_id = f"lib:{library_id}:{sid}" if sid else media_id
+            return [{"ref": {"id": ref_id}, "resolved": source}]
         return []
 
     def _resolve_renderer(self, selector: str) -> str | None:
@@ -1814,6 +1820,15 @@ class MudBridge:
     async def _refresh_playlists(self) -> None:
         if self._playlist_server is None:
             return
+        if getattr(self, "_refreshing_playlists", False):
+            return
+        self._refreshing_playlists = True
+        try:
+            await self._do_refresh_playlists()
+        finally:
+            self._refreshing_playlists = False
+
+    async def _do_refresh_playlists(self) -> None:
         reply = await self._request(
             self._playlist_server["nodeId"],
             "playlist.list",
