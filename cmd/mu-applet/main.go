@@ -294,7 +294,7 @@ func main() {
 		})
 		defer client.Unsubscribe(replyTopic)
 
-		cmd, _ := mu.NewCommand("queue.get", nil)
+		cmd, _ := mu.NewCommand("queue.get", mu.QueueGetBody{From: 0, Count: 1000})
 		cmd.ID = idGen.NewID()
 		cmd.TS = time.Now().Unix()
 		cmd.From = "mu-applet"
@@ -306,11 +306,22 @@ func main() {
 		case data := <-replyCh:
 			var reply mu.ReplyEnvelope
 			if err := json.Unmarshal(data, &reply); err != nil || !reply.OK {
+				logger.Debug("queue.get failed", zap.Bool("ok", reply.OK), zap.Error(err))
 				return
 			}
 			var body mu.QueueGetReply
 			if err := json.Unmarshal(reply.Body, &body); err != nil {
+				logger.Debug("queue.get unmarshal failed", zap.Error(err))
 				return
+			}
+			logger.Info("queue fetched",
+				zap.Int("entries", len(body.Entries)),
+				zap.Int64("index", body.Index))
+			if len(body.Entries) > 0 {
+				first := body.Entries[0]
+				logger.Info("first queue entry",
+					zap.String("itemId", first.ItemID),
+					zap.Any("metadata", first.Metadata))
 			}
 			glib.IdleAdd(func() bool {
 				popup.SetQueueItems(body.Entries, body.Index)
