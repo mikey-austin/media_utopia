@@ -13,6 +13,9 @@ import (
 // CommandFunc sends a command via MQTT.
 type CommandFunc func(cmdType string, body interface{})
 
+// LeaseFunc acquires or releases the session lease.
+type LeaseFunc func()
+
 // Popup is the mini-player popup window.
 type Popup struct {
 	win *gtk.Window
@@ -32,16 +35,21 @@ type Popup struct {
 	queueBox    *gtk.Box
 	headerBox   *gtk.Box
 	statusLabel *gtk.Label
+	leaseBtn    *gtk.Button
+	leaseLabel  *gtk.Label
 
-	sendCmd CommandFunc
+	sendCmd        CommandFunc
+	onLeaseAcquire LeaseFunc
+	onLeaseRelease LeaseFunc
 
 	// State tracking to avoid redundant updates
 	seeking    bool
 	lastStatus string
+	hasLease   bool
 }
 
 // NewPopup creates the mini-player popup window.
-func NewPopup(sendCmd CommandFunc) (*Popup, error) {
+func NewPopup(sendCmd CommandFunc, onLeaseAcquire, onLeaseRelease LeaseFunc) (*Popup, error) {
 	win, err := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
 	if err != nil {
 		return nil, err
@@ -54,14 +62,24 @@ func NewPopup(sendCmd CommandFunc) (*Popup, error) {
 	win.SetKeepAbove(true)
 	win.SetTypeHint(gdk.WINDOW_TYPE_HINT_UTILITY)
 
-	p := &Popup{win: win, sendCmd: sendCmd}
+	p := &Popup{
+		win:            win,
+		sendCmd:        sendCmd,
+		onLeaseAcquire: onLeaseAcquire,
+		onLeaseRelease: onLeaseRelease,
+		hasLease:       true,
+	}
 	if err := p.buildUI(); err != nil {
 		return nil, err
 	}
 
-	// Dismiss on focus loss
-	win.Connect("focus-out-event", func() bool {
-		p.Hide()
+	// Hide on Escape key
+	win.Connect("key-press-event", func(_ *gtk.Window, ev *gdk.Event) bool {
+		keyEvent := gdk.EventKeyNewFromEvent(ev)
+		if keyEvent.KeyVal() == 0xff1b { // GDK_KEY_Escape
+			p.Hide()
+			return true
+		}
 		return false
 	})
 
@@ -119,6 +137,24 @@ func (p *Popup) ShowCentered() {
 
 	p.win.Move(popupX, popupY)
 	p.win.GrabFocus()
+}
+
+// SetHasLease updates the lease indicator and button.
+func (p *Popup) SetHasLease(has bool) {
+	p.hasLease = has
+	if has {
+		p.leaseLabel.SetText("● Control: active")
+		sc, _ := p.leaseLabel.GetStyleContext()
+		sc.RemoveClass("lease-inactive")
+		sc.AddClass("lease-active")
+		p.leaseBtn.SetLabel("Release")
+	} else {
+		p.leaseLabel.SetText("○ Control: released")
+		sc, _ := p.leaseLabel.GetStyleContext()
+		sc.RemoveClass("lease-active")
+		sc.AddClass("lease-inactive")
+		p.leaseBtn.SetLabel("Take Control")
+	}
 }
 
 // UpdateState refreshes all widgets from the renderer state.
@@ -407,7 +443,7 @@ func (p *Popup) buildUI() error {
 	}
 	sc.AddClass("transport-btn")
 	p.prevBtn.Connect("clicked", func() {
-		p.sendCmd("playback.prev", struct{}{})
+		p.sendCmd("playback.prev", nil)
 	})
 
 	p.playBtn, err = gtk.ButtonNewFromIconName("media-playback-start", gtk.ICON_SIZE_BUTTON)
@@ -421,7 +457,11 @@ func (p *Popup) buildUI() error {
 	sc.AddClass("transport-btn")
 	sc.AddClass("play-btn")
 	p.playBtn.Connect("clicked", func() {
-		p.sendCmd("playback.pause", struct{}{})
+		if p.lastStatus == "playing" {
+			p.sendCmd("playback.pause", nil)
+		} else {
+			p.sendCmd("playback.play", mu.PlaybackPlayBody{})
+		}
 	})
 
 	p.nextBtn, err = gtk.ButtonNewFromIconName("media-skip-forward", gtk.ICON_SIZE_BUTTON)
@@ -434,7 +474,7 @@ func (p *Popup) buildUI() error {
 	}
 	sc.AddClass("transport-btn")
 	p.nextBtn.Connect("clicked", func() {
-		p.sendCmd("playback.next", struct{}{})
+		p.sendCmd("playback.next", nil)
 	})
 
 	transport.PackStart(p.prevBtn, false, false, 0)
@@ -526,6 +566,54 @@ func (p *Popup) buildUI() error {
 	scrollWin.Add(p.queueBox)
 	mainBox.PackStart(scrollWin, true, true, 0)
 
+	// Lease control bar
+	sep2, err := gtk.SeparatorNew(gtk.ORIENTATION_HORIZONTAL)
+	if err != nil {
+		return err
+	}
+	sc, _ = sep2.GetStyleContext()
+	sc.AddClass("popup-sep")
+	mainBox.PackStart(sep2, false, false, 2)
+
+	leaseBox, err := gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 6)
+	if err != nil {
+		return err
+	}
+	leaseBox.SetMarginStart(12)
+	leaseBox.SetMarginEnd(12)
+	leaseBox.SetMarginBottom(6)
+	leaseBox.SetMarginTop(2)
+
+	p.leaseLabel, err = gtk.LabelNew("● Control: active")
+	if err != nil {
+		return err
+	}
+	sc, _ = p.leaseLabel.GetStyleContext()
+	sc.AddClass("lease-active")
+	p.leaseLabel.SetHAlign(gtk.ALIGN_START)
+
+	p.leaseBtn, err = gtk.ButtonNewWithLabel("Release")
+	if err != nil {
+		return err
+	}
+	sc, _ = p.leaseBtn.GetStyleContext()
+	sc.AddClass("lease-btn")
+	p.leaseBtn.Connect("clicked", func() {
+		if p.hasLease {
+			if p.onLeaseRelease != nil {
+				p.onLeaseRelease()
+			}
+		} else {
+			if p.onLeaseAcquire != nil {
+				p.onLeaseAcquire()
+			}
+		}
+	})
+
+	leaseBox.PackStart(p.leaseLabel, true, true, 0)
+	leaseBox.PackEnd(p.leaseBtn, false, false, 0)
+	mainBox.PackStart(leaseBox, false, false, 0)
+
 	p.win.Add(mainBox)
 
 	// Initialize all widgets but start hidden
@@ -612,6 +700,21 @@ func (p *Popup) applyCSS() error {
 		.queue-more {
 			color: #707080;
 			font-size: 10px;
+		}
+		.lease-active {
+			color: #4ecca3;
+			font-size: 10px;
+		}
+		.lease-inactive {
+			color: #e94560;
+			font-size: 10px;
+		}
+		.lease-btn {
+			background-color: #2a2a4e;
+			color: #a0a0b0;
+			border: none;
+			font-size: 10px;
+			padding: 2px 8px;
 		}
 	`)
 	if err != nil {

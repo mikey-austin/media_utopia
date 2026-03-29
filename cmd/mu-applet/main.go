@@ -245,33 +245,37 @@ func main() {
 		}
 	}
 
+	// Lease UI callbacks — shared by popup and tray
+	var popup *applet.Popup
+	var tray *applet.TrayIcon
+	onAcquireUI := func() {
+		go func() {
+			if acquireLease() {
+				glib.IdleAdd(func() bool {
+					tray.SetHasLease(true)
+					popup.SetHasLease(true)
+					return false
+				})
+			}
+		}()
+	}
+	onReleaseUI := func() {
+		releaseLease()
+		tray.SetHasLease(false)
+		popup.SetHasLease(false)
+	}
+
 	// Create popup
-	popup, err := applet.NewPopup(sendCmd)
+	popup, err = applet.NewPopup(sendCmd, onAcquireUI, onReleaseUI)
 	if err != nil {
 		logger.Fatal("popup init failed", zap.Error(err))
 	}
 
-	// Create tray icon with lease management
-	var tray *applet.TrayIcon
+	// Create tray icon
 	tray, err = applet.NewTrayIcon(
-		func() { // onQuit
-			cancel()
-			gtk.MainQuit()
-		},
-		func() { // onLeaseAcquire
-			go func() {
-				if acquireLease() {
-					glib.IdleAdd(func() bool {
-						tray.SetHasLease(true)
-						return false
-					})
-				}
-			}()
-		},
-		func() { // onLeaseRelease
-			releaseLease()
-			tray.SetHasLease(false)
-		},
+		func() { cancel(); gtk.MainQuit() },
+		onAcquireUI,
+		onReleaseUI,
 	)
 	if err != nil {
 		logger.Fatal("tray icon failed", zap.Error(err))
