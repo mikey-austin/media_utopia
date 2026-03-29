@@ -27,6 +27,7 @@ type Popup struct {
 	titleLabel  *gtk.Label
 	artistLabel *gtk.Label
 	albumLabel  *gtk.Label
+	artworkImg  *gtk.Image
 	seekBar     *gtk.Scale
 	posLabel    *gtk.Label
 	durLabel    *gtk.Label
@@ -45,10 +46,14 @@ type Popup struct {
 	onLeaseAcquire LeaseFunc
 	onLeaseRelease LeaseFunc
 
-	// State tracking to avoid redundant updates
+	// State tracking
 	seeking    bool
 	lastStatus string
 	hasLease   bool
+
+	// Queue cache — populated via queue.get command
+	queueItems []mu.QueueItem
+	queueIndex int64
 }
 
 // NewPopup creates the mini-player popup window.
@@ -57,7 +62,7 @@ func NewPopup(sendCmd CommandFunc, onLeaseAcquire, onLeaseRelease LeaseFunc) (*P
 	if err != nil {
 		return nil, err
 	}
-	win.SetDefaultSize(300, -1)
+	win.SetSizeRequest(320, -1)
 	win.SetResizable(false)
 	win.SetDecorated(false)
 	win.SetSkipTaskbarHint(true)
@@ -136,6 +141,12 @@ func (p *Popup) ShowCentered() {
 	p.win.GrabFocus()
 }
 
+// SetQueueItems updates the cached queue data.
+func (p *Popup) SetQueueItems(items []mu.QueueItem, index int64) {
+	p.queueItems = items
+	p.queueIndex = index
+}
+
 // SetHasLease updates the lease indicator and button.
 func (p *Popup) SetHasLease(has bool) {
 	p.hasLease = has
@@ -168,8 +179,18 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 			title = displayName(state.Current.ItemID)
 		}
 		p.titleLabel.SetText(title)
-		p.artistLabel.SetText(metaString(md, "artist", ""))
-		p.albumLabel.SetText(metaString(md, "album", ""))
+		artist := metaString(md, "artist", "")
+		album := metaString(md, "album", "")
+		if artist != "" && album != "" {
+			p.artistLabel.SetText(artist)
+			p.albumLabel.SetText(album)
+		} else if artist != "" {
+			p.artistLabel.SetText(artist)
+			p.albumLabel.SetText("")
+		} else {
+			p.artistLabel.SetText(album)
+			p.albumLabel.SetText("")
+		}
 	} else {
 		p.titleLabel.SetText("No Track")
 		p.artistLabel.SetText("")
@@ -231,48 +252,76 @@ func (p *Popup) updateQueue(state *mu.RendererState) {
 		return
 	}
 	q := state.Queue
+	idx := int(q.Index)
 
-	// Header: track count
-	hdr, err := gtk.LabelNew(fmt.Sprintf("Queue (%d tracks)", q.Length))
-	if err == nil {
-		sc, err := hdr.GetStyleContext()
-		if err == nil {
-			sc.AddClass("queue-header")
+	// Header
+	hdr, _ := gtk.LabelNew(fmt.Sprintf("Queue (%d tracks)", q.Length))
+	sc, _ := hdr.GetStyleContext()
+	sc.AddClass("queue-header")
+	hdr.SetHAlign(gtk.ALIGN_START)
+	p.queueBox.PackStart(hdr, false, false, 2)
+
+	// Show prev / current / next from cached queue items
+	if len(p.queueItems) > 0 {
+		// Previous track
+		if idx > 0 && idx-1 < len(p.queueItems) {
+			p.addQueueLabel("  "+queueItemName(p.queueItems[idx-1]), "queue-more")
 		}
-		hdr.SetHAlign(gtk.ALIGN_START)
-		p.queueBox.PackStart(hdr, false, false, 2)
-	}
-
-	// Current track highlight
-	if state.Current != nil && state.Current.Metadata != nil {
-		name := metaString(state.Current.Metadata, "title", state.Current.ItemID)
-		cur, err := gtk.LabelNew(fmt.Sprintf("▶ %s", name))
-		if err == nil {
-			sc, err := cur.GetStyleContext()
-			if err == nil {
-				sc.AddClass("queue-current")
-			}
-			cur.SetHAlign(gtk.ALIGN_START)
-			cur.SetEllipsize(3) // PANGO_ELLIPSIZE_END
-			p.queueBox.PackStart(cur, false, false, 0)
+		// Current track
+		if idx < len(p.queueItems) {
+			p.addQueueLabel("▶ "+queueItemName(p.queueItems[idx]), "queue-current")
 		}
-	}
-
-	// Remaining tracks
-	remaining := q.Length - q.Index - 1
-	if remaining > 0 {
-		more, err := gtk.LabelNew(fmt.Sprintf("+%d more", remaining))
-		if err == nil {
-			sc, err := more.GetStyleContext()
-			if err == nil {
-				sc.AddClass("queue-more")
+		// Next tracks (up to 3)
+		shown := 0
+		for i := idx + 1; i < len(p.queueItems) && shown < 3; i++ {
+			p.addQueueLabel("  "+queueItemName(p.queueItems[i]), "queue-more")
+			shown++
+		}
+		remaining := int(q.Length) - idx - 1 - shown
+		if remaining > 0 {
+			p.addQueueLabel(fmt.Sprintf("  ... +%d more", remaining), "queue-more")
+		}
+	} else {
+		// No cached queue — show count from state
+		if state.Current != nil {
+			title := metaString(state.Current.Metadata, "title", "")
+			if title == "" {
+				title = displayName(state.Current.ItemID)
 			}
-			more.SetHAlign(gtk.ALIGN_START)
-			p.queueBox.PackStart(more, false, false, 0)
+			p.addQueueLabel("▶ "+title, "queue-current")
+		}
+		remaining := int(q.Length) - idx - 1
+		if remaining > 0 {
+			p.addQueueLabel(fmt.Sprintf("  +%d more", remaining), "queue-more")
 		}
 	}
 
 	p.queueBox.ShowAll()
+}
+
+func (p *Popup) addQueueLabel(text, cssClass string) {
+	lbl, err := gtk.LabelNew(text)
+	if err != nil {
+		return
+	}
+	sc, _ := lbl.GetStyleContext()
+	sc.AddClass(cssClass)
+	lbl.SetHAlign(gtk.ALIGN_START)
+	lbl.SetEllipsize(3)
+	lbl.SetMaxWidthChars(40)
+	p.queueBox.PackStart(lbl, false, false, 0)
+}
+
+func queueItemName(item mu.QueueItem) string {
+	title := metaString(item.Metadata, "title", "")
+	artist := metaString(item.Metadata, "artist", "")
+	if title != "" && artist != "" {
+		return fmt.Sprintf("%s — %s", title, artist)
+	}
+	if title != "" {
+		return title
+	}
+	return displayName(item.ItemID)
 }
 
 func (p *Popup) buildUI() error {
@@ -318,6 +367,7 @@ func (p *Popup) buildUI() error {
 	sc.AddClass("track-title")
 	p.titleLabel.SetHAlign(gtk.ALIGN_START)
 	p.titleLabel.SetEllipsize(3)
+	p.titleLabel.SetMaxWidthChars(38)
 
 	p.artistLabel, err = gtk.LabelNew("")
 	if err != nil {
@@ -330,6 +380,7 @@ func (p *Popup) buildUI() error {
 	sc.AddClass("track-artist")
 	p.artistLabel.SetHAlign(gtk.ALIGN_START)
 	p.artistLabel.SetEllipsize(3)
+	p.artistLabel.SetMaxWidthChars(38)
 
 	p.albumLabel, err = gtk.LabelNew("")
 	if err != nil {

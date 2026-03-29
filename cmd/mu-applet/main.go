@@ -282,11 +282,54 @@ func main() {
 	}
 	tray.SetPopup(popup)
 
+	// Queue fetcher — sends queue.get and updates the popup
+	var lastQueueRev int64
+	fetchQueue := func() {
+		replyCh := make(chan []byte, 1)
+		client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
+			select {
+			case replyCh <- msg.Payload():
+			default:
+			}
+		})
+		defer client.Unsubscribe(replyTopic)
+
+		cmd, _ := mu.NewCommand("queue.get", nil)
+		cmd.ID = idGen.NewID()
+		cmd.TS = time.Now().Unix()
+		cmd.From = "mu-applet"
+		cmd.ReplyTo = replyTopic
+		payload, _ := json.Marshal(cmd)
+		client.Publish(cmdTopic, 1, false, payload)
+
+		select {
+		case data := <-replyCh:
+			var reply mu.ReplyEnvelope
+			if err := json.Unmarshal(data, &reply); err != nil || !reply.OK {
+				return
+			}
+			var body mu.QueueGetReply
+			if err := json.Unmarshal(reply.Body, &body); err != nil {
+				return
+			}
+			glib.IdleAdd(func() bool {
+				popup.SetQueueItems(body.Entries, body.Index)
+				return false
+			})
+		case <-time.After(2 * time.Second):
+		}
+	}
+
 	// State bridge — channels state to GTK
 	bridge := applet.NewBridge(stateCh, func(state *mu.RendererState) {
 		popup.UpdateState(state)
 		if state.Playback != nil {
 			tray.SetPlaybackState(state.Playback.Status)
+		}
+		// Fetch queue when revision changes
+		if state.Queue != nil && state.Queue.Revision != lastQueueRev {
+			lastQueueRev = state.Queue.Revision
+			go fetchQueue()
 		}
 	})
 	go bridge.Start()
