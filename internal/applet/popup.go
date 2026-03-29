@@ -89,7 +89,7 @@ func (p *Popup) ShowAt(x, y, width, height int) {
 	p.win.GrabFocus()
 }
 
-// ShowCentered shows the popup in the center of the default screen.
+// ShowCentered shows the popup near the top-right of screen (near i3bar tray).
 func (p *Popup) ShowCentered() {
 	screen, err := gdk.ScreenGetDefault()
 	if err != nil {
@@ -97,15 +97,11 @@ func (p *Popup) ShowCentered() {
 		return
 	}
 	sw := screen.GetWidth()
-	sh := screen.GetHeight()
 
 	_, pw := p.win.GetPreferredWidth()
-	ph := p.win.GetAllocatedHeight()
-	if ph <= 1 {
-		ph = 400 // estimate before first show
-	}
-	popupX := (sw - pw) / 2
-	popupY := (sh - ph) / 2
+	// Position near top-right, below the i3bar (typically ~20px tall)
+	popupX := sw - pw - 8
+	popupY := 28
 
 	p.win.Move(popupX, popupY)
 	p.win.ShowAll()
@@ -535,12 +531,10 @@ func (p *Popup) applyCSS() error {
 	err = css.LoadFromData(`
 		.popup-main {
 			background-color: #1a1a2e;
-			border-radius: 8px;
 			padding: 0;
 		}
 		.popup-header {
-			background: linear-gradient(to bottom, #16213e, #0f3460);
-			border-radius: 8px 8px 0 0;
+			background-color: #0f3460;
 			padding: 8px;
 		}
 		.track-title {
@@ -572,12 +566,10 @@ func (p *Popup) applyCSS() error {
 			min-height: 36px;
 		}
 		.transport-btn:hover {
-			background-color: rgba(255,255,255,0.1);
-			border-radius: 18px;
+			background-color: #2a2a4e;
 		}
 		.play-btn {
 			background-color: #e94560;
-			border-radius: 18px;
 		}
 		.play-btn:hover {
 			background-color: #ff6b81;

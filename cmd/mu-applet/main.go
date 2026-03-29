@@ -127,6 +127,9 @@ func main() {
 		logger.Fatal("renderer init failed", zap.Error(err))
 	}
 
+	// GTK init — must happen before renderer starts (go-gst also initializes GLib)
+	gtk.Init(nil)
+
 	// Context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -138,9 +141,6 @@ func main() {
 			cancel()
 		}
 	}()
-
-	// GTK init
-	gtk.Init(nil)
 
 	// Command sender — publishes commands to MQTT
 	cmdTopic := mu.TopicCommands(cfg.Server.TopicBase, nodeID)

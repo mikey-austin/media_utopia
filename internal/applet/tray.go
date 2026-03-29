@@ -16,7 +16,7 @@ type TrayIcon struct {
 
 // NewTrayIcon creates a system tray icon. onQuit is called when the user selects Quit.
 func NewTrayIcon(onQuit func()) (*TrayIcon, error) {
-	icon, err := gtk.StatusIconNewFromIconName("audio-volume-medium")
+	icon, err := gtk.StatusIconNewFromIconName("multimedia-player")
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (t *TrayIcon) SetPlaybackState(status string) {
 		t.icon.SetFromIconName("media-playback-pause")
 		t.icon.SetTooltipText("mu-applet: paused")
 	default:
-		t.icon.SetFromIconName("audio-volume-medium")
+		t.icon.SetFromIconName("multimedia-player")
 		t.icon.SetTooltipText("mu-applet")
 	}
 }
