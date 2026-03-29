@@ -512,8 +512,8 @@ func (p *Popup) buildUI() error {
 		return err
 	}
 	scrollWin.SetPolicy(gtk.POLICY_NEVER, gtk.POLICY_AUTOMATIC)
-	scrollWin.SetMinContentHeight(60)
-	scrollWin.SetSizeRequest(-1, 200)
+	scrollWin.SetMinContentHeight(40)
+	scrollWin.SetSizeRequest(-1, 80)
 
 	p.queueBox, err = gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2)
 	if err != nil {

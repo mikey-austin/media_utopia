@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	paho "github.com/eclipse/paho.mqtt.golang"
 	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 
@@ -150,9 +151,48 @@ func main() {
 		}
 	}()
 
-	// Command sender — publishes commands to MQTT
+	// Acquire session lease for local control
 	cmdTopic := mu.TopicCommands(cfg.Server.TopicBase, nodeID)
+	replyTopic := mu.TopicReply(cfg.Server.TopicBase, "mu-applet")
 	idGen := idgen.Generator{}
+
+	var lease *mu.Lease
+	{
+		// Subscribe to reply topic to receive the lease response
+		replyCh := make(chan []byte, 1)
+		client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
+			replyCh <- msg.Payload()
+		})
+
+		acquireCmd, _ := mu.NewCommand("session.acquire", mu.SessionAcquireBody{TTLMS: 86400000}) // 24h
+		acquireCmd.ID = idGen.NewID()
+		acquireCmd.TS = time.Now().Unix()
+		acquireCmd.From = "mu-applet"
+		acquireCmd.ReplyTo = replyTopic
+		payload, _ := json.Marshal(acquireCmd)
+		if err := client.Publish(cmdTopic, 1, false, payload); err != nil {
+			logger.Fatal("failed to acquire session", zap.Error(err))
+		}
+
+		select {
+		case replyData := <-replyCh:
+			var reply mu.ReplyEnvelope
+			if err := json.Unmarshal(replyData, &reply); err != nil || !reply.OK {
+				logger.Fatal("session acquire failed", zap.Error(err), zap.Bool("ok", reply.OK))
+			}
+			var body mu.SessionReplyBody
+			if err := json.Unmarshal(reply.Body, &body); err != nil {
+				logger.Fatal("failed to parse session reply", zap.Error(err))
+			}
+			lease = &mu.Lease{SessionID: body.Session.ID, Token: body.Session.Token}
+			logger.Info("session acquired", zap.String("session_id", lease.SessionID))
+		case <-time.After(5 * time.Second):
+			logger.Fatal("timeout waiting for session acquire reply")
+		}
+		client.Unsubscribe(replyTopic)
+	}
+
+	// Command sender — publishes commands to MQTT with lease
 	sendCmd := func(cmdType string, body interface{}) {
 		env, err := mu.NewCommand(cmdType, body)
 		if err != nil {
@@ -162,6 +202,7 @@ func main() {
 		env.ID = idGen.NewID()
 		env.TS = time.Now().Unix()
 		env.From = "mu-applet"
+		env.Lease = lease
 		payload, _ := json.Marshal(env)
 		if err := client.Publish(cmdTopic, 1, false, payload); err != nil {
 			logger.Warn("failed to send command", zap.String("type", cmdType), zap.Error(err))
