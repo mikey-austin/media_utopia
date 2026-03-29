@@ -87,6 +87,12 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	if strings.TrimSpace(cfg.Pipeline) == "" {
 		return nil, errors.New("pipeline required")
 	}
+	if cfg.StatePublisher == nil {
+		return nil, errors.New("state_publisher required")
+	}
+	if cfg.PresencePublisher == nil {
+		return nil, errors.New("presence_publisher required")
+	}
 
 	driver, err := NewDriver(cfg.Pipeline, cfg.Device, cfg.Crossfade)
 	if err != nil {
@@ -180,14 +186,7 @@ func (m *Module) publishPresence() error {
 		Source: m.config.Source,
 		TS:     time.Now().Unix(),
 	}
-	if m.config.PresencePublisher != nil {
-		return m.config.PresencePublisher.PublishPresence(presence)
-	}
-	payload, err := json.Marshal(presence)
-	if err != nil {
-		return err
-	}
-	return m.client.Publish(mu.TopicPresence(m.config.TopicBase, m.config.NodeID), 1, true, payload)
+	return m.config.PresencePublisher.PublishPresence(presence)
 }
 
 func (m *Module) publishState() error {
@@ -480,16 +479,11 @@ func (m *Module) publishStatePayload(payload []byte) error {
 	if m.shouldShedState() {
 		return nil
 	}
-	if m.config.StatePublisher != nil {
-		var state mu.RendererState
-		if err := json.Unmarshal(payload, &state); err != nil {
-			return err
-		}
-		err := m.config.StatePublisher.PublishState(&state)
-		m.markPublishTimeout(err)
+	var state mu.RendererState
+	if err := json.Unmarshal(payload, &state); err != nil {
 		return err
 	}
-	err := m.client.Publish(mu.TopicState(m.config.TopicBase, m.config.NodeID), 1, true, payload)
+	err := m.config.StatePublisher.PublishState(&state)
 	m.markPublishTimeout(err)
 	return err
 }
