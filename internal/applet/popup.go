@@ -182,6 +182,13 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 	// Track info + artwork
 	if state.Current != nil {
 		md := state.Current.Metadata
+		// Fall back to queue cache for metadata if Current.Metadata is empty
+		if (md == nil || metaString(md, "title", "") == "") && len(p.queueItems) > 0 {
+			idx := int(p.queueIndex)
+			if idx >= 0 && idx < len(p.queueItems) && p.queueItems[idx].ItemID == state.Current.ItemID {
+				md = p.queueItems[idx].Metadata
+			}
+		}
 		title := metaString(md, "title", "")
 		if title == "" {
 			title = displayName(state.Current.ItemID)
@@ -858,7 +865,11 @@ func displayName(itemID string) string {
 	if itemID == "" {
 		return "No Track"
 	}
-	if u, err := url.Parse(itemID); err == nil && u.Path != "" {
+	// Library references like "lib:mu:library:filesystem:venus:music:HASH"
+	if strings.HasPrefix(itemID, "lib:") {
+		return "Track" // metadata should be fetched from queue.get
+	}
+	if u, err := url.Parse(itemID); err == nil && u.Scheme != "" && u.Path != "" {
 		base := path.Base(u.Path)
 		// Strip file extension
 		if i := strings.LastIndex(base, "."); i > 0 {
