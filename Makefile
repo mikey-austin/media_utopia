@@ -12,7 +12,7 @@ build:
 
 mu-applet:
 	mkdir -p $(BIN_DIR)
-	go build -tags "gstreamer gtk" -o $(BIN_DIR)/mu-applet ./cmd/mu-applet
+	go build -tags "gstreamer gtk gtk_deprecated" -o $(BIN_DIR)/mu-applet ./cmd/mu-applet
 
 test:
 	GOCACHE=$(GOCACHE) go test -count=1 -v ./...
