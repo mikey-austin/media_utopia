@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -151,33 +152,35 @@ func main() {
 		}
 	}()
 
-	// Acquire session lease for local control
+	// Lease management
 	cmdTopic := mu.TopicCommands(cfg.Server.TopicBase, nodeID)
 	replyTopic := mu.TopicReply(cfg.Server.TopicBase, "mu-applet")
 	idGen := idgen.Generator{}
 
 	var lease *mu.Lease
-	{
-		// Subscribe to reply topic to receive the lease response
+	var leaseMu sync.Mutex
+
+	acquireLease := func() bool {
 		replyCh := make(chan []byte, 1)
 		client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
-			replyCh <- msg.Payload()
+			select {
+			case replyCh <- msg.Payload():
+			default:
+			}
 		})
+		defer client.Unsubscribe(replyTopic)
 
-		// Retry — the renderer module needs time to subscribe to MQTT
 		for attempt := 0; attempt < 10; attempt++ {
 			time.Sleep(200 * time.Millisecond)
-
-			acquireCmd, _ := mu.NewCommand("session.acquire", mu.SessionAcquireBody{TTLMS: 86400000}) // 24h
-			acquireCmd.ID = idGen.NewID()
-			acquireCmd.TS = time.Now().Unix()
-			acquireCmd.From = "mu-applet"
-			acquireCmd.ReplyTo = replyTopic
-			payload, _ := json.Marshal(acquireCmd)
+			cmd, _ := mu.NewCommand("session.acquire", mu.SessionAcquireBody{TTLMS: 86400000})
+			cmd.ID = idGen.NewID()
+			cmd.TS = time.Now().Unix()
+			cmd.From = "mu-applet"
+			cmd.ReplyTo = replyTopic
+			payload, _ := json.Marshal(cmd)
 			if err := client.Publish(cmdTopic, 1, false, payload); err != nil {
 				continue
 			}
-
 			select {
 			case replyData := <-replyCh:
 				var reply mu.ReplyEnvelope
@@ -188,20 +191,42 @@ func main() {
 				if err := json.Unmarshal(reply.Body, &body); err != nil {
 					continue
 				}
+				leaseMu.Lock()
 				lease = &mu.Lease{SessionID: body.Session.ID, Token: body.Session.Token}
-				logger.Info("session acquired", zap.String("session_id", lease.SessionID))
+				leaseMu.Unlock()
+				logger.Info("session acquired", zap.String("session_id", body.Session.ID))
+				return true
 			case <-time.After(1 * time.Second):
 				continue
 			}
-			break
 		}
-		client.Unsubscribe(replyTopic)
-		if lease == nil {
-			logger.Fatal("failed to acquire session after retries")
-		}
+		return false
 	}
 
-	// Command sender — publishes commands to MQTT with lease
+	releaseLease := func() {
+		leaseMu.Lock()
+		l := lease
+		lease = nil
+		leaseMu.Unlock()
+		if l == nil {
+			return
+		}
+		cmd, _ := mu.NewCommand("session.release", nil)
+		cmd.ID = idGen.NewID()
+		cmd.TS = time.Now().Unix()
+		cmd.From = "mu-applet"
+		cmd.Lease = l
+		payload, _ := json.Marshal(cmd)
+		client.Publish(cmdTopic, 1, false, payload)
+		logger.Info("session released")
+	}
+
+	// Acquire initial lease (blocks until renderer module is ready)
+	if !acquireLease() {
+		logger.Fatal("failed to acquire session after retries")
+	}
+
+	// Command sender — publishes commands to MQTT with current lease
 	sendCmd := func(cmdType string, body interface{}) {
 		env, err := mu.NewCommand(cmdType, body)
 		if err != nil {
@@ -211,7 +236,9 @@ func main() {
 		env.ID = idGen.NewID()
 		env.TS = time.Now().Unix()
 		env.From = "mu-applet"
+		leaseMu.Lock()
 		env.Lease = lease
+		leaseMu.Unlock()
 		payload, _ := json.Marshal(env)
 		if err := client.Publish(cmdTopic, 1, false, payload); err != nil {
 			logger.Warn("failed to send command", zap.String("type", cmdType), zap.Error(err))
@@ -224,11 +251,28 @@ func main() {
 		logger.Fatal("popup init failed", zap.Error(err))
 	}
 
-	// Create tray icon
-	tray, err := applet.NewTrayIcon(func() {
-		cancel()
-		gtk.MainQuit()
-	})
+	// Create tray icon with lease management
+	var tray *applet.TrayIcon
+	tray, err = applet.NewTrayIcon(
+		func() { // onQuit
+			cancel()
+			gtk.MainQuit()
+		},
+		func() { // onLeaseAcquire
+			go func() {
+				if acquireLease() {
+					glib.IdleAdd(func() bool {
+						tray.SetHasLease(true)
+						return false
+					})
+				}
+			}()
+		},
+		func() { // onLeaseRelease
+			releaseLease()
+			tray.SetHasLease(false)
+		},
+	)
 	if err != nil {
 		logger.Fatal("tray icon failed", zap.Error(err))
 	}

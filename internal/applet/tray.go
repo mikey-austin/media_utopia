@@ -9,13 +9,16 @@ import (
 
 // TrayIcon manages the system tray status icon.
 type TrayIcon struct {
-	icon   *gtk.StatusIcon
-	popup  *Popup
-	onQuit func()
+	icon           *gtk.StatusIcon
+	popup          *Popup
+	onQuit         func()
+	onLeaseAcquire func()
+	onLeaseRelease func()
+	hasLease       bool
 }
 
-// NewTrayIcon creates a system tray icon. onQuit is called when the user selects Quit.
-func NewTrayIcon(onQuit func()) (*TrayIcon, error) {
+// NewTrayIcon creates a system tray icon.
+func NewTrayIcon(onQuit func(), onLeaseAcquire func(), onLeaseRelease func()) (*TrayIcon, error) {
 	icon, err := gtk.StatusIconNewFromIconName("multimedia-player")
 	if err != nil {
 		return nil, err
@@ -23,7 +26,13 @@ func NewTrayIcon(onQuit func()) (*TrayIcon, error) {
 	icon.SetTooltipText("mu-applet")
 	icon.SetVisible(true)
 
-	t := &TrayIcon{icon: icon, onQuit: onQuit}
+	t := &TrayIcon{
+		icon:           icon,
+		onQuit:         onQuit,
+		onLeaseAcquire: onLeaseAcquire,
+		onLeaseRelease: onLeaseRelease,
+		hasLease:       true,
+	}
 
 	icon.Connect("activate", t.onActivate)
 	icon.Connect("popup-menu", t.onPopupMenu)
@@ -34,6 +43,11 @@ func NewTrayIcon(onQuit func()) (*TrayIcon, error) {
 // SetPopup associates a popup window with this tray icon.
 func (t *TrayIcon) SetPopup(popup *Popup) {
 	t.popup = popup
+}
+
+// SetHasLease updates the lease state for the context menu.
+func (t *TrayIcon) SetHasLease(has bool) {
+	t.hasLease = has
 }
 
 // SetPlaybackState updates the tray icon based on playback status.
@@ -59,13 +73,33 @@ func (t *TrayIcon) onActivate() {
 		t.popup.Hide()
 		return
 	}
-	// StatusIcon.GetGeometry is not implemented in gotk3, so fall back
-	// to centering the popup on screen.
 	t.popup.ShowCentered()
 }
 
 func (t *TrayIcon) onPopupMenu(_ *gtk.StatusIcon, button uint, activateTime uint32) {
 	menu, _ := gtk.MenuNew()
+
+	if t.hasLease {
+		releaseItem, _ := gtk.MenuItemNewWithLabel("Release Control")
+		releaseItem.Connect("activate", func() {
+			if t.onLeaseRelease != nil {
+				t.onLeaseRelease()
+			}
+		})
+		menu.Append(releaseItem)
+	} else {
+		acquireItem, _ := gtk.MenuItemNewWithLabel("Take Control")
+		acquireItem.Connect("activate", func() {
+			if t.onLeaseAcquire != nil {
+				t.onLeaseAcquire()
+			}
+		})
+		menu.Append(acquireItem)
+	}
+
+	sepItem, _ := gtk.SeparatorMenuItemNew()
+	menu.Append(sepItem)
+
 	quitItem, _ := gtk.MenuItemNewWithLabel("Quit")
 	quitItem.Connect("activate", func() {
 		if t.onQuit != nil {
@@ -73,6 +107,7 @@ func (t *TrayIcon) onPopupMenu(_ *gtk.StatusIcon, button uint, activateTime uint
 		}
 	})
 	menu.Append(quitItem)
+
 	menu.ShowAll()
 	menu.PopupAtStatusIcon(t.icon, gdk.Button(button), activateTime)
 }

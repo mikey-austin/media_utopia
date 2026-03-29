@@ -42,7 +42,7 @@ type Popup struct {
 
 // NewPopup creates the mini-player popup window.
 func NewPopup(sendCmd CommandFunc) (*Popup, error) {
-	win, err := gtk.WindowNew(gtk.WINDOW_POPUP)
+	win, err := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,8 @@ func NewPopup(sendCmd CommandFunc) (*Popup, error) {
 	win.SetDecorated(false)
 	win.SetSkipTaskbarHint(true)
 	win.SetSkipPagerHint(true)
-	win.SetTypeHint(gdk.WINDOW_TYPE_HINT_POPUP_MENU)
+	win.SetKeepAbove(true)
+	win.SetTypeHint(gdk.WINDOW_TYPE_HINT_UTILITY)
 
 	p := &Popup{win: win, sendCmd: sendCmd}
 	if err := p.buildUI(); err != nil {
