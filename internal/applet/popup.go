@@ -130,6 +130,10 @@ func (p *Popup) ShowCentered() {
 func (p *Popup) SetQueueItems(items []mu.QueueItem, index int64) {
 	p.queueItems = items
 	p.queueIndex = index
+	// Reset artwork cache so it re-fetches with new metadata
+	p.artMu.Lock()
+	p.lastArtworkID = ""
+	p.artMu.Unlock()
 	// Re-render with cached state now that we have queue metadata
 	if p.lastState != nil {
 		p.UpdateState(p.lastState)
@@ -269,44 +273,64 @@ func (p *Popup) updateQueue(state *mu.RendererState) {
 	if len(p.queueItems) > 0 {
 		// Previous
 		if idx > 0 && idx-1 < len(p.queueItems) {
-			p.addQueueLabel("  "+queueItemName(p.queueItems[idx-1]), "q-dim")
+			p.addQueueLabel("  "+queueItemName(p.queueItems[idx-1]), "q-dim", idx-1)
 		}
 		// Current
 		if idx < len(p.queueItems) {
-			p.addQueueLabel("▶ "+queueItemName(p.queueItems[idx]), "q-now")
+			p.addQueueLabel("▶ "+queueItemName(p.queueItems[idx]), "q-now", -1)
 		}
-		// Next 3
+		// Next 5
 		shown := 0
-		for i := idx + 1; i < len(p.queueItems) && shown < 3; i++ {
-			p.addQueueLabel("  "+queueItemName(p.queueItems[i]), "q-next")
+		for i := idx + 1; i < len(p.queueItems) && shown < 5; i++ {
+			p.addQueueLabel("  "+queueItemName(p.queueItems[i]), "q-next", i)
 			shown++
 		}
 		rem := int(q.Length) - idx - 1 - shown
 		if rem > 0 {
-			p.addQueueLabel(fmt.Sprintf("  +%d more", rem), "q-dim")
+			p.addQueueLabel(fmt.Sprintf("  +%d more", rem), "q-dim", -1)
 		}
 	} else if state.Current != nil {
 		title := metaString(state.Current.Metadata, "title", "")
 		if title == "" {
 			title = displayName(state.Current.ItemID)
 		}
-		p.addQueueLabel("▶ "+title, "q-now")
+		p.addQueueLabel("▶ "+title, "q-now", -1)
 		rem := int(q.Length) - idx - 1
 		if rem > 0 {
-			p.addQueueLabel(fmt.Sprintf("  +%d more", rem), "q-dim")
+			p.addQueueLabel(fmt.Sprintf("  +%d more", rem), "q-dim", -1)
 		}
 	}
 	p.queueBox.ShowAll()
 }
 
-func (p *Popup) addQueueLabel(text, cssClass string) {
-	lbl, _ := gtk.LabelNew(text)
-	sc, _ := lbl.GetStyleContext()
-	sc.AddClass(cssClass)
-	lbl.SetHAlign(gtk.ALIGN_START)
-	lbl.SetEllipsize(3)
-	lbl.SetMaxWidthChars(42)
-	p.queueBox.PackStart(lbl, false, false, 0)
+func (p *Popup) addQueueLabel(text, cssClass string, jumpIndex int) {
+	if jumpIndex >= 0 {
+		// Clickable queue entry — use a button styled as a label
+		btn, _ := gtk.ButtonNew()
+		lbl, _ := gtk.LabelNew(text)
+		sc, _ := lbl.GetStyleContext()
+		sc.AddClass(cssClass)
+		lbl.SetHAlign(gtk.ALIGN_START)
+		lbl.SetEllipsize(3)
+		lbl.SetMaxWidthChars(42)
+		btn.Add(lbl)
+		sc, _ = btn.GetStyleContext()
+		sc.AddClass("q-btn")
+		idx := int64(jumpIndex)
+		btn.Connect("clicked", func() {
+			p.sendCmd("queue.jump", mu.QueueJumpBody{Index: idx})
+			p.sendCmd("playback.play", mu.PlaybackPlayBody{})
+		})
+		p.queueBox.PackStart(btn, false, false, 0)
+	} else {
+		lbl, _ := gtk.LabelNew(text)
+		sc, _ := lbl.GetStyleContext()
+		sc.AddClass(cssClass)
+		lbl.SetHAlign(gtk.ALIGN_START)
+		lbl.SetEllipsize(3)
+		lbl.SetMaxWidthChars(42)
+		p.queueBox.PackStart(lbl, false, false, 0)
+	}
 }
 
 func (p *Popup) buildUI() error {
@@ -560,10 +584,15 @@ func (p *Popup) applyCSS() error {
 			font-family: monospace;
 			min-width: 32px;
 		}
+		scale {
+			outline: none;
+			-gtk-outline-radius: 0;
+		}
 		scale trough {
 			background-color: #0a0e1a;
 			border: 1px solid #1a2040;
 			min-height: 6px;
+			outline: none;
 		}
 		scale highlight {
 			background-color: #44ff66;
@@ -574,6 +603,17 @@ func (p *Popup) applyCSS() error {
 			border: 1px solid #888888;
 			min-width: 10px;
 			min-height: 10px;
+			outline: none;
+			outline-offset: 0;
+		}
+		scale:focus slider {
+			outline: none;
+			border-color: #888888;
+		}
+		*:focus {
+			outline: none;
+			outline-width: 0;
+			-gtk-outline-radius: 0;
 		}
 		button {
 			background-color: #151a2a;
@@ -629,6 +669,15 @@ func (p *Popup) applyCSS() error {
 			font-size: 10px;
 			font-family: monospace;
 			padding: 1px 4px;
+		}
+		.q-btn {
+			background-color: transparent;
+			border: none;
+			padding: 0;
+			min-height: 0;
+		}
+		.q-btn:hover {
+			background-color: #1a2a50;
 		}
 		.lease-on {
 			color: #44ff66;
