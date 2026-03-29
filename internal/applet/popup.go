@@ -4,11 +4,15 @@ package applet
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/gotk3/gotk3/gdk"
+	"github.com/gotk3/gotk3/glib"
 	"github.com/gotk3/gotk3/gtk"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 )
@@ -54,6 +58,10 @@ type Popup struct {
 	// Queue cache — populated via queue.get command
 	queueItems []mu.QueueItem
 	queueIndex int64
+
+	// Artwork
+	artMu         sync.Mutex
+	lastArtworkID string // prevent re-fetching same artwork
 }
 
 // NewPopup creates the mini-player popup window.
@@ -171,7 +179,7 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		return
 	}
 
-	// Track info
+	// Track info + artwork
 	if state.Current != nil {
 		md := state.Current.Metadata
 		title := metaString(md, "title", "")
@@ -190,6 +198,23 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		} else {
 			p.artistLabel.SetText(album)
 			p.albumLabel.SetText("")
+		}
+
+		// Artwork — fetch if changed
+		artURL := metaString(md, "artworkUrl", "")
+		artKey := state.Current.ItemID
+		p.artMu.Lock()
+		needsFetch := artKey != p.lastArtworkID
+		if needsFetch {
+			p.lastArtworkID = artKey
+		}
+		p.artMu.Unlock()
+		if needsFetch {
+			if artURL != "" {
+				go p.fetchArtwork(artURL)
+			} else {
+				p.setDefaultArtwork()
+			}
 		}
 	} else {
 		p.titleLabel.SetText("No Track")
@@ -341,8 +366,8 @@ func (p *Popup) buildUI() error {
 	}
 	sc.AddClass("popup-main")
 
-	// Header box — track info
-	p.headerBox, err = gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2)
+	// Header — artwork + track info side by side
+	p.headerBox, err = gtk.BoxNew(gtk.ORIENTATION_HORIZONTAL, 10)
 	if err != nil {
 		return err
 	}
@@ -355,6 +380,20 @@ func (p *Popup) buildUI() error {
 	p.headerBox.SetMarginEnd(12)
 	p.headerBox.SetMarginTop(10)
 	p.headerBox.SetMarginBottom(6)
+
+	// Artwork placeholder
+	p.artworkImg, err = gtk.ImageNewFromIconName("audio-x-generic", gtk.ICON_SIZE_DIALOG)
+	if err != nil {
+		return err
+	}
+	p.artworkImg.SetSizeRequest(64, 64)
+	p.headerBox.PackStart(p.artworkImg, false, false, 0)
+
+	// Text labels in a vertical box
+	textBox, err := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 2)
+	if err != nil {
+		return err
+	}
 
 	p.titleLabel, err = gtk.LabelNew("No Track")
 	if err != nil {
@@ -405,10 +444,11 @@ func (p *Popup) buildUI() error {
 	sc.AddClass("track-status")
 	p.statusLabel.SetHAlign(gtk.ALIGN_END)
 
-	p.headerBox.PackStart(p.titleLabel, false, false, 0)
-	p.headerBox.PackStart(p.artistLabel, false, false, 0)
-	p.headerBox.PackStart(p.albumLabel, false, false, 0)
-	p.headerBox.PackStart(p.statusLabel, false, false, 0)
+	textBox.PackStart(p.titleLabel, false, false, 0)
+	textBox.PackStart(p.artistLabel, false, false, 0)
+	textBox.PackStart(p.albumLabel, false, false, 0)
+	textBox.PackStart(p.statusLabel, false, false, 0)
+	p.headerBox.PackStart(textBox, true, true, 0)
 	mainBox.PackStart(p.headerBox, false, false, 0)
 
 	// Seek bar
@@ -831,6 +871,52 @@ func displayName(itemID string) string {
 		return base
 	}
 	return itemID
+}
+
+// fetchArtwork downloads artwork from a URL and sets it on the GTK image widget.
+func (p *Popup) fetchArtwork(artURL string) {
+	resp, err := http.Get(artURL)
+	if err != nil {
+		glib.IdleAdd(func() bool { p.setDefaultArtwork(); return false })
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		glib.IdleAdd(func() bool { p.setDefaultArtwork(); return false })
+		return
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		glib.IdleAdd(func() bool { p.setDefaultArtwork(); return false })
+		return
+	}
+
+	glib.IdleAdd(func() bool {
+		loader, err := gdk.PixbufLoaderNew()
+		if err != nil {
+			p.setDefaultArtwork()
+			return false
+		}
+		loader.Write(data)
+		loader.Close()
+		pixbuf, err := loader.GetPixbuf()
+		if err != nil {
+			p.setDefaultArtwork()
+			return false
+		}
+		scaled, err := pixbuf.ScaleSimple(64, 64, gdk.INTERP_BILINEAR)
+		if err != nil {
+			p.artworkImg.SetFromPixbuf(pixbuf)
+			return false
+		}
+		p.artworkImg.SetFromPixbuf(scaled)
+		return false
+	})
+}
+
+func (p *Popup) setDefaultArtwork() {
+	p.artworkImg.SetFromIconName("audio-x-generic", gtk.ICON_SIZE_DIALOG)
 }
 
 // setButtonIcon replaces the image on a button.
