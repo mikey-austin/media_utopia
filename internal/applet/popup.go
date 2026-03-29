@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"path"
 	"strings"
 	"sync"
@@ -62,6 +63,9 @@ type Popup struct {
 	// Artwork
 	artMu         sync.Mutex
 	lastArtworkID string
+
+	// Notifications
+	lastItemID string
 }
 
 // NewPopup creates the mini-player popup window.
@@ -178,6 +182,13 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		}
 	}
 
+	// Track change detection
+	trackChanged := false
+	if state.Current != nil && state.Current.ItemID != p.lastItemID {
+		trackChanged = p.lastItemID != ""
+		p.lastItemID = state.Current.ItemID
+	}
+
 	// Track info
 	if state.Current != nil {
 		title := metaString(md, "title", "")
@@ -187,10 +198,15 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		artist := metaString(md, "artist", "")
 		album := metaString(md, "album", "")
 		p.titleLabel.SetText(title)
-		if artist != "" {
-			p.artistLabel.SetText(artist + "  —  " + album)
-		} else {
-			p.artistLabel.SetText(album)
+		p.artistLabel.SetText(artist)
+
+		// Notify on track change when popup is hidden
+		if trackChanged && !p.IsVisible() {
+			body := artist
+			if album != "" {
+				body = artist + " — " + album
+			}
+			go notifyTrackChange(title, body, metaString(md, "artworkUrl", ""))
 		}
 
 		// Artwork
@@ -406,6 +422,7 @@ func (p *Popup) buildUI() error {
 
 	p.seekBar, _ = gtk.ScaleNewWithRange(gtk.ORIENTATION_HORIZONTAL, 0, 100, 1)
 	p.seekBar.SetDrawValue(false)
+	p.seekBar.SetCanFocus(false)
 	p.seekBar.Connect("button-press-event", func() bool { p.seeking = true; return false })
 	p.seekBar.Connect("button-release-event", func() bool {
 		p.seeking = false
@@ -472,6 +489,7 @@ func (p *Popup) buildUI() error {
 
 	p.volumeBar, _ = gtk.ScaleNewWithRange(gtk.ORIENTATION_HORIZONTAL, 0, 1, 0.01)
 	p.volumeBar.SetDrawValue(false)
+	p.volumeBar.SetCanFocus(false)
 	p.volumeBar.SetValue(1.0)
 	p.volumeBar.Connect("value-changed", func() {
 		vol := p.volumeBar.GetValue()
@@ -584,15 +602,22 @@ func (p *Popup) applyCSS() error {
 			font-family: monospace;
 			min-width: 32px;
 		}
-		scale {
-			outline: none;
+		* {
 			-gtk-outline-radius: 0;
+			outline-style: none;
+			outline-width: 0;
+			outline-color: transparent;
+		}
+		*:focus, *:active, *:checked {
+			outline-style: none;
+			outline-width: 0;
+			outline-color: transparent;
+			box-shadow: none;
 		}
 		scale trough {
 			background-color: #0a0e1a;
 			border: 1px solid #1a2040;
 			min-height: 6px;
-			outline: none;
 		}
 		scale highlight {
 			background-color: #44ff66;
@@ -600,20 +625,15 @@ func (p *Popup) applyCSS() error {
 		}
 		scale slider {
 			background-color: #cccccc;
-			border: 1px solid #888888;
+			border: 1px solid #555555;
 			min-width: 10px;
 			min-height: 10px;
-			outline: none;
-			outline-offset: 0;
+		}
+		scale:focus trough {
+			border-color: #1a2040;
 		}
 		scale:focus slider {
-			outline: none;
-			border-color: #888888;
-		}
-		*:focus {
-			outline: none;
-			outline-width: 0;
-			-gtk-outline-radius: 0;
+			border-color: #555555;
 		}
 		button {
 			background-color: #151a2a;
@@ -781,6 +801,17 @@ func (p *Popup) fetchArtwork(artURL string) {
 		p.artworkImg.SetFromPixbuf(scaled)
 		return false
 	})
+}
+
+func notifyTrackChange(title, body, artURL string) {
+	args := []string{"-a", "mu-applet", "-t", "3000"}
+	if artURL != "" {
+		args = append(args, "-i", artURL)
+	} else {
+		args = append(args, "-i", "audio-x-generic")
+	}
+	args = append(args, title, body)
+	exec.Command("notify-send", args...).Run()
 }
 
 func (p *Popup) setDefaultArtwork() {
