@@ -198,7 +198,9 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		artist := metaString(md, "artist", "")
 		album := metaString(md, "album", "")
 		p.titleLabel.SetText(title)
+		p.titleLabel.SetTooltipText(title)
 		p.artistLabel.SetText(artist)
+		p.artistLabel.SetTooltipText(artist + " — " + album)
 
 		// Notify on track change when popup is hidden
 		if trackChanged && !p.IsVisible() {
@@ -320,8 +322,9 @@ func (p *Popup) updateQueue(state *mu.RendererState) {
 }
 
 func (p *Popup) addQueueLabel(text, cssClass string, jumpIndex int) {
+	tooltip := strings.TrimSpace(strings.TrimPrefix(text, "▶"))
+	tooltip = strings.TrimSpace(tooltip)
 	if jumpIndex >= 0 {
-		// Clickable queue entry — use a button styled as a label
 		btn, _ := gtk.ButtonNew()
 		lbl, _ := gtk.LabelNew(text)
 		sc, _ := lbl.GetStyleContext()
@@ -330,6 +333,7 @@ func (p *Popup) addQueueLabel(text, cssClass string, jumpIndex int) {
 		lbl.SetEllipsize(3)
 		lbl.SetMaxWidthChars(42)
 		btn.Add(lbl)
+		btn.SetTooltipText(tooltip)
 		sc, _ = btn.GetStyleContext()
 		sc.AddClass("q-btn")
 		idx := int64(jumpIndex)
@@ -343,6 +347,7 @@ func (p *Popup) addQueueLabel(text, cssClass string, jumpIndex int) {
 		sc, _ := lbl.GetStyleContext()
 		sc.AddClass(cssClass)
 		lbl.SetHAlign(gtk.ALIGN_START)
+		lbl.SetTooltipText(tooltip)
 		lbl.SetEllipsize(3)
 		lbl.SetMaxWidthChars(42)
 		p.queueBox.PackStart(lbl, false, false, 0)
@@ -631,9 +636,23 @@ func (p *Popup) applyCSS() error {
 		}
 		scale:focus trough {
 			border-color: #1a2040;
+			outline-style: none;
+			outline-color: transparent;
+			box-shadow: none;
 		}
 		scale:focus slider {
 			border-color: #555555;
+			outline-style: none;
+			outline-color: transparent;
+			box-shadow: none;
+		}
+		scale:focus {
+			outline-style: none;
+			outline-color: transparent;
+			outline-width: 0;
+			border-color: transparent;
+			box-shadow: none;
+			-gtk-outline-radius: 0;
 		}
 		button {
 			background-color: #151a2a;
