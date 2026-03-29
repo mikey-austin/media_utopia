@@ -900,7 +900,19 @@ func (p *Popup) fetchArtwork(artURL string) {
 			p.setDefaultArtwork()
 			return false
 		}
-		scaled, err := pixbuf.ScaleSimple(56, 56, gdk.INTERP_BILINEAR)
+		// Scale preserving aspect ratio to fit 56x56
+		origW := pixbuf.GetWidth()
+		origH := pixbuf.GetHeight()
+		targetW, targetH := 56, 56
+		if origW > 0 && origH > 0 {
+			ratio := float64(origW) / float64(origH)
+			if ratio > 1 {
+				targetH = int(56 / ratio)
+			} else {
+				targetW = int(56 * ratio)
+			}
+		}
+		scaled, err := pixbuf.ScaleSimple(targetW, targetH, gdk.INTERP_BILINEAR)
 		if err != nil {
 			p.artworkImg.SetFromPixbuf(pixbuf)
 			return false
