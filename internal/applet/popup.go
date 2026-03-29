@@ -30,6 +30,7 @@ type Popup struct {
 
 	// Widgets
 	titleLabel  *gtk.Label
+	albumLabel  *gtk.Label
 	artistLabel *gtk.Label
 	artworkImg  *gtk.Image
 	seekBar     *gtk.Scale
@@ -217,14 +218,10 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		album := metaString(md, "album", "")
 		p.titleLabel.SetText(title)
 		p.titleLabel.SetTooltipText(title)
-		if artist != "" && album != "" {
-			p.artistLabel.SetText(artist + " — " + album)
-		} else if artist != "" {
-			p.artistLabel.SetText(artist)
-		} else {
-			p.artistLabel.SetText(album)
-		}
-		p.artistLabel.SetTooltipText(artist + " — " + album)
+		p.albumLabel.SetText(album)
+		p.albumLabel.SetTooltipText(album)
+		p.artistLabel.SetText(artist)
+		p.artistLabel.SetTooltipText(artist)
 
 		// Notify on track change when popup is hidden (wait for real metadata)
 		if p.pendingNotify && !p.IsVisible() && title != "Track" && title != "Unknown" {
@@ -254,6 +251,7 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		}
 	} else {
 		p.titleLabel.SetText("mu-applet")
+		p.albumLabel.SetText("")
 		p.artistLabel.SetText("No track loaded")
 		p.setDefaultArtwork()
 	}
@@ -429,7 +427,14 @@ func (p *Popup) buildUI() error {
 	p.titleLabel.SetEllipsize(3)
 	p.titleLabel.SetMaxWidthChars(30)
 
-	p.artistLabel, _ = gtk.LabelNew("No track loaded")
+	p.albumLabel, _ = gtk.LabelNew("")
+	sc, _ = p.albumLabel.GetStyleContext()
+	sc.AddClass("wa-album")
+	p.albumLabel.SetHAlign(gtk.ALIGN_START)
+	p.albumLabel.SetEllipsize(3)
+	p.albumLabel.SetMaxWidthChars(30)
+
+	p.artistLabel, _ = gtk.LabelNew("")
 	sc, _ = p.artistLabel.GetStyleContext()
 	sc.AddClass("wa-artist")
 	p.artistLabel.SetHAlign(gtk.ALIGN_START)
@@ -437,6 +442,7 @@ func (p *Popup) buildUI() error {
 	p.artistLabel.SetMaxWidthChars(30)
 
 	info.PackStart(p.titleLabel, false, false, 0)
+	info.PackStart(p.albumLabel, false, false, 0)
 	info.PackStart(p.artistLabel, false, false, 0)
 	display.PackStart(info, true, true, 0)
 	main.PackStart(display, false, false, 0)
@@ -638,9 +644,14 @@ func (p *Popup) applyCSS() error {
 			font-weight: bold;
 			font-family: monospace;
 		}
-		.wa-artist {
+		.wa-album {
 			color: #88bbff;
-			font-size: 11px;
+			font-size: 10px;
+			font-family: monospace;
+		}
+		.wa-artist {
+			color: #ddaa00;
+			font-size: 10px;
 			font-family: monospace;
 		}
 		.wa-time {
