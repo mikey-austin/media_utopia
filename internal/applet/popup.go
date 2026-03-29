@@ -298,10 +298,11 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 }
 
 func (p *Popup) updateQueue(state *mu.RendererState) {
+	// Destroy old children explicitly to prevent GC/finalizer race with GTK
 	if children := p.queueBox.GetChildren(); children != nil {
 		children.Foreach(func(item interface{}) {
 			if w, ok := item.(*gtk.Widget); ok {
-				p.queueBox.Remove(w)
+				w.Destroy()
 			}
 		})
 	}
