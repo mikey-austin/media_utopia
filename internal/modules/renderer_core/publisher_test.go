@@ -1,6 +1,7 @@
 package renderercore
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -94,4 +95,62 @@ func TestChannelPresencePublisher_SendsPresence(t *testing.T) {
 	if got.NodeID != "test" {
 		t.Fatalf("expected test, got %s", got.NodeID)
 	}
+}
+
+func TestMQTTStatePublisher_PublishesJSON(t *testing.T) {
+	var gotTopic string
+	var gotPayload []byte
+	var gotRetained bool
+	client := mqttPublisherFunc(func(topic string, qos byte, retained bool, payload []byte) error {
+		gotTopic = topic
+		gotPayload = payload
+		gotRetained = retained
+		return nil
+	})
+	pub := NewMQTTStatePublisher(client, "mu/v1/node/test/state")
+
+	state := testState()
+	if err := pub.PublishState(state); err != nil {
+		t.Fatal(err)
+	}
+	if gotTopic != "mu/v1/node/test/state" {
+		t.Fatalf("expected state topic, got %s", gotTopic)
+	}
+	if !gotRetained {
+		t.Fatal("expected retained")
+	}
+	var decoded mu.RendererState
+	if err := json.Unmarshal(gotPayload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Playback.Status != "playing" {
+		t.Fatalf("expected playing, got %s", decoded.Playback.Status)
+	}
+}
+
+func TestMQTTPresencePublisher_PublishesJSON(t *testing.T) {
+	var gotPayload []byte
+	client := mqttPublisherFunc(func(topic string, qos byte, retained bool, payload []byte) error {
+		gotPayload = payload
+		return nil
+	})
+	pub := NewMQTTPresencePublisher(client, "mu/v1/node/test/presence")
+
+	p := &mu.Presence{NodeID: "test", Kind: "renderer", Name: "Test"}
+	if err := pub.PublishPresence(p); err != nil {
+		t.Fatal(err)
+	}
+	var decoded mu.Presence
+	if err := json.Unmarshal(gotPayload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Name != "Test" {
+		t.Fatalf("expected Test, got %s", decoded.Name)
+	}
+}
+
+type mqttPublisherFunc func(topic string, qos byte, retained bool, payload []byte) error
+
+func (f mqttPublisherFunc) Publish(topic string, qos byte, retained bool, payload []byte) error {
+	return f(topic, qos, retained, payload)
 }

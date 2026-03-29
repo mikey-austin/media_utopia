@@ -1,6 +1,7 @@
 package renderercore
 
 import (
+	"encoding/json"
 	"errors"
 
 	"github.com/mikey-austin/media_utopia/pkg/mu"
@@ -96,4 +97,45 @@ func (m *MultiPresencePublisher) PublishPresence(presence *mu.Presence) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// MQTTPublisher is the interface required for MQTT-based publishers.
+type MQTTPublisher interface {
+	Publish(topic string, qos byte, retained bool, payload []byte) error
+}
+
+// MQTTStatePublisher publishes serialized state to an MQTT retained topic.
+type MQTTStatePublisher struct {
+	client MQTTPublisher
+	topic  string
+}
+
+func NewMQTTStatePublisher(client MQTTPublisher, topic string) *MQTTStatePublisher {
+	return &MQTTStatePublisher{client: client, topic: topic}
+}
+
+func (p *MQTTStatePublisher) PublishState(state *mu.RendererState) error {
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return p.client.Publish(p.topic, 1, true, payload)
+}
+
+// MQTTPresencePublisher publishes serialized presence to an MQTT retained topic.
+type MQTTPresencePublisher struct {
+	client MQTTPublisher
+	topic  string
+}
+
+func NewMQTTPresencePublisher(client MQTTPublisher, topic string) *MQTTPresencePublisher {
+	return &MQTTPresencePublisher{client: client, topic: topic}
+}
+
+func (p *MQTTPresencePublisher) PublishPresence(presence *mu.Presence) error {
+	payload, err := json.Marshal(presence)
+	if err != nil {
+		return err
+	}
+	return p.client.Publish(p.topic, 1, true, payload)
 }

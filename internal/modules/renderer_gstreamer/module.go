@@ -27,15 +27,17 @@ type mqttClient interface {
 
 // Config configures the GStreamer renderer module.
 type Config struct {
-	NodeID       string
-	TopicBase    string
-	Name         string
-	Pipeline     string
-	Device       string
-	Crossfade    time.Duration
-	Volume       float64
-	PublishState bool
-	Source       string
+	NodeID            string
+	TopicBase         string
+	Name              string
+	Pipeline          string
+	Device            string
+	Crossfade         time.Duration
+	Volume            float64
+	PublishState      bool
+	Source            string
+	StatePublisher    renderercore.StatePublisher
+	PresencePublisher renderercore.PresencePublisher
 }
 
 // cmdWork represents a command to be processed by a worker.
@@ -166,7 +168,7 @@ func (m *Module) Run(ctx context.Context) error {
 }
 
 func (m *Module) publishPresence() error {
-	presence := mu.Presence{
+	presence := &mu.Presence{
 		NodeID: m.config.NodeID,
 		Kind:   "renderer",
 		Name:   m.config.Name,
@@ -177,6 +179,9 @@ func (m *Module) publishPresence() error {
 		},
 		Source: m.config.Source,
 		TS:     time.Now().Unix(),
+	}
+	if m.config.PresencePublisher != nil {
+		return m.config.PresencePublisher.PublishPresence(presence)
 	}
 	payload, err := json.Marshal(presence)
 	if err != nil {
@@ -474,6 +479,15 @@ func (m *Module) publishStatePayload(payload []byte) error {
 	}
 	if m.shouldShedState() {
 		return nil
+	}
+	if m.config.StatePublisher != nil {
+		var state mu.RendererState
+		if err := json.Unmarshal(payload, &state); err != nil {
+			return err
+		}
+		err := m.config.StatePublisher.PublishState(&state)
+		m.markPublishTimeout(err)
+		return err
 	}
 	err := m.client.Publish(mu.TopicState(m.config.TopicBase, m.config.NodeID), 1, true, payload)
 	m.markPublishTimeout(err)

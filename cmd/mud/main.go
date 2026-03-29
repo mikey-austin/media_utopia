@@ -19,6 +19,7 @@ import (
 	jellyfinlibrary "github.com/mikey-austin/media_utopia/internal/modules/jellyfin_library"
 	"github.com/mikey-austin/media_utopia/internal/modules/playlist"
 	podcastlibrary "github.com/mikey-austin/media_utopia/internal/modules/podcast_library"
+	renderercore "github.com/mikey-austin/media_utopia/internal/modules/renderer_core"
 	renderergstreamer "github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
 	rendererkodi "github.com/mikey-austin/media_utopia/internal/modules/renderer_kodi"
 	rendererupnp "github.com/mikey-austin/media_utopia/internal/modules/renderer_upnp"
@@ -520,16 +521,20 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.Mod
 			if err := ensureUnique(nodeID, "renderer_gstreamer"); err != nil {
 				return nil, err
 			}
+			stateTopic := mu.TopicState(cfg.Server.TopicBase, nodeID)
+			presenceTopic := mu.TopicPresence(cfg.Server.TopicBase, nodeID)
 			mod, err := renderergstreamer.NewModule(logFactory.ModuleLogger("renderer_gstreamer"), client, renderergstreamer.Config{
-				NodeID:       nodeID,
-				TopicBase:    cfg.Server.TopicBase,
-				Name:         cfgItem.Name,
-				Pipeline:     cfgItem.Pipeline,
-				Device:       cfgItem.Device,
-				Crossfade:    crossfade,
-				Volume:       1.0,
-				PublishState: true,
-				Source:       cfgItem.Source,
+				NodeID:            nodeID,
+				TopicBase:         cfg.Server.TopicBase,
+				Name:              cfgItem.Name,
+				Pipeline:          cfgItem.Pipeline,
+				Device:            cfgItem.Device,
+				Crossfade:         crossfade,
+				Volume:            1.0,
+				PublishState:      true,
+				Source:            cfgItem.Source,
+				StatePublisher:    renderercore.NewMQTTStatePublisher(client, stateTopic),
+				PresencePublisher: renderercore.NewMQTTPresencePublisher(client, presenceTopic),
 			})
 			if err != nil {
 				return nil, err
