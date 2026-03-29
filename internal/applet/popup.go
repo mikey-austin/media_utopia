@@ -4,6 +4,9 @@ package applet
 
 import (
 	"fmt"
+	"net/url"
+	"path"
+	"strings"
 
 	"github.com/gotk3/gotk3/gdk"
 	"github.com/gotk3/gotk3/gtk"
@@ -110,30 +113,24 @@ func (p *Popup) ShowAt(x, y, width, height int) {
 
 // ShowCentered shows the popup near the top-right of screen (near i3bar tray).
 func (p *Popup) ShowCentered() {
+	// Show first so GTK computes the actual size
+	p.win.ShowAll()
+
+	alloc := p.win.GetAllocation()
+	pw := alloc.GetWidth()
+	if pw <= 1 {
+		pw = 300
+	}
+
 	screen, err := gdk.ScreenGetDefault()
 	if err != nil {
-		p.win.ShowAll()
 		return
 	}
 	sw := screen.GetWidth()
 
-	// Show first to get actual size, then reposition
-	p.win.ShowAll()
-
-	_, pw := p.win.GetPreferredWidth()
-	_, ph := p.win.GetPreferredHeight()
-	if ph <= 1 {
-		ph = 400
-	}
-
-	// Position near top-right, below the i3bar
-	barHeight := 20
+	// Anchor to top-right, just below the i3bar
 	popupX := sw - pw - 4
-	popupY := barHeight + 4
-	// If popup would extend below screen, flip above bar
-	if popupY+ph > screen.GetHeight() {
-		popupY = barHeight - ph
-	}
+	popupY := 24
 
 	p.win.Move(popupX, popupY)
 	p.win.GrabFocus()
@@ -164,9 +161,13 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 	}
 
 	// Track info
-	if state.Current != nil && state.Current.Metadata != nil {
+	if state.Current != nil {
 		md := state.Current.Metadata
-		p.titleLabel.SetText(metaString(md, "title", "No Track"))
+		title := metaString(md, "title", "")
+		if title == "" {
+			title = displayName(state.Current.ItemID)
+		}
+		p.titleLabel.SetText(title)
 		p.artistLabel.SetText(metaString(md, "artist", ""))
 		p.albumLabel.SetText(metaString(md, "album", ""))
 	} else {
@@ -659,10 +660,15 @@ func (p *Popup) applyCSS() error {
 			color: #a0a0b0;
 			font-size: 10px;
 		}
-		.transport-btn {
-			background: transparent;
+		button {
+			background-color: #2a2a4e;
+			background-image: none;
 			border: none;
-			color: #ffffff;
+			box-shadow: none;
+			color: #e0e0e0;
+		}
+		.transport-btn {
+			background-color: transparent;
 			min-width: 36px;
 			min-height: 36px;
 		}
@@ -678,6 +684,19 @@ func (p *Popup) applyCSS() error {
 		.volume-icon {
 			color: #a0a0b0;
 			font-size: 14px;
+		}
+		scale trough {
+			background-color: #2a2a4e;
+			min-height: 6px;
+		}
+		scale highlight {
+			background-color: #4ecca3;
+			min-height: 6px;
+		}
+		scale slider {
+			background-color: #e0e0e0;
+			min-width: 12px;
+			min-height: 12px;
 		}
 		.volume-pct {
 			color: #a0a0b0;
@@ -732,12 +751,35 @@ func (p *Popup) applyCSS() error {
 
 // metaString extracts a string from metadata with a fallback.
 func metaString(md map[string]interface{}, key, fallback string) string {
+	if md == nil {
+		return fallback
+	}
 	if v, ok := md[key]; ok {
 		if s, ok := v.(string); ok && s != "" {
 			return s
 		}
 	}
 	return fallback
+}
+
+// displayName extracts a human-readable name from a URL or item ID.
+func displayName(itemID string) string {
+	if itemID == "" {
+		return "No Track"
+	}
+	if u, err := url.Parse(itemID); err == nil && u.Path != "" {
+		base := path.Base(u.Path)
+		// Strip file extension
+		if i := strings.LastIndex(base, "."); i > 0 {
+			base = base[:i]
+		}
+		// URL-decode
+		if decoded, err := url.PathUnescape(base); err == nil {
+			return decoded
+		}
+		return base
+	}
+	return itemID
 }
 
 // setButtonIcon replaces the image on a button.
