@@ -3,12 +3,16 @@ BIN_DIR ?= $(CURDIR)/bin
 REGISTRY ?= registry.nas.jackiemclean.net
 DATE_TAG := $(shell date +%Y%m%d)
 
-.PHONY: build test fmt integration docker-library docker-library-push
+.PHONY: build mu-applet test fmt integration docker-library docker-library-push
 
 build:
 	mkdir -p $(BIN_DIR)
 	go build -o $(BIN_DIR)/mu ./cmd/mu
 	go build -tags "gstreamer upnp chromaprint" -o $(BIN_DIR)/mud ./cmd/mud
+
+mu-applet:
+	mkdir -p $(BIN_DIR)
+	go build -tags "gstreamer gtk" -o $(BIN_DIR)/mu-applet ./cmd/mu-applet
 
 test:
 	GOCACHE=$(GOCACHE) go test -count=1 -v ./...

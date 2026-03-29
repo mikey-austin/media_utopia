@@ -12,6 +12,7 @@ require (
 	github.com/go-gst/go-gst v1.4.0
 	github.com/golang/snappy v0.0.4
 	github.com/gorilla/websocket v1.5.3
+	github.com/gotk3/gotk3 v0.6.5-0.20251124190141-e7a9e823ca35
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/mochi-mqtt/server/v2 v2.7.9
