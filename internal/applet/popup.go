@@ -210,7 +210,10 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		if title == "" {
 			title = displayName(state.Current.ItemID)
 		}
-		artist := metaString(md, "artist", "")
+		artist := metaString(md, "artists", "")
+		if artist == "" {
+			artist = metaString(md, "artist", "")
+		}
 		album := metaString(md, "album", "")
 		p.titleLabel.SetText(title)
 		p.titleLabel.SetTooltipText(title)
@@ -795,7 +798,10 @@ func (p *Popup) applyCSS() error {
 
 func queueItemName(item mu.QueueItem) string {
 	title := metaString(item.Metadata, "title", "")
-	artist := metaString(item.Metadata, "artist", "")
+	artist := metaString(item.Metadata, "artists", "")
+	if artist == "" {
+		artist = metaString(item.Metadata, "artist", "")
+	}
 	if title != "" && artist != "" {
 		return artist + " — " + title
 	}
@@ -809,9 +815,25 @@ func metaString(md map[string]interface{}, key, fallback string) string {
 	if md == nil {
 		return fallback
 	}
-	if v, ok := md[key]; ok {
-		if s, ok := v.(string); ok && s != "" {
-			return s
+	v, ok := md[key]
+	if !ok {
+		return fallback
+	}
+	switch val := v.(type) {
+	case string:
+		if val != "" {
+			return val
+		}
+	case []interface{}:
+		// Handle arrays like "artists": ["Name1", "Name2"]
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			if s, ok := item.(string); ok && s != "" {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, ", ")
 		}
 	}
 	return fallback
