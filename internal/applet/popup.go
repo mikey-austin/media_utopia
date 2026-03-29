@@ -98,13 +98,25 @@ func (p *Popup) ShowCentered() {
 	}
 	sw := screen.GetWidth()
 
+	// Show first to get actual size, then reposition
+	p.win.ShowAll()
+
 	_, pw := p.win.GetPreferredWidth()
-	// Position near top-right, below the i3bar (typically ~20px tall)
-	popupX := sw - pw - 8
-	popupY := 28
+	_, ph := p.win.GetPreferredHeight()
+	if ph <= 1 {
+		ph = 400
+	}
+
+	// Position near top-right, below the i3bar
+	barHeight := 20
+	popupX := sw - pw - 4
+	popupY := barHeight + 4
+	// If popup would extend below screen, flip above bar
+	if popupY+ph > screen.GetHeight() {
+		popupY = barHeight - ph
+	}
 
 	p.win.Move(popupX, popupY)
-	p.win.ShowAll()
 	p.win.GrabFocus()
 }
 

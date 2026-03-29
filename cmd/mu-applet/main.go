@@ -55,6 +55,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Apply same defaults as mud
+	if cfg.Server.TopicBase == "" {
+		cfg.Server.TopicBase = mu.BaseTopic
+	}
+	if cfg.Server.Namespace == "" {
+		cfg.Server.Namespace = cfg.Server.Identity
+	}
+
 	// Build node ID
 	provider := rCfg.Provider
 	if strings.TrimSpace(provider) == "" {
