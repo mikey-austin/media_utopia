@@ -245,44 +245,7 @@ func main() {
 		}
 	}
 
-	// Lease UI callbacks — shared by popup and tray
-	var popup *applet.Popup
-	var tray *applet.TrayIcon
-	onAcquireUI := func() {
-		go func() {
-			if acquireLease() {
-				glib.IdleAdd(func() bool {
-					tray.SetHasLease(true)
-					popup.SetHasLease(true)
-					return false
-				})
-			}
-		}()
-	}
-	onReleaseUI := func() {
-		releaseLease()
-		tray.SetHasLease(false)
-		popup.SetHasLease(false)
-	}
-
-	// Create popup
-	popup, err = applet.NewPopup(sendCmd, onAcquireUI, onReleaseUI)
-	if err != nil {
-		logger.Fatal("popup init failed", zap.Error(err))
-	}
-
-	// Create tray icon
-	tray, err = applet.NewTrayIcon(
-		func() { cancel(); gtk.MainQuit() },
-		onAcquireUI,
-		onReleaseUI,
-	)
-	if err != nil {
-		logger.Fatal("tray icon failed", zap.Error(err))
-	}
-	tray.SetPopup(popup)
-
-	// sendMQTTCmd sends a command and waits for a reply.
+	// sendMQTTCmd sends a command to a topic and waits for a reply.
 	sendMQTTCmd := func(targetTopic string, cmdType string, body interface{}) (*mu.ReplyEnvelope, error) {
 		replyCh := make(chan []byte, 1)
 		client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
@@ -312,6 +275,102 @@ func main() {
 			return nil, fmt.Errorf("timeout")
 		}
 	}
+
+	// Lease UI callbacks — shared by popup and tray
+	var popup *applet.Popup
+	var tray *applet.TrayIcon
+	onAcquireUI := func() {
+		go func() {
+			if acquireLease() {
+				glib.IdleAdd(func() bool {
+					tray.SetHasLease(true)
+					popup.SetHasLease(true)
+					return false
+				})
+			}
+		}()
+	}
+	onReleaseUI := func() {
+		releaseLease()
+		tray.SetHasLease(false)
+		popup.SetHasLease(false)
+	}
+
+	// Playlist server discovery and loading
+	var playlistServerID string
+	discoverPlaylistServer := func() {
+		// Subscribe to presence to find playlist servers
+		presenceTopic := cfg.Server.TopicBase + "/node/+/presence"
+		found := make(chan string, 1)
+		client.Subscribe(presenceTopic, 1, func(_ paho.Client, msg paho.Message) {
+			var p mu.Presence
+			if err := json.Unmarshal(msg.Payload(), &p); err == nil && p.Kind == "playlist" {
+				select {
+				case found <- p.NodeID:
+				default:
+				}
+			}
+		})
+		select {
+		case id := <-found:
+			playlistServerID = id
+			logger.Info("playlist server found", zap.String("nodeId", id))
+		case <-time.After(3 * time.Second):
+			logger.Debug("no playlist server found")
+		}
+		client.Unsubscribe(presenceTopic)
+	}
+
+	fetchPlaylists := func() {
+		if playlistServerID == "" {
+			discoverPlaylistServer()
+		}
+		if playlistServerID == "" {
+			return
+		}
+		plTopic := mu.TopicCommands(cfg.Server.TopicBase, playlistServerID)
+		reply, err := sendMQTTCmd(plTopic, "playlist.list", mu.PlaylistListBody{Owner: ""})
+		if err != nil || reply == nil || !reply.OK {
+			return
+		}
+		var body mu.PlaylistListReply
+		if err := json.Unmarshal(reply.Body, &body); err != nil {
+			return
+		}
+		glib.IdleAdd(func() bool {
+			popup.SetPlaylists(body.Playlists)
+			return false
+		})
+	}
+
+	loadPlaylist := func(playlistID string) {
+		if playlistServerID == "" {
+			return
+		}
+		sendCmd("queue.loadPlaylist", mu.QueueLoadPlaylistBody{
+			PlaylistServerID: playlistServerID,
+			PlaylistID:       playlistID,
+			Mode:             "replace",
+			Resolve:          "auto",
+		})
+	}
+
+	// Create popup
+	popup, err = applet.NewPopup(sendCmd, onAcquireUI, onReleaseUI, loadPlaylist)
+	if err != nil {
+		logger.Fatal("popup init failed", zap.Error(err))
+	}
+
+	// Create tray icon
+	tray, err = applet.NewTrayIcon(
+		func() { cancel(); gtk.MainQuit() },
+		onAcquireUI,
+		onReleaseUI,
+	)
+	if err != nil {
+		logger.Fatal("tray icon failed", zap.Error(err))
+	}
+	tray.SetPopup(popup)
 
 	// resolveMetadata fetches metadata for queue items from the library.
 	// Parses "lib:<libraryNodeID>:<itemHash>" format to extract library node and item IDs.
@@ -420,6 +479,9 @@ func main() {
 		}
 	})
 	go bridge.Start()
+
+	// Fetch playlists in background
+	go fetchPlaylists()
 
 	// Shutdown: when context is cancelled (signal), quit GTK
 	go func() {

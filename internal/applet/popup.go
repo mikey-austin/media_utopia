@@ -42,13 +42,15 @@ type Popup struct {
 	volumeBar   *gtk.Scale
 	volumeLabel *gtk.Label
 	queueBox    *gtk.Box
-	leaseBtn    *gtk.Button
-	leaseLabel  *gtk.Label
+	leaseBtn     *gtk.Button
+	leaseLabel   *gtk.Label
 	bitrateLabel *gtk.Label
+	playlistCombo *gtk.ComboBoxText
 
-	sendCmd        CommandFunc
-	onLeaseAcquire LeaseFunc
-	onLeaseRelease LeaseFunc
+	sendCmd          CommandFunc
+	onLeaseAcquire   LeaseFunc
+	onLeaseRelease   LeaseFunc
+	onLoadPlaylist   func(playlistID string)
 
 	// State tracking
 	seeking    bool
@@ -65,11 +67,12 @@ type Popup struct {
 	lastArtworkID string
 
 	// Notifications
-	lastItemID string
+	lastItemID    string
+	pendingNotify bool
 }
 
 // NewPopup creates the mini-player popup window.
-func NewPopup(sendCmd CommandFunc, onLeaseAcquire, onLeaseRelease LeaseFunc) (*Popup, error) {
+func NewPopup(sendCmd CommandFunc, onLeaseAcquire, onLeaseRelease LeaseFunc, onLoadPlaylist func(string)) (*Popup, error) {
 	win, err := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
 	if err != nil {
 		return nil, err
@@ -87,6 +90,7 @@ func NewPopup(sendCmd CommandFunc, onLeaseAcquire, onLeaseRelease LeaseFunc) (*P
 		sendCmd:        sendCmd,
 		onLeaseAcquire: onLeaseAcquire,
 		onLeaseRelease: onLeaseRelease,
+		onLoadPlaylist: onLoadPlaylist,
 		hasLease:       true,
 	}
 	if err := p.buildUI(); err != nil {
@@ -128,6 +132,16 @@ func (p *Popup) ShowCentered() {
 	}
 	p.win.Move(screen.GetWidth()-pw-4, 24)
 	p.win.GrabFocus()
+}
+
+// SetPlaylists populates the playlist dropdown.
+func (p *Popup) SetPlaylists(playlists []mu.PlaylistSummary) {
+	p.playlistCombo.RemoveAll()
+	p.playlistCombo.AppendText("Load playlist...")
+	for _, pl := range playlists {
+		p.playlistCombo.Append(pl.PlaylistID, pl.Name)
+	}
+	p.playlistCombo.SetActive(0)
 }
 
 // SetQueueItems updates the cached queue and re-renders track info.
@@ -183,9 +197,10 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 	}
 
 	// Track change detection
-	trackChanged := false
 	if state.Current != nil && state.Current.ItemID != p.lastItemID {
-		trackChanged = p.lastItemID != ""
+		if p.lastItemID != "" {
+			p.pendingNotify = true
+		}
 		p.lastItemID = state.Current.ItemID
 	}
 
@@ -199,16 +214,23 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		album := metaString(md, "album", "")
 		p.titleLabel.SetText(title)
 		p.titleLabel.SetTooltipText(title)
-		p.artistLabel.SetText(artist)
+		if artist != "" && album != "" {
+			p.artistLabel.SetText(artist + " — " + album)
+		} else if artist != "" {
+			p.artistLabel.SetText(artist)
+		} else {
+			p.artistLabel.SetText(album)
+		}
 		p.artistLabel.SetTooltipText(artist + " — " + album)
 
-		// Notify on track change when popup is hidden
-		if trackChanged && !p.IsVisible() {
-			body := artist
-			if album != "" {
-				body = artist + " — " + album
+		// Notify on track change when popup is hidden (wait for real metadata)
+		if p.pendingNotify && !p.IsVisible() && title != "Track" && title != "Unknown" {
+			p.pendingNotify = false
+			notifBody := artist
+			if album != "" && artist != "" {
+				notifBody = artist + " — " + album
 			}
-			go notifyTrackChange(title, body, metaString(md, "artworkUrl", ""))
+			go notifyTrackChange(title, notifBody, metaString(md, "artworkUrl", ""))
 		}
 
 		// Artwork
@@ -557,7 +579,25 @@ func (p *Popup) buildUI() error {
 		}
 	})
 
-	leaseRow.PackStart(p.leaseLabel, true, true, 0)
+	p.playlistCombo, _ = gtk.ComboBoxTextNew()
+	sc, _ = p.playlistCombo.GetStyleContext()
+	sc.AddClass("wa-btn-sm")
+	p.playlistCombo.AppendText("Load playlist...")
+	p.playlistCombo.SetActive(0)
+	p.playlistCombo.Connect("changed", func() {
+		idx := p.playlistCombo.GetActive()
+		if idx <= 0 {
+			return
+		}
+		id := p.playlistCombo.GetActiveID()
+		if id != "" && p.onLoadPlaylist != nil {
+			p.onLoadPlaylist(id)
+		}
+		p.playlistCombo.SetActive(0) // reset to "Load playlist..."
+	})
+
+	leaseRow.PackStart(p.leaseLabel, false, false, 0)
+	leaseRow.PackStart(p.playlistCombo, true, true, 4)
 	leaseRow.PackEnd(p.leaseBtn, false, false, 0)
 	main.PackStart(leaseRow, false, false, 0)
 
@@ -717,6 +757,20 @@ func (p *Popup) applyCSS() error {
 		}
 		.q-btn:hover {
 			background-color: #1a2a50;
+		}
+		combobox button {
+			background-color: #151a2a;
+			background-image: none;
+			border: 1px solid #2a3050;
+			color: #88bbff;
+			font-size: 9px;
+			font-family: monospace;
+			padding: 1px 4px;
+			min-height: 20px;
+		}
+		combobox button:hover {
+			background-color: #1a2240;
+			border-color: #44ff66;
 		}
 		.lease-on {
 			color: #44ff66;
