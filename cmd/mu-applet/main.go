@@ -282,9 +282,8 @@ func main() {
 	}
 	tray.SetPopup(popup)
 
-	// Queue fetcher — sends queue.get and updates the popup
-	var lastQueueRev int64
-	fetchQueue := func() {
+	// sendMQTTCmd sends a command and waits for a reply.
+	sendMQTTCmd := func(targetTopic string, cmdType string, body interface{}) (*mu.ReplyEnvelope, error) {
 		replyCh := make(chan []byte, 1)
 		client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
 			select {
@@ -294,41 +293,118 @@ func main() {
 		})
 		defer client.Unsubscribe(replyTopic)
 
-		cmd, _ := mu.NewCommand("queue.get", mu.QueueGetBody{From: 0, Count: 1000})
+		cmd, _ := mu.NewCommand(cmdType, body)
 		cmd.ID = idGen.NewID()
 		cmd.TS = time.Now().Unix()
 		cmd.From = "mu-applet"
 		cmd.ReplyTo = replyTopic
 		payload, _ := json.Marshal(cmd)
-		client.Publish(cmdTopic, 1, false, payload)
+		client.Publish(targetTopic, 1, false, payload)
 
 		select {
 		case data := <-replyCh:
 			var reply mu.ReplyEnvelope
-			if err := json.Unmarshal(data, &reply); err != nil || !reply.OK {
-				logger.Debug("queue.get failed", zap.Bool("ok", reply.OK), zap.Error(err))
-				return
+			if err := json.Unmarshal(data, &reply); err != nil {
+				return nil, err
 			}
-			var body mu.QueueGetReply
-			if err := json.Unmarshal(reply.Body, &body); err != nil {
-				logger.Debug("queue.get unmarshal failed", zap.Error(err))
-				return
-			}
-			logger.Info("queue fetched",
-				zap.Int("entries", len(body.Entries)),
-				zap.Int64("index", body.Index))
-			if len(body.Entries) > 0 {
-				first := body.Entries[0]
-				logger.Info("first queue entry",
-					zap.String("itemId", first.ItemID),
-					zap.Any("metadata", first.Metadata))
-			}
-			glib.IdleAdd(func() bool {
-				popup.SetQueueItems(body.Entries, body.Index)
-				return false
-			})
-		case <-time.After(2 * time.Second):
+			return &reply, nil
+		case <-time.After(3 * time.Second):
+			return nil, fmt.Errorf("timeout")
 		}
+	}
+
+	// resolveMetadata fetches metadata for queue items from the library.
+	// Parses "lib:<libraryNodeID>:<itemHash>" format to extract library node and item IDs.
+	resolveMetadata := func(items []mu.QueueItem) []mu.QueueItem {
+		// Group items by library node ID
+		type resolveReq struct {
+			libraryNodeID string
+			itemID        string
+			index         int
+		}
+		var reqs []resolveReq
+		for i, item := range items {
+			if item.Metadata != nil {
+				continue
+			}
+			if !strings.HasPrefix(item.ItemID, "lib:") {
+				continue
+			}
+			ref := strings.TrimPrefix(item.ItemID, "lib:")
+			idx := strings.LastIndex(ref, ":")
+			if idx <= 0 {
+				continue
+			}
+			reqs = append(reqs, resolveReq{
+				libraryNodeID: ref[:idx],
+				itemID:        ref[idx+1:],
+				index:         i,
+			})
+		}
+		if len(reqs) == 0 {
+			return items
+		}
+
+		// Group by library
+		byLib := map[string][]resolveReq{}
+		for _, r := range reqs {
+			byLib[r.libraryNodeID] = append(byLib[r.libraryNodeID], r)
+		}
+
+		for libID, libReqs := range byLib {
+			itemIDs := make([]string, len(libReqs))
+			for i, r := range libReqs {
+				itemIDs[i] = r.itemID
+			}
+			libTopic := mu.TopicCommands(cfg.Server.TopicBase, libID)
+			reply, err := sendMQTTCmd(libTopic, "library.resolveBatch", mu.LibraryResolveBatchBody{
+				ItemIDs:      itemIDs,
+				MetadataOnly: true,
+			})
+			if err != nil || reply == nil || !reply.OK {
+				logger.Debug("resolveBatch failed", zap.String("lib", libID), zap.Error(err))
+				continue
+			}
+			var batch mu.LibraryResolveBatchReply
+			if err := json.Unmarshal(reply.Body, &batch); err != nil {
+				continue
+			}
+			// Map results back to queue items
+			resolved := map[string]map[string]any{}
+			for _, item := range batch.Items {
+				if item.Metadata != nil {
+					resolved[item.ItemID] = item.Metadata
+				}
+			}
+			for _, r := range libReqs {
+				if md, ok := resolved[r.itemID]; ok {
+					items[r.index].Metadata = md
+				}
+			}
+		}
+		return items
+	}
+
+	// Queue fetcher — sends queue.get then resolves metadata from library
+	var lastQueueRev int64
+	fetchQueue := func() {
+		reply, err := sendMQTTCmd(cmdTopic, "queue.get", mu.QueueGetBody{From: 0, Count: 1000})
+		if err != nil || reply == nil || !reply.OK {
+			return
+		}
+		var body mu.QueueGetReply
+		if err := json.Unmarshal(reply.Body, &body); err != nil {
+			return
+		}
+
+		// Resolve metadata for items that don't have it
+		body.Entries = resolveMetadata(body.Entries)
+
+		logger.Info("queue fetched", zap.Int("entries", len(body.Entries)), zap.Int64("index", body.Index))
+		glib.IdleAdd(func() bool {
+			popup.SetQueueItems(body.Entries, body.Index)
+			return false
+		})
 	}
 
 	// State bridge — channels state to GTK

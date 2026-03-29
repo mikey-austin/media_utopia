@@ -524,63 +524,68 @@ func (p *Popup) applyCSS() error {
 	css, _ := gtk.CssProviderNew()
 	err := css.LoadFromData(`
 		.wa {
-			background-color: #232323;
-			border: 1px solid #3a3a3a;
+			background-color: #0a0e1a;
+			border: 1px solid #1a2040;
 		}
 		.wa-titlebar {
-			background-color: #1a1a1a;
+			background-color: #060a14;
+			border-bottom: 1px solid #1a2040;
 		}
 		.wa-appname {
-			color: #86c040;
+			color: #6688cc;
 			font-size: 10px;
 			font-weight: bold;
 			font-family: monospace;
 		}
 		.wa-bitrate {
-			color: #86c040;
+			color: #ddaa00;
 			font-size: 9px;
 			font-family: monospace;
 		}
 		.wa-title {
-			color: #00ff44;
+			color: #44ff66;
 			font-size: 13px;
 			font-weight: bold;
 			font-family: monospace;
 		}
 		.wa-artist {
-			color: #86c040;
+			color: #88bbff;
 			font-size: 11px;
 			font-family: monospace;
 		}
 		.wa-time {
-			color: #00ff44;
+			color: #ddaa00;
 			font-size: 10px;
+			font-weight: bold;
 			font-family: monospace;
 			min-width: 32px;
 		}
 		scale trough {
-			background-color: #1a1a1a;
-			min-height: 4px;
+			background-color: #0a0e1a;
+			border: 1px solid #1a2040;
+			min-height: 6px;
 		}
 		scale highlight {
-			background-color: #86c040;
-			min-height: 4px;
+			background-color: #44ff66;
+			min-height: 6px;
 		}
 		scale slider {
-			background-color: #86c040;
-			min-width: 8px;
-			min-height: 8px;
+			background-color: #cccccc;
+			border: 1px solid #888888;
+			min-width: 10px;
+			min-height: 10px;
 		}
 		button {
-			background-color: #333333;
+			background-color: #151a2a;
 			background-image: none;
-			border: 1px solid #555555;
+			border: 1px solid #2a3050;
 			box-shadow: none;
-			color: #cccccc;
+			color: #aabbdd;
 			padding: 2px 4px;
 		}
 		button:hover {
-			background-color: #444444;
+			background-color: #1a2240;
+			border-color: #44ff66;
 		}
 		.wa-btn {
 			min-width: 28px;
@@ -588,46 +593,50 @@ func (p *Popup) applyCSS() error {
 			padding: 2px;
 		}
 		.wa-play {
-			background-color: #444444;
-			border-color: #86c040;
+			border-color: #44ff66;
 		}
 		.wa-btn-sm {
 			font-size: 9px;
+			font-family: monospace;
 			padding: 1px 6px;
 			min-height: 20px;
 		}
 		.wa-vol-label {
-			color: #86c040;
+			color: #ddaa00;
 			font-size: 9px;
 			font-family: monospace;
 			min-width: 54px;
 		}
 		.wa-sep {
-			background-color: #3a3a3a;
+			background-color: #1a2040;
 			min-height: 1px;
 		}
 		.q-now {
-			color: #00ff44;
+			color: #ffffff;
+			background-color: #1a2a50;
 			font-size: 10px;
 			font-family: monospace;
+			padding: 1px 4px;
 		}
 		.q-next {
-			color: #86c040;
+			color: #44ff66;
 			font-size: 10px;
 			font-family: monospace;
+			padding: 1px 4px;
 		}
 		.q-dim {
-			color: #555555;
+			color: #4a5070;
 			font-size: 10px;
 			font-family: monospace;
+			padding: 1px 4px;
 		}
 		.lease-on {
-			color: #86c040;
+			color: #44ff66;
 			font-size: 9px;
 			font-family: monospace;
 		}
 		.lease-off {
-			color: #cc4444;
+			color: #ff4444;
 			font-size: 9px;
 			font-family: monospace;
 		}
