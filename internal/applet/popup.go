@@ -663,15 +663,12 @@ func (p *Popup) applyCSS() error {
 			min-width: 32px;
 		}
 		* {
-			-gtk-outline-radius: 0;
-			outline-style: none;
 			outline-width: 0;
-			outline-color: transparent;
+			outline-style: none;
 		}
-		*:focus, *:active, *:checked {
-			outline-style: none;
+		*:focus {
 			outline-width: 0;
-			outline-color: transparent;
+			outline-style: none;
 			box-shadow: none;
 		}
 		scale trough {
@@ -691,23 +688,9 @@ func (p *Popup) applyCSS() error {
 		}
 		scale:focus trough {
 			border-color: #1a2040;
-			outline-style: none;
-			outline-color: transparent;
-			box-shadow: none;
 		}
 		scale:focus slider {
 			border-color: #555555;
-			outline-style: none;
-			outline-color: transparent;
-			box-shadow: none;
-		}
-		scale:focus {
-			outline-style: none;
-			outline-color: transparent;
-			outline-width: 0;
-			border-color: transparent;
-			box-shadow: none;
-			-gtk-outline-radius: 0;
 		}
 		button {
 			background-color: #151a2a;
