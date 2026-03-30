@@ -160,45 +160,94 @@ func main() {
 	var lease *mu.Lease
 	var leaseMu sync.Mutex
 
-	acquireLease := func() bool {
-		replyCh := make(chan []byte, 1)
-		client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
-			select {
-			case replyCh <- msg.Payload():
-			default:
-			}
-		})
-		defer client.Unsubscribe(replyTopic)
+	// Persistent reply subscription with correlation-based routing.
+	pendingReplies := struct {
+		sync.Mutex
+		m map[string]chan mu.ReplyEnvelope
+	}{m: make(map[string]chan mu.ReplyEnvelope)}
 
+	client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
+		var reply mu.ReplyEnvelope
+		if err := json.Unmarshal(msg.Payload(), &reply); err != nil {
+			return
+		}
+		pendingReplies.Lock()
+		ch, ok := pendingReplies.m[reply.ID]
+		if ok {
+			delete(pendingReplies.m, reply.ID)
+		}
+		pendingReplies.Unlock()
+		if ok {
+			ch <- reply
+		}
+	})
+
+	buildCmd := func(cmdType string, body interface{}) (mu.CommandEnvelope, error) {
+		cmd, err := mu.NewCommand(cmdType, body)
+		if err != nil {
+			return cmd, err
+		}
+		cmd.ID = idGen.NewID()
+		cmd.TS = time.Now().Unix()
+		cmd.From = "mu-applet"
+		return cmd, nil
+	}
+
+	sendMQTTCmd := func(targetTopic string, cmdType string, body interface{}) (*mu.ReplyEnvelope, error) {
+		cmd, err := buildCmd(cmdType, body)
+		if err != nil {
+			return nil, err
+		}
+		cmd.ReplyTo = replyTopic
+		ch := make(chan mu.ReplyEnvelope, 1)
+		pendingReplies.Lock()
+		pendingReplies.m[cmd.ID] = ch
+		pendingReplies.Unlock()
+		payload, _ := json.Marshal(cmd)
+		client.Publish(targetTopic, 1, false, payload)
+		select {
+		case reply := <-ch:
+			return &reply, nil
+		case <-time.After(3 * time.Second):
+			pendingReplies.Lock()
+			delete(pendingReplies.m, cmd.ID)
+			pendingReplies.Unlock()
+			return nil, fmt.Errorf("timeout")
+		}
+	}
+
+	// sendCmd publishes a command with the current lease (fire-and-forget).
+	sendCmd := func(cmdType string, body interface{}) {
+		cmd, err := buildCmd(cmdType, body)
+		if err != nil {
+			logger.Warn("failed to build command", zap.String("type", cmdType), zap.Error(err))
+			return
+		}
+		leaseMu.Lock()
+		cmd.Lease = lease
+		leaseMu.Unlock()
+		payload, _ := json.Marshal(cmd)
+		if err := client.Publish(cmdTopic, 1, false, payload); err != nil {
+			logger.Warn("failed to send command", zap.String("type", cmdType), zap.Error(err))
+		}
+	}
+
+	acquireLease := func() bool {
 		for attempt := 0; attempt < 10; attempt++ {
 			time.Sleep(200 * time.Millisecond)
-			cmd, _ := mu.NewCommand("session.acquire", mu.SessionAcquireBody{TTLMS: 86400000})
-			cmd.ID = idGen.NewID()
-			cmd.TS = time.Now().Unix()
-			cmd.From = "mu-applet"
-			cmd.ReplyTo = replyTopic
-			payload, _ := json.Marshal(cmd)
-			if err := client.Publish(cmdTopic, 1, false, payload); err != nil {
+			reply, err := sendMQTTCmd(cmdTopic, "session.acquire", mu.SessionAcquireBody{TTLMS: 86400000})
+			if err != nil || reply == nil || !reply.OK {
 				continue
 			}
-			select {
-			case replyData := <-replyCh:
-				var reply mu.ReplyEnvelope
-				if err := json.Unmarshal(replyData, &reply); err != nil || !reply.OK {
-					continue
-				}
-				var body mu.SessionReplyBody
-				if err := json.Unmarshal(reply.Body, &body); err != nil {
-					continue
-				}
-				leaseMu.Lock()
-				lease = &mu.Lease{SessionID: body.Session.ID, Token: body.Session.Token}
-				leaseMu.Unlock()
-				logger.Info("session acquired", zap.String("session_id", body.Session.ID))
-				return true
-			case <-time.After(1 * time.Second):
+			var body mu.SessionReplyBody
+			if err := json.Unmarshal(reply.Body, &body); err != nil {
 				continue
 			}
+			leaseMu.Lock()
+			lease = &mu.Lease{SessionID: body.Session.ID, Token: body.Session.Token}
+			leaseMu.Unlock()
+			logger.Info("session acquired", zap.String("session_id", body.Session.ID))
+			return true
 		}
 		return false
 	}
@@ -211,69 +260,15 @@ func main() {
 		if l == nil {
 			return
 		}
-		cmd, _ := mu.NewCommand("session.release", nil)
-		cmd.ID = idGen.NewID()
-		cmd.TS = time.Now().Unix()
-		cmd.From = "mu-applet"
+		cmd, _ := buildCmd("session.release", nil)
 		cmd.Lease = l
 		payload, _ := json.Marshal(cmd)
 		client.Publish(cmdTopic, 1, false, payload)
 		logger.Info("session released")
 	}
 
-	// Acquire initial lease (blocks until renderer module is ready)
 	if !acquireLease() {
 		logger.Fatal("failed to acquire session after retries")
-	}
-
-	// Command sender — publishes commands to MQTT with current lease
-	sendCmd := func(cmdType string, body interface{}) {
-		env, err := mu.NewCommand(cmdType, body)
-		if err != nil {
-			logger.Warn("failed to build command", zap.String("type", cmdType), zap.Error(err))
-			return
-		}
-		env.ID = idGen.NewID()
-		env.TS = time.Now().Unix()
-		env.From = "mu-applet"
-		leaseMu.Lock()
-		env.Lease = lease
-		leaseMu.Unlock()
-		payload, _ := json.Marshal(env)
-		if err := client.Publish(cmdTopic, 1, false, payload); err != nil {
-			logger.Warn("failed to send command", zap.String("type", cmdType), zap.Error(err))
-		}
-	}
-
-	// sendMQTTCmd sends a command to a topic and waits for a reply.
-	sendMQTTCmd := func(targetTopic string, cmdType string, body interface{}) (*mu.ReplyEnvelope, error) {
-		replyCh := make(chan []byte, 1)
-		client.Subscribe(replyTopic, 1, func(_ paho.Client, msg paho.Message) {
-			select {
-			case replyCh <- msg.Payload():
-			default:
-			}
-		})
-		defer client.Unsubscribe(replyTopic)
-
-		cmd, _ := mu.NewCommand(cmdType, body)
-		cmd.ID = idGen.NewID()
-		cmd.TS = time.Now().Unix()
-		cmd.From = "mu-applet"
-		cmd.ReplyTo = replyTopic
-		payload, _ := json.Marshal(cmd)
-		client.Publish(targetTopic, 1, false, payload)
-
-		select {
-		case data := <-replyCh:
-			var reply mu.ReplyEnvelope
-			if err := json.Unmarshal(data, &reply); err != nil {
-				return nil, err
-			}
-			return &reply, nil
-		case <-time.After(3 * time.Second):
-			return nil, fmt.Errorf("timeout")
-		}
 	}
 
 	// Lease UI callbacks — shared by popup and tray
@@ -445,7 +440,6 @@ func main() {
 	}
 
 	// Queue fetcher — sends queue.get then resolves metadata from library
-	var lastQueueRev int64
 	fetchQueue := func() {
 		reply, err := sendMQTTCmd(cmdTopic, "queue.get", mu.QueueGetBody{From: 0, Count: 1000})
 		if err != nil || reply == nil || !reply.OK {
@@ -455,26 +449,24 @@ func main() {
 		if err := json.Unmarshal(reply.Body, &body); err != nil {
 			return
 		}
-
-		// Resolve metadata for items that don't have it
 		body.Entries = resolveMetadata(body.Entries)
-
-		logger.Info("queue fetched", zap.Int("entries", len(body.Entries)), zap.Int64("index", body.Index))
 		glib.IdleAdd(func() bool {
 			popup.SetQueueItems(body.Entries, body.Index)
 			return false
 		})
 	}
 
-	// State bridge — channels state to GTK
+	// State bridge — channels state to GTK.
+	// Only re-fetch queue on actual queue changes (index/length), not position updates.
+	var lastSeenIndex, lastSeenLength int64 = -1, -1
 	bridge := applet.NewBridge(stateCh, func(state *mu.RendererState) {
 		popup.UpdateState(state)
 		if state.Playback != nil {
 			tray.SetPlaybackState(state.Playback.Status)
 		}
-		// Fetch queue when revision changes
-		if state.Queue != nil && state.Queue.Revision != lastQueueRev {
-			lastQueueRev = state.Queue.Revision
+		if state.Queue != nil && (state.Queue.Index != lastSeenIndex || state.Queue.Length != lastSeenLength) {
+			lastSeenIndex = state.Queue.Index
+			lastSeenLength = state.Queue.Length
 			go fetchQueue()
 		}
 	})

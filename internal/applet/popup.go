@@ -60,8 +60,10 @@ type Popup struct {
 	lastState  *mu.RendererState
 
 	// Queue cache
-	queueItems []mu.QueueItem
-	queueIndex int64
+	queueItems    []mu.QueueItem
+	queueIndex    int64
+	lastQueueIdx  int64
+	lastQueueLen  int64
 
 	// Artwork
 	artMu         sync.Mutex
@@ -149,11 +151,12 @@ func (p *Popup) SetPlaylists(playlists []mu.PlaylistSummary) {
 func (p *Popup) SetQueueItems(items []mu.QueueItem, index int64) {
 	p.queueItems = items
 	p.queueIndex = index
-	// Reset artwork cache so it re-fetches with new metadata
+	// Reset caches so everything re-renders with new metadata
 	p.artMu.Lock()
 	p.lastArtworkID = ""
 	p.artMu.Unlock()
-	// Re-render with cached state now that we have queue metadata
+	p.lastQueueIdx = -1 // force queue widget rebuild
+	p.lastQueueLen = -1
 	if p.lastState != nil {
 		p.UpdateState(p.lastState)
 	}
@@ -294,7 +297,14 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		}
 	}
 
-	p.updateQueue(state)
+	// Only rebuild queue widgets if index or length changed
+	if state.Queue != nil {
+		if state.Queue.Index != p.lastQueueIdx || state.Queue.Length != p.lastQueueLen {
+			p.lastQueueIdx = state.Queue.Index
+			p.lastQueueLen = state.Queue.Length
+			p.updateQueue(state)
+		}
+	}
 }
 
 func (p *Popup) updateQueue(state *mu.RendererState) {
