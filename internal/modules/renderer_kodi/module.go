@@ -252,6 +252,12 @@ func (m *Module) processCommand(cmd mu.CommandEnvelope) {
 		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
 		return
 	}
+	// Session commands use Engine's internal lock, not the module lock.
+	if renderercore.IsSessionCommand(cmd.Type) {
+		reply := m.engine.HandleSessionCommand(cmd)
+		m.publishReply(cmd.ReplyTo, reply)
+		return
+	}
 	m.mu.Lock()
 	reply := m.dispatch(cmd)
 	m.mu.Unlock()

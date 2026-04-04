@@ -271,6 +271,24 @@ func (m *Module) processCommand(cmd mu.CommandEnvelope, recvTime time.Time) {
 		zap.String("from", cmd.From),
 		zap.String("replyTo", cmd.ReplyTo))
 
+	// Session commands use the Engine's internal sessionMu instead of the
+	// module lock, so lease renewals are never blocked behind slow driver
+	// operations (GStreamer pipeline teardown, seek, etc.).
+	if renderercore.IsSessionCommand(cmd.Type) {
+		dispatchStart := time.Now()
+		reply := m.engine.HandleSessionCommand(cmd)
+		dispatchDuration := time.Since(dispatchStart)
+		totalDuration := time.Since(recvTime)
+		m.log.Debug("session command completed",
+			zap.String("id", cmd.ID),
+			zap.String("type", cmd.Type),
+			zap.Duration("dispatch", dispatchDuration),
+			zap.Duration("total", totalDuration),
+			zap.Bool("ok", reply.OK))
+		m.publishReply(cmd.ReplyTo, reply)
+		return
+	}
+
 	// Load commands may involve network I/O, handle separately
 	if cmd.Type == "queue.loadPlaylist" || cmd.Type == "queue.loadSnapshot" {
 		m.processLoadCommand(cmd, recvTime)

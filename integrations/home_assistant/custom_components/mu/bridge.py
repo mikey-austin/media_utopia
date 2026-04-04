@@ -2050,6 +2050,11 @@ class MudBridge:
         remaining = lease.expires_at - now
         if remaining >= LEASE_RENEW_THRESHOLD_SECONDS:
             return lease
+        # If the lease already expired, skip the renew (it will fail with
+        # LEASE_MISMATCH anyway) and go straight to acquire.
+        if remaining <= 0:
+            _LOGGER.debug("lease for %s already expired, reacquiring", node_id)
+            return await self._acquire_lease(node_id)
         _LOGGER.debug("lease for %s expires in %ds, renewing", node_id, remaining)
         return await self._renew_lease(node_id, lease)
 
@@ -2082,18 +2087,25 @@ class MudBridge:
             lease=lease,
         )
         if reply is None:
-            _LOGGER.warning("lease renew failed for %s reply=%s", node_id, reply)
-            return lease
+            # Timeout — the renderer may be blocked.  Discard the stale
+            # lease so the next attempt reacquires rather than sending
+            # commands with an expired token.
+            _LOGGER.warning("lease renew timed out for %s, discarding lease", node_id)
+            self._leases.pop(node_id, None)
+            return None
         if reply.get("type") == "error":
             code = ((reply.get("err") or {}).get("code") or "").upper()
             if code == "LEASE_MISMATCH":
                 _LOGGER.info("lease mismatch for %s, reacquiring", node_id)
                 return await self._acquire_lease(node_id)
             _LOGGER.warning("lease renew failed for %s reply=%s", node_id, reply)
-            return lease
+            # Unknown error — discard potentially-expired lease.
+            self._leases.pop(node_id, None)
+            return None
         if reply.get("type") != "ack":
-            _LOGGER.warning("lease renew failed for %s reply=%s", node_id, reply)
-            return lease
+            _LOGGER.warning("lease renew unexpected reply for %s reply=%s", node_id, reply)
+            self._leases.pop(node_id, None)
+            return None
         body = reply.get("body") or {}
         session = body.get("session") or {}
         lease.expires_at = session.get("leaseExpiresAt", lease.expires_at)

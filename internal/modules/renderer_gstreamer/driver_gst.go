@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,14 @@ type Driver struct {
 	volumeEl   *gst.Element
 	ctx        context.Context
 	cancelFade context.CancelFunc // cancels any running fade goroutines
+
+	// cleanupCh serializes pipeline teardown in a dedicated goroutine.
+	// Old pipelines are sent here instead of calling SetState(NULL)
+	// inline, so the caller is not blocked by a slow GStreamer state
+	// transition.  The bounded buffer (2) provides backpressure: if
+	// teardown is slow, new Play() calls block until old pipelines are
+	// cleaned up, preventing unbounded FD accumulation.
+	cleanupCh chan *gst.Element
 }
 
 var gstInitOnce sync.Once
@@ -38,7 +47,30 @@ func NewDriver(pipeline string, device string, crossfade time.Duration) (*Driver
 		gst.Init(nil)
 	})
 
-	return &Driver{pipeline: pipeline, device: device, crossfade: crossfade, volume: 1.0}, nil
+	d := &Driver{
+		pipeline:  pipeline,
+		device:    device,
+		crossfade: crossfade,
+		volume:    1.0,
+		cleanupCh: make(chan *gst.Element, 2),
+	}
+	go d.pipelineCleanupLoop()
+	return d, nil
+}
+
+// pipelineCleanupLoop processes old pipelines serially, ensuring each is
+// fully transitioned to NULL (releasing PipeWire FDs) before the next.
+// It runs for the lifetime of the Driver.
+func (d *Driver) pipelineCleanupLoop() {
+	for el := range d.cleanupCh {
+		start := time.Now()
+		_ = el.SetState(gst.StateNull)
+		if dur := time.Since(start); dur > 500*time.Millisecond {
+			// Slow teardown suggests PipeWire pressure or network
+			// stream buffering — log for diagnostics.
+			fmt.Fprintf(os.Stderr, "gstreamer: slow pipeline teardown: %s\n", dur)
+		}
+	}
 }
 
 // Play starts playback for the URL.
@@ -70,8 +102,8 @@ func (d *Driver) Play(url string, positionMS int64) error {
 			targetVolume := d.currentVolumeLocked()
 			go d.fadeOut(d.ctx, old, oldVol, d.crossfade, targetVolume)
 		} else {
-			// No crossfade: stop old pipeline immediately to prevent resource leak
-			_ = d.current.SetState(gst.StateNull)
+			// No crossfade: hand old pipeline to the cleanup goroutine.
+			d.cleanupCh <- d.current
 		}
 	}
 
@@ -236,7 +268,11 @@ func (d *Driver) stopCurrentLocked() error {
 	if d.cancelFade != nil {
 		d.cancelFade()
 	}
-	_ = d.current.SetState(gst.StateNull)
+	// Detach the pipeline and hand it to the cleanup goroutine.  The
+	// caller returns immediately; the cleanup loop ensures SetState(NULL)
+	// runs to completion so PipeWire FDs are released.  The bounded
+	// channel provides backpressure if teardown is slow.
+	d.cleanupCh <- d.current
 	d.current = nil
 	d.volumeEl = nil
 	return nil
@@ -292,8 +328,9 @@ func (d *Driver) fadeOut(ctx context.Context, pipeline *gst.Element, target *gst
 	for i := steps; i >= 0; i-- {
 		select {
 		case <-ctx.Done():
-			// Fade cancelled, stop pipeline immediately
-			_ = pipeline.SetState(gst.StateNull)
+			// Fade cancelled — hand to cleanup goroutine (never inline
+			// SetState(NULL) here to avoid blocking/leaking the fade goroutine).
+			d.cleanupCh <- pipeline
 			return
 		default:
 		}
@@ -306,13 +343,14 @@ func (d *Driver) fadeOut(ctx context.Context, pipeline *gst.Element, target *gst
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				_ = pipeline.SetState(gst.StateNull)
+				d.cleanupCh <- pipeline
 				return
 			case <-ticker.C:
 			}
 		}
 	}
-	_ = pipeline.SetState(gst.StateNull)
+	// Fade completed normally — hand to cleanup goroutine.
+	d.cleanupCh <- pipeline
 }
 
 func (d *Driver) currentVolumeLocked() float64 {

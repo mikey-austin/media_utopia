@@ -692,6 +692,84 @@ func TestEngineLeaseRelease(t *testing.T) {
 	}
 }
 
+func TestHandleSessionCommand(t *testing.T) {
+	driver := &fakeDriver{}
+	engine := NewEngine("mu:renderer:test", "Test", driver)
+
+	// Acquire via HandleSessionCommand (the lock-free path).
+	acq := mu.CommandEnvelope{
+		ID: "s1", Type: "session.acquire", From: "ha",
+		Body: mustJSON(mu.SessionAcquireBody{TTLMS: 30000}),
+	}
+	reply := engine.HandleSessionCommand(acq)
+	if !reply.OK {
+		t.Fatalf("acquire failed: %v", reply.Err)
+	}
+	var body mu.SessionReplyBody
+	if err := json.Unmarshal(reply.Body, &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Session.ID == "" || body.Session.Token == "" {
+		t.Fatalf("expected session ID and token")
+	}
+	if engine.State.Session == nil {
+		t.Fatalf("expected State.Session to be set")
+	}
+
+	// Renew via HandleSessionCommand.
+	ren := mu.CommandEnvelope{
+		ID: "s2", Type: "session.renew",
+		Lease: &mu.Lease{SessionID: body.Session.ID, Token: body.Session.Token},
+		Body:  mustJSON(mu.SessionRenewBody{TTLMS: 30000}),
+	}
+	renReply := engine.HandleSessionCommand(ren)
+	if !renReply.OK {
+		t.Fatalf("renew failed: %v", renReply.Err)
+	}
+
+	// Release via HandleSessionCommand.
+	rel := mu.CommandEnvelope{
+		ID: "s3", Type: "session.release",
+		Lease: &mu.Lease{SessionID: body.Session.ID, Token: body.Session.Token},
+		Body:  mustJSON(struct{}{}),
+	}
+	relReply := engine.HandleSessionCommand(rel)
+	if !relReply.OK {
+		t.Fatalf("release failed: %v", relReply.Err)
+	}
+	if engine.State.Session != nil {
+		t.Fatalf("expected State.Session nil after release")
+	}
+
+	// Duplicate acquire should succeed after release.
+	acq2 := mu.CommandEnvelope{
+		ID: "s4", Type: "session.acquire", From: "ha",
+		Body: mustJSON(mu.SessionAcquireBody{TTLMS: 30000}),
+	}
+	reply2 := engine.HandleSessionCommand(acq2)
+	if !reply2.OK {
+		t.Fatalf("second acquire failed: %v", reply2.Err)
+	}
+}
+
+func TestIsSessionCommand(t *testing.T) {
+	for _, tc := range []struct {
+		cmd    string
+		expect bool
+	}{
+		{"session.acquire", true},
+		{"session.renew", true},
+		{"session.release", true},
+		{"playback.play", false},
+		{"queue.add", false},
+		{"queue.get", false},
+	} {
+		if got := IsSessionCommand(tc.cmd); got != tc.expect {
+			t.Errorf("IsSessionCommand(%q) = %v, want %v", tc.cmd, got, tc.expect)
+		}
+	}
+}
+
 func acquireLease(t *testing.T, engine *Engine) mu.SessionLease {
 	cmd := mu.CommandEnvelope{ID: "lease", Type: "session.acquire", From: "tester", Body: mustJSON(mu.SessionAcquireBody{TTLMS: 1000})}
 	reply := engine.HandleCommand(cmd)

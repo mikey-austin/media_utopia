@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/idgen"
@@ -36,6 +37,11 @@ type Engine struct {
 	State   mu.RendererState
 	Updated int64
 
+	// sessionMu protects State.Session writes from HandleSessionCommand,
+	// allowing session commands to be processed without the caller's
+	// module-level lock (which may be held by slow driver operations).
+	sessionMu sync.Mutex
+
 	// recentCmds tracks recently processed command IDs to deduplicate
 	// MQTT QoS 1 redeliveries. Only mutating commands are tracked.
 	recentCmds    [64]string
@@ -58,6 +64,37 @@ func NewEngine(nodeID string, name string, driver Driver) *Engine {
 	}
 	engine.Leases.idPrefix = nodeID
 	return engine
+}
+
+// IsSessionCommand returns true for session.acquire/renew/release commands.
+func IsSessionCommand(cmdType string) bool {
+	switch cmdType {
+	case "session.acquire", "session.renew", "session.release":
+		return true
+	}
+	return false
+}
+
+// HandleSessionCommand processes a session command using only the Engine's
+// internal sessionMu — it does NOT require the caller to hold the module-level
+// lock. This prevents session renewals from being blocked behind slow driver
+// operations (e.g. GStreamer pipeline teardown).
+func (e *Engine) HandleSessionCommand(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
+	reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
+
+	e.sessionMu.Lock()
+	defer e.sessionMu.Unlock()
+
+	switch cmd.Type {
+	case "session.acquire":
+		return e.handleSessionAcquire(cmd, reply)
+	case "session.renew":
+		return e.handleSessionRenew(cmd, reply)
+	case "session.release":
+		return e.handleSessionRelease(cmd, reply)
+	default:
+		return errorReply(cmd, "INVALID", "not a session command")
+	}
 }
 
 // HandleCommand executes a command and returns reply.
@@ -135,7 +172,7 @@ func (e *Engine) handleSessionAcquire(cmd mu.CommandEnvelope, reply mu.ReplyEnve
 	}
 
 	e.State.Session = &mu.SessionState{ID: lease.ID, Owner: lease.Owner, LeaseExpireAt: lease.LeaseExpiresAt}
-	return withBody(reply, mu.SessionReplyBody{Session: lease, StateVersion: e.bumpState()})
+	return withBody(reply, mu.SessionReplyBody{Session: lease, StateVersion: e.bumpSessionState()})
 }
 
 func (e *Engine) handleSessionRenew(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
@@ -154,7 +191,7 @@ func (e *Engine) handleSessionRenew(cmd mu.CommandEnvelope, reply mu.ReplyEnvelo
 		return errorReply(cmd, "LEASE_MISMATCH", err.Error())
 	}
 	e.State.Session = &mu.SessionState{ID: lease.ID, Owner: lease.Owner, LeaseExpireAt: lease.LeaseExpiresAt}
-	return withBody(reply, mu.SessionReplyBody{Session: lease, StateVersion: e.bumpState()})
+	return withBody(reply, mu.SessionReplyBody{Session: lease, StateVersion: e.bumpSessionState()})
 }
 
 func (e *Engine) handleSessionRelease(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
@@ -165,7 +202,7 @@ func (e *Engine) handleSessionRelease(cmd mu.CommandEnvelope, reply mu.ReplyEnve
 		return errorReply(cmd, "LEASE_MISMATCH", err.Error())
 	}
 	e.State.Session = nil
-	e.bumpState()
+	e.bumpSessionState()
 	return reply
 }
 
@@ -478,6 +515,16 @@ func (e *Engine) handleSetMute(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 func (e *Engine) bumpState() int64 {
 	e.State.StateVersion++
 	e.State.Queue = ptrQueueState(e.Queue.Summary())
+	e.State.TS = time.Now().Unix()
+	e.Updated = time.Now().Unix()
+	return e.State.StateVersion
+}
+
+// bumpSessionState is like bumpState but safe to call from
+// HandleSessionCommand where the module lock is not held — it avoids
+// reading Queue state which may be concurrently modified.
+func (e *Engine) bumpSessionState() int64 {
+	e.State.StateVersion++
 	e.State.TS = time.Now().Unix()
 	e.Updated = time.Now().Unix()
 	return e.State.StateVersion

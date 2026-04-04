@@ -296,10 +296,20 @@ func (m *Module) handleRendererMessage(r *rendererInstance, msg paho.Message) {
 		_ = m.client.Publish(cmd.ReplyTo, 0, false, payload)
 		return
 	}
-	r.mu.Lock()
-	reply := r.engine.HandleCommand(cmd)
-	statePayload, _ := r.engineStatePayload()
-	r.mu.Unlock()
+	// Session commands use Engine's internal lock, not the instance lock.
+	var reply mu.ReplyEnvelope
+	var statePayload []byte
+	if renderercore.IsSessionCommand(cmd.Type) {
+		reply = r.engine.HandleSessionCommand(cmd)
+		r.mu.Lock()
+		statePayload, _ = r.engineStatePayload()
+		r.mu.Unlock()
+	} else {
+		r.mu.Lock()
+		reply = r.engine.HandleCommand(cmd)
+		statePayload, _ = r.engineStatePayload()
+		r.mu.Unlock()
+	}
 	if cmd.ReplyTo != "" {
 		if payload, err := json.Marshal(reply); err == nil {
 			_ = m.client.Publish(cmd.ReplyTo, 1, false, payload)
