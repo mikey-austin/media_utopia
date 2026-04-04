@@ -261,8 +261,9 @@ class MuRendererEntity(MediaPlayerEntity):
         await self._bridge.async_play(self._node_id)
 
     async def async_turn_off(self) -> None:
-        """Turn off (stop playback)."""
+        """Turn off — stop playback and clear the queue."""
         await self._bridge.async_stop(self._node_id)
+        await self._bridge.async_queue_clear(self._node_id)
 
     async def async_media_play(self) -> None:
         _LOGGER.debug("play %s", self._node_id)

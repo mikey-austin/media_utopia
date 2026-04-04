@@ -1055,6 +1055,9 @@ class MuPanel extends LitElement {
       const oldRev = this.rendererState?.queue?.revision;
       this.rendererState = r;
       this.leaseOwned = r.session?.owned || false;
+      // Sync interpolation to server value
+      this._interpolatedPos = r.playback?.position_ms || 0;
+      this._lastPosUpdate = Date.now();
       if (r.queue?.revision !== oldRev) {
         await this._loadQueue();
       }
@@ -1173,8 +1176,11 @@ class MuPanel extends LitElement {
 
   async _seekRelative(deltaMs) {
     if (!this.rendererState?.playback) return;
-    const pos = (this.rendererState.playback.position_ms || 0) + deltaMs;
+    const pos = (this._interpolatedPos || this.rendererState.playback.position_ms || 0) + deltaMs;
     const clamped = Math.max(0, Math.min(pos, this.rendererState.playback.duration_ms || 0));
+    this._interpolatedPos = clamped;
+    this._lastPosUpdate = Date.now();
+    this.requestUpdate();
     await this._callWS('mu/seek', { renderer_id: this.selectedRenderer, position_ms: clamped });
   }
 
@@ -1264,7 +1270,11 @@ class MuPanel extends LitElement {
     document.removeEventListener('touchmove', this._boundSeekMove);
     document.removeEventListener('touchend', this._boundSeekEnd);
     document.removeEventListener('touchcancel', this._boundSeekEnd);
-    // Reset local value after a short delay
+    // Optimistically update interpolation to seek target, then clear local override
+    if (this._localSeekPos !== null) {
+      this._interpolatedPos = this._localSeekPos;
+      this._lastPosUpdate = Date.now();
+    }
     setTimeout(() => { this._localSeekPos = null; this.requestUpdate(); }, 300);
   }
 

@@ -208,7 +208,20 @@ async def ws_subscribe_renderer_state(
             q_idx = queue.get("index", 0)
             owner = session.get("owner", "")
             sig = (status, title, vol, mute, q_rev, q_idx, owner)
-            if sig == last_sent.get("sig"):
+
+            # Detect position discontinuities (seeks) — these are meaningful
+            # even when nothing else in the signature changed.
+            position_ms = playback.get("positionMs", 0)
+            now_mono = time.monotonic()
+            position_jumped = False
+            if "pos" in last_sent:
+                elapsed_ms = (now_mono - last_sent["pos_time"]) * 1000
+                expected_ms = last_sent["pos"] + elapsed_ms
+                position_jumped = abs(position_ms - expected_ms) > 2000
+            last_sent["pos"] = position_ms
+            last_sent["pos_time"] = now_mono
+
+            if sig == last_sent.get("sig") and not position_jumped:
                 return
             last_sent["sig"] = sig
 
