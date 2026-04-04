@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.rhythmbox.plugins.mu"
+          path="/org/gnome/rhythmbox/plugins/mu/">
+
+    <key name="broker-host" type="s">
+      <default>'localhost'</default>
+      <summary>MQTT Broker Host</summary>
+      <description>Hostname or IP address of the MQTT broker.</description>
+    </key>
+
+    <key name="broker-port" type="i">
+      <default>1883</default>
+      <summary>MQTT Broker Port</summary>
+      <description>TCP port of the MQTT broker.</description>
+    </key>
+
+    <key name="broker-username" type="s">
+      <default>''</default>
+      <summary>MQTT Username</summary>
+      <description>Username for MQTT broker authentication. Empty for anonymous.</description>
+    </key>
+
+    <key name="broker-password" type="s">
+      <default>''</default>
+      <summary>MQTT Password</summary>
+      <description>Password for MQTT broker authentication.</description>
+    </key>
+
+    <key name="topic-base" type="s">
+      <default>'mu/v1'</default>
+      <summary>MQTT Topic Base</summary>
+      <description>Base topic prefix for the Media Utopia protocol.</description>
+    </key>
+
+    <key name="node-name" type="s">
+      <default>'Rhythmbox'</default>
+      <summary>Renderer Display Name</summary>
+      <description>Human-readable name for this Rhythmbox instance when it appears as an MU renderer.</description>
+    </key>
+
+    <key name="renderer-enabled" type="b">
+      <default>true</default>
+      <summary>Enable Renderer Role</summary>
+      <description>When enabled, Rhythmbox appears as an MU renderer that external controllers can command.</description>
+    </key>
+
+    <key name="controller-enabled" type="b">
+      <default>true</default>
+      <summary>Enable Controller Role</summary>
+      <description>When enabled, Rhythmbox can control remote MU renderers.</description>
+    </key>
+
+    <key name="library-enabled" type="b">
+      <default>true</default>
+      <summary>Enable Library Browser</summary>
+      <description>When enabled, MU libraries appear as browsable sources in the Rhythmbox sidebar.</description>
+    </key>
+
+  </schema>
+</schemalist>

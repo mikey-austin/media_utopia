@@ -1,0 +1,8 @@
+[Plugin]
+Module=mu
+IAge=2
+Name=Media Utopia
+Description=Integrate with the Media Utopia MQTT-based media control plane — browse libraries, control renderers, and expose Rhythmbox as a renderer.
+Authors=Mikey Austin
+Copyright=Copyright 2024-2026
+Website=https://github.com/mikey-austin/media_utopia
