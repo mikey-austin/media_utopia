@@ -60,6 +60,12 @@ class LibraryRepository @Inject constructor(
     // Container type markers (case-insensitive match).
     private val containerPatterns = listOf("container", "artist", "album", "folder")
 
+    // Types that are explicitly containers despite not matching patterns above.
+    private val explicitContainerTypes = setOf("podcast")
+
+    // Types that are explicitly NOT containers even if they match a pattern.
+    private val explicitLeafTypes = setOf("podcastepisode")
+
     // -------------------------------------------------------------------------
     // Browse
     // -------------------------------------------------------------------------
@@ -202,6 +208,9 @@ class LibraryRepository @Inject constructor(
         for (batch in items.chunked(20)) {
             // Strip lib: prefix for the resolve command.
             val localIds = batch.map { stripLibPrefix(it, libraryNode) }
+            // Build reverse map: local ID -> full item ID.
+            val localToFull = localIds.zip(batch).toMap()
+
             val body = json.encodeToJsonElement(
                 LibraryResolveBatchBody(itemIds = localIds, metadataOnly = true)
             )
@@ -228,18 +237,128 @@ class LibraryRepository @Inject constructor(
             val batchResults = mutableMapOf<String, ResolvedMetadata>()
 
             for (item in batchReply.items) {
+                // Map local ID back to full item ID.
+                val fullId = localToFull[item.itemId] ?: item.itemId
                 if (item.err != null) {
-                    metadataCache.markFailed(item.itemId)
+                    metadataCache.markFailed(fullId)
                     continue
                 }
                 val metadata = parseResolvedMetadata(item.metadata)
-                batchResults[item.itemId] = metadata
-                result[item.itemId] = metadata
+                batchResults[fullId] = metadata
+                result[fullId] = metadata
             }
 
             metadataCache.putAll(batchResults)
         }
         } // end byLibrary loop
+
+        return result
+    }
+
+    // -------------------------------------------------------------------------
+    // Resolve for playback (returns source URLs)
+    // -------------------------------------------------------------------------
+
+    data class PlaybackSource(
+        val itemId: String,
+        val url: String,
+        val mime: String = "",
+    )
+
+    /**
+     * Resolve a single item for playback, returning the source URL.
+     */
+    suspend fun resolveForPlayback(itemId: String): PlaybackSource? {
+        val libraryNode = findLibraryForItem(itemId) ?: return null
+        val localItemId = stripLibPrefix(itemId, libraryNode)
+
+        val body = json.encodeToJsonElement(
+            LibraryResolveBody(itemId = localItemId, metadataOnly = false)
+        )
+
+        val reply = try {
+            correlator.send(
+                nodeId = libraryNode,
+                cmdType = "library.resolve",
+                body = body,
+            )
+        } catch (e: Exception) {
+            Log.e(tag, "resolveForPlayback failed for $itemId: ${e.message}")
+            return null
+        }
+
+        if (!reply.ok || reply.body == null) {
+            Log.w(tag, "resolveForPlayback reply not ok for $itemId: ${reply.err?.message}")
+            return null
+        }
+
+        val resolveReply = json.decodeFromJsonElement<LibraryResolveReply>(reply.body!!)
+
+        // Cache metadata as a side effect.
+        val metadata = parseResolvedMetadata(resolveReply.metadata)
+        metadataCache.put(itemId, metadata)
+
+        val source = resolveReply.sources?.firstOrNull() ?: return null
+        return PlaybackSource(
+            itemId = itemId,
+            url = source.url,
+            mime = source.mime,
+        )
+    }
+
+    /**
+     * Resolve a batch of items for playback, returning source URLs.
+     */
+    suspend fun resolveForPlaybackBatch(itemIds: List<String>): Map<String, PlaybackSource> {
+        val result = mutableMapOf<String, PlaybackSource>()
+
+        // Group by library node.
+        val byLibrary = mutableMapOf<String, MutableList<String>>()
+        for (id in itemIds) {
+            val lib = findLibraryForItem(id) ?: continue
+            byLibrary.getOrPut(lib) { mutableListOf() }.add(id)
+        }
+
+        for ((libraryNode, items) in byLibrary) {
+            for (batch in items.chunked(20)) {
+                val localIds = batch.map { stripLibPrefix(it, libraryNode) }
+                val localToFull = localIds.zip(batch).toMap()
+
+                val body = json.encodeToJsonElement(
+                    LibraryResolveBatchBody(itemIds = localIds, metadataOnly = false)
+                )
+
+                val reply = try {
+                    correlator.send(
+                        nodeId = libraryNode,
+                        cmdType = "library.resolveBatch",
+                        body = body,
+                    )
+                } catch (e: Exception) {
+                    Log.e(tag, "resolveForPlaybackBatch failed: ${e.message}")
+                    continue
+                }
+
+                if (!reply.ok || reply.body == null) continue
+
+                val batchReply = json.decodeFromJsonElement<LibraryResolveBatchReply>(reply.body!!)
+                for (item in batchReply.items) {
+                    val fullId = localToFull[item.itemId] ?: item.itemId
+                    if (item.err != null) continue
+
+                    // Cache metadata.
+                    val metadata = parseResolvedMetadata(item.metadata)
+                    metadataCache.put(fullId, metadata)
+
+                    val source = item.sources?.firstOrNull() ?: continue
+                    result[fullId] = PlaybackSource(
+                        itemId = fullId,
+                        url = source.url,
+                        mime = source.mime,
+                    )
+                }
+            }
+        }
 
         return result
     }
@@ -325,8 +444,12 @@ class LibraryRepository @Inject constructor(
 
         val typeLower = type.lowercase()
         val idLower = itemId.lowercase()
-        val isContainer = containerPatterns.any { pattern ->
-            typeLower.contains(pattern) || idLower.startsWith("$pattern:")
+        val isContainer = when {
+            explicitLeafTypes.contains(typeLower) -> false
+            explicitContainerTypes.contains(typeLower) -> true
+            else -> containerPatterns.any { pattern ->
+                typeLower.contains(pattern) || idLower.startsWith("$pattern:")
+            }
         }
 
         // Build subtitle from available metadata.

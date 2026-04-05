@@ -35,6 +35,8 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Podcasts
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -95,6 +97,8 @@ fun LibraryScreen(
         onPlayItem = viewModel::playItem,
         onAddToQueue = viewModel::addToQueue,
         onPlayContainer = viewModel::playContainer,
+        onPlayAll = viewModel::playAllVisible,
+        onQueueAll = viewModel::queueAllVisible,
     )
 }
 
@@ -109,6 +113,8 @@ private fun LibraryContent(
     onPlayItem: (String) -> Unit,
     onAddToQueue: (String) -> Unit,
     onPlayContainer: (String) -> Unit,
+    onPlayAll: () -> Unit,
+    onQueueAll: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -175,13 +181,20 @@ private fun LibraryContent(
                     )
                 } else if (containers.isEmpty() && tracks.isNotEmpty()) {
                     // Pure track list (inside an album).
-                    TrackList(
-                        tracks = tracks,
-                        hasMore = state.hasMore,
-                        onLoadMore = onLoadMore,
-                        onPlayItem = onPlayItem,
-                        onAddToQueue = onAddToQueue,
-                    )
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        BulkActionBar(
+                            trackCount = tracks.size,
+                            onPlayAll = onPlayAll,
+                            onQueueAll = onQueueAll,
+                        )
+                        TrackList(
+                            tracks = tracks,
+                            hasMore = state.hasMore,
+                            onLoadMore = onLoadMore,
+                            onPlayItem = onPlayItem,
+                            onAddToQueue = onAddToQueue,
+                        )
+                    }
                 } else {
                     // Mixed content: containers first, then tracks.
                     MixedContentList(
@@ -193,9 +206,81 @@ private fun LibraryContent(
                         onPlayContainer = onPlayContainer,
                         onPlayItem = onPlayItem,
                         onAddToQueue = onAddToQueue,
+                        onPlayAll = onPlayAll,
+                        onQueueAll = onQueueAll,
                     )
                 }
             }
+        }
+    }
+}
+
+// =============================================================================
+// Bulk action bar (Play All / Queue All)
+// =============================================================================
+
+@Composable
+private fun BulkActionBar(
+    trackCount: Int,
+    onPlayAll: () -> Unit,
+    onQueueAll: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "$trackCount TRACKS",
+            style = MaterialTheme.typography.labelSmall,
+            color = OnSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(SurfaceContainerHigh)
+                .clickable(onClick = onPlayAll)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = null,
+                tint = Secondary,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = "PLAY ALL",
+                style = MaterialTheme.typography.labelSmall,
+                color = Secondary,
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(SurfaceContainerHigh)
+                .clickable(onClick = onQueueAll)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                contentDescription = null,
+                tint = OnSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = "QUEUE ALL",
+                style = MaterialTheme.typography.labelSmall,
+                color = OnSurfaceVariant,
+            )
         }
     }
 }
@@ -642,6 +727,8 @@ private fun MixedContentList(
     onPlayContainer: (String) -> Unit,
     onPlayItem: (String) -> Unit,
     onAddToQueue: (String) -> Unit,
+    onPlayAll: () -> Unit = {},
+    onQueueAll: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
 
@@ -676,7 +763,12 @@ private fun MixedContentList(
 
         if (containers.isNotEmpty() && tracks.isNotEmpty()) {
             item {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
+                BulkActionBar(
+                    trackCount = tracks.size,
+                    onPlayAll = onPlayAll,
+                    onQueueAll = onQueueAll,
+                )
             }
         }
 
@@ -986,6 +1078,7 @@ private fun EmptyState(message: String) {
 private fun containerIcon(type: String) = when {
     type.lowercase().contains("album") -> Icons.Filled.Album
     type.lowercase().contains("artist") -> Icons.Filled.MusicNote
+    type.lowercase().contains("podcast") -> Icons.Filled.Podcasts
     else -> Icons.Filled.Folder
 }
 

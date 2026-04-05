@@ -7,17 +7,25 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.mediautopia.app.ui.MainViewModel
 import com.mediautopia.app.ui.components.TopHeader
 import com.mediautopia.app.ui.screen.library.LibraryScreen
 import com.mediautopia.app.ui.screen.nowplaying.NowPlayingScreen
@@ -25,6 +33,8 @@ import com.mediautopia.app.ui.screen.renderers.RenderersScreen
 import com.mediautopia.app.ui.screen.settings.SettingsScreen
 import com.mediautopia.app.ui.screen.queue.QueueSheet
 import com.mediautopia.app.ui.screen.zones.ZonesScreen
+import com.mediautopia.app.ui.theme.Secondary
+import com.mediautopia.app.ui.theme.SurfaceContainerHigh
 
 private val bottomNavItems = listOf(
     Screen.NowPlaying,
@@ -34,12 +44,32 @@ private val bottomNavItems = listOf(
 )
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(
+    mainViewModel: MainViewModel = hiltViewModel(),
+) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
+    val activeRendererName by mainViewModel.activeRendererName.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Observe snackbar messages.
+    LaunchedEffect(Unit) {
+        mainViewModel.snackbarManager.messages.collect { message ->
+            snackbarHostState.showSnackbar(message)
+        }
+    }
 
     Scaffold(
+        snackbarHost = {
+            SnackbarHost(hostState = snackbarHostState) { data ->
+                Snackbar(
+                    snackbarData = data,
+                    containerColor = SurfaceContainerHigh,
+                    contentColor = Secondary,
+                )
+            }
+        },
         topBar = {
             TopHeader(
                 onSettingsClick = {
@@ -52,6 +82,7 @@ fun AppNavigation() {
                         launchSingleTop = true
                     }
                 },
+                activeRendererName = activeRendererName,
             )
         },
         bottomBar = {

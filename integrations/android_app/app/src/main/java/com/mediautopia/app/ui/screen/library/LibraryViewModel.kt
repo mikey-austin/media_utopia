@@ -6,12 +6,14 @@ import androidx.lifecycle.viewModelScope
 import com.mediautopia.app.data.protocol.ItemRef
 import com.mediautopia.app.data.protocol.QueueAddBody
 import com.mediautopia.app.data.protocol.QueueEntry
+import com.mediautopia.app.data.protocol.ResolvedSource
 import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.BrowseItem
 import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.domain.usecase.CommandCorrelator
 import com.mediautopia.app.domain.usecase.LeaseManager
+import com.mediautopia.app.ui.SnackbarManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -53,6 +55,7 @@ class LibraryViewModel @Inject constructor(
     private val leaseManager: LeaseManager,
     private val correlator: CommandCorrelator,
     private val activeRendererRepository: ActiveRendererRepository,
+    private val snackbarManager: SnackbarManager,
 ) : ViewModel() {
 
     private val tag = "LibraryViewModel"
@@ -279,26 +282,60 @@ class LibraryViewModel @Inject constructor(
     // Playback actions
     // -------------------------------------------------------------------------
 
+    private suspend fun buildQueueEntry(itemId: String): QueueEntry {
+        val source = libraryRepository.resolveForPlayback(itemId)
+        return if (source != null) {
+            QueueEntry(
+                ref = ItemRef(id = itemId),
+                resolved = ResolvedSource(
+                    itemId = itemId,
+                    url = source.url,
+                    mime = source.mime,
+                ),
+            )
+        } else {
+            QueueEntry(ref = ItemRef(id = itemId))
+        }
+    }
+
+    private suspend fun buildQueueEntries(itemIds: List<String>): List<QueueEntry> {
+        val sources = libraryRepository.resolveForPlaybackBatch(itemIds)
+        return itemIds.map { itemId ->
+            val source = sources[itemId]
+            if (source != null) {
+                QueueEntry(
+                    ref = ItemRef(id = itemId),
+                    resolved = ResolvedSource(
+                        itemId = itemId,
+                        url = source.url,
+                        mime = source.mime,
+                    ),
+                )
+            } else {
+                QueueEntry(ref = ItemRef(id = itemId))
+            }
+        }
+    }
+
     fun playItem(itemId: String) {
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             try {
+                val entry = buildQueueEntry(itemId)
                 val lease = leaseManager.ensureLease(rendererId)
 
-                // Add to queue at "next" position.
                 correlator.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
                         QueueAddBody(
                             position = "next",
-                            entries = listOf(QueueEntry(ref = ItemRef(id = itemId))),
+                            entries = listOf(entry),
                         )
                     ),
                     lease = lease,
                 )
 
-                // Advance to the newly added track.
                 correlator.send(
                     nodeId = rendererId,
                     cmdType = "playback.next",
@@ -315,6 +352,7 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             try {
+                val entry = buildQueueEntry(itemId)
                 val lease = leaseManager.ensureLease(rendererId)
 
                 correlator.send(
@@ -323,11 +361,12 @@ class LibraryViewModel @Inject constructor(
                     body = json.encodeToJsonElement(
                         QueueAddBody(
                             position = "end",
-                            entries = listOf(QueueEntry(ref = ItemRef(id = itemId))),
+                            entries = listOf(entry),
                         )
                     ),
                     lease = lease,
                 )
+                snackbarManager.show("1 item added to queue")
             } catch (e: Exception) {
                 Log.e(tag, "addToQueue failed: ${e.message}")
             }
@@ -338,53 +377,114 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             try {
-                // Browse all items in the container.
-                val allItems = mutableListOf<BrowseItem>()
-                var start = 0L
-                var hasMore = true
+                val allItemIds = collectContainerItemIds(containerId)
+                if (allItemIds.isEmpty()) return@launch
 
-                while (hasMore) {
-                    val result = libraryRepository.browse(
-                        containerId = containerId,
-                        start = start,
-                        count = pageSize,
-                    )
-                    allItems.addAll(result.items.filter { !it.isContainer })
-                    hasMore = result.hasMore
-                    start += pageSize
-                }
-
-                if (allItems.isEmpty()) return@launch
-
+                val entries = buildQueueEntries(allItemIds)
                 val lease = leaseManager.ensureLease(rendererId)
-                val entries = allItems.map { item ->
-                    QueueEntry(ref = ItemRef(id = item.id))
-                }
 
-                // Queue all items.
                 correlator.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
-                        QueueAddBody(
-                            position = "next",
-                            entries = entries,
-                        )
+                        QueueAddBody(position = "next", entries = entries)
                     ),
                     lease = lease,
                 )
 
-                // Start playback.
                 correlator.send(
                     nodeId = rendererId,
                     cmdType = "playback.next",
                     body = json.encodeToJsonElement(mapOf<String, String>()),
                     lease = lease,
                 )
+                snackbarManager.show("Playing ${entries.size} items")
             } catch (e: Exception) {
                 Log.e(tag, "playContainer failed: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Play all tracks currently displayed in the list.
+     */
+    fun playAllVisible() {
+        val tracks = _uiState.value.items.filter { !it.isContainer }
+        if (tracks.isEmpty()) return
+
+        viewModelScope.launch {
+            val rendererId = activeRendererId.value
+            try {
+                val entries = buildQueueEntries(tracks.map { it.id })
+                val lease = leaseManager.ensureLease(rendererId)
+
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "queue.add",
+                    body = json.encodeToJsonElement(
+                        QueueAddBody(position = "next", entries = entries)
+                    ),
+                    lease = lease,
+                )
+
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "playback.next",
+                    body = json.encodeToJsonElement(mapOf<String, String>()),
+                    lease = lease,
+                )
+                snackbarManager.show("Playing ${entries.size} items")
+            } catch (e: Exception) {
+                Log.e(tag, "playAllVisible failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Queue all tracks currently displayed in the list.
+     */
+    fun queueAllVisible() {
+        val tracks = _uiState.value.items.filter { !it.isContainer }
+        if (tracks.isEmpty()) return
+
+        viewModelScope.launch {
+            val rendererId = activeRendererId.value
+            try {
+                val entries = buildQueueEntries(tracks.map { it.id })
+                val lease = leaseManager.ensureLease(rendererId)
+
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "queue.add",
+                    body = json.encodeToJsonElement(
+                        QueueAddBody(position = "end", entries = entries)
+                    ),
+                    lease = lease,
+                )
+                snackbarManager.show("${entries.size} items added to queue")
+            } catch (e: Exception) {
+                Log.e(tag, "queueAllVisible failed: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun collectContainerItemIds(containerId: String): List<String> {
+        val allItemIds = mutableListOf<String>()
+        var start = 0L
+        var hasMore = true
+
+        while (hasMore) {
+            val result = libraryRepository.browse(
+                containerId = containerId,
+                start = start,
+                count = pageSize,
+                libraryNodeId = selectedLibraryNodeId,
+            )
+            allItemIds.addAll(result.items.filter { !it.isContainer }.map { it.id })
+            hasMore = result.hasMore
+            start += pageSize
+        }
+        return allItemIds
     }
 
     // -------------------------------------------------------------------------

@@ -140,15 +140,15 @@ class QueueViewModel @Inject constructor(
                 }
         }
 
-        // Initial load when renderer changes.
+        // Reload when renderer changes.
         viewModelScope.launch {
             activeRendererRepository.activeRendererId
                 .distinctUntilChanged()
-                .collect {
+                .collect { rendererId ->
                     lastRevision = -1
                     _entries.value = emptyList()
                     _isLoading.value = true
-                    fetchQueue()
+                    fetchQueueFor(rendererId)
                 }
         }
     }
@@ -157,14 +157,16 @@ class QueueViewModel @Inject constructor(
     // Queue fetching
     // -------------------------------------------------------------------------
 
-    private fun fetchQueue() {
+    private fun fetchQueue() = fetchQueueFor(activeRendererId.value)
+
+    private fun fetchQueueFor(rendererId: String) {
         viewModelScope.launch {
-            val rendererId = activeRendererId.value
             try {
                 _isLoading.value = true
+                Log.d(tag, "fetchQueueFor: rendererId=$rendererId")
 
                 val body = json.encodeToJsonElement(
-                    QueueGetBody(from = 0, count = 200)
+                    QueueGetBody(from = 0, count = 200, resolve = "metadata")
                 )
                 val reply = correlator.send(
                     nodeId = rendererId,
@@ -173,12 +175,13 @@ class QueueViewModel @Inject constructor(
                 )
 
                 if (!reply.ok || reply.body == null) {
-                    Log.e(tag, "queue.get failed: ${reply.err?.message}")
+                    Log.e(tag, "queue.get failed for $rendererId: ok=${reply.ok} err=${reply.err?.message}")
                     _isLoading.value = false
                     return@launch
                 }
 
                 val queueReply = json.decodeFromJsonElement<QueueGetReply>(reply.body!!)
+                Log.d(tag, "queue.get success: ${queueReply.entries.size} entries, rev=${queueReply.revision}")
                 lastRevision = queueReply.revision
 
                 val entries = buildEntries(queueReply.entries)
