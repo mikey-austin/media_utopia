@@ -2,6 +2,7 @@ package podcastlibrary
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -443,6 +444,53 @@ func TestAllFeedsMergesBoth(t *testing.T) {
 	}
 	if feeds[1].Type != "youtube" {
 		t.Fatalf("expected second feed type=youtube, got %s", feeds[1].Type)
+	}
+}
+
+func TestRunYtDlp(t *testing.T) {
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+		YtDlpPath:        "echo",
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := module.runYtDlp(ctx, "hello world")
+	if err != nil {
+		t.Fatalf("runYtDlp: %v", err)
+	}
+	if !strings.Contains(string(out), "hello world") {
+		t.Fatalf("expected echo output, got %q", string(out))
+	}
+}
+
+func TestRunYtDlpNotFound(t *testing.T) {
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+		YtDlpPath:        "/nonexistent/binary",
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = module.runYtDlp(ctx, "--version")
+	if err == nil {
+		t.Fatalf("expected error for missing binary")
 	}
 }
 

@@ -1,6 +1,7 @@
 package podcastlibrary
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -980,6 +982,17 @@ func defaultCacheDir() string {
 func safeFilename(id string) string {
 	replacer := strings.NewReplacer(":", "_", "/", "_", "\\", "_", " ", "_")
 	return replacer.Replace(id)
+}
+
+func (m *Module) runYtDlp(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, m.config.YtDlpPath, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("yt-dlp: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
 }
 
 func errorReply(cmd mu.CommandEnvelope, code string, message string) mu.ReplyEnvelope {
