@@ -448,6 +448,8 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.Mod
 				TopicBase:         cfg.Server.TopicBase,
 				Name:              cfgItem.Name,
 				Feeds:             cfgItem.Feeds,
+				YoutubePlaylists:  cfgItem.YoutubePlaylists,
+				YtDlpPath:         cfgItem.YtDlpPath,
 				RefreshInterval:   refresh,
 				CacheDir:          cfgItem.CacheDir,
 				Timeout:           timeout,

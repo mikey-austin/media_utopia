@@ -203,6 +203,8 @@ type PodcastLibraryConfig struct {
 	Provider          string   `toml:"provider"`
 	Resource          string   `toml:"resource"`
 	Feeds             []string `toml:"feeds"`
+	YoutubePlaylists  []string `toml:"youtube_playlists"`
+	YtDlpPath         string   `toml:"yt_dlp_path"`
 	RefreshIntervalMS int64    `toml:"refresh_interval_ms"`
 	CacheDir          string   `toml:"cache_dir"`
 	TimeoutMS         int64    `toml:"timeout_ms"`

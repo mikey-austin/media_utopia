@@ -29,6 +29,8 @@ type Config struct {
 	TopicBase         string
 	Name              string
 	Feeds             []string
+	YoutubePlaylists  []string
+	YtDlpPath         string
 	RefreshInterval   time.Duration
 	CacheDir          string
 	Timeout           time.Duration
@@ -107,11 +109,14 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	if strings.TrimSpace(cfg.NodeID) == "" {
 		return nil, errors.New("node_id required")
 	}
-	if len(cfg.Feeds) == 0 {
-		return nil, errors.New("feeds required")
+	if len(cfg.Feeds) == 0 && len(cfg.YoutubePlaylists) == 0 {
+		return nil, errors.New("feeds or youtube_playlists required")
 	}
 	if strings.TrimSpace(cfg.TopicBase) == "" {
 		cfg.TopicBase = mu.BaseTopic
+	}
+	if strings.TrimSpace(cfg.YtDlpPath) == "" {
+		cfg.YtDlpPath = "yt-dlp"
 	}
 	if strings.TrimSpace(cfg.Name) == "" {
 		cfg.Name = "Podcast Library"
