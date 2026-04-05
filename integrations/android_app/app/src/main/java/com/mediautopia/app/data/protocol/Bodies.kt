@@ -2,6 +2,7 @@ package com.mediautopia.app.data.protocol
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 
 // --- Session ---
 
@@ -71,7 +72,7 @@ data class QueueGetReply(
 data class QueueItem(
     val queueEntryId: String,
     val itemId: String,
-    val metadata: Map<String, JsonElement>? = null,
+    val metadata: JsonObject? = null,
 )
 
 @Serializable
@@ -189,7 +190,7 @@ data class LibraryResolveBody(
 @Serializable
 data class LibraryResolveReply(
     val itemId: String,
-    val metadata: Map<String, JsonElement>? = null,
+    val metadata: JsonObject? = null,
     val sources: List<ResolvedSource>,
 )
 
@@ -202,7 +203,7 @@ data class LibraryResolveBatchBody(
 @Serializable
 data class LibraryResolveBatchItem(
     val itemId: String,
-    val metadata: Map<String, JsonElement>? = null,
+    val metadata: JsonObject? = null,
     val sources: List<ResolvedSource> = emptyList(),
     val err: ReplyError? = null,
 )

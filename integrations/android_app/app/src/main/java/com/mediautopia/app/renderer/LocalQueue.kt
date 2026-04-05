@@ -40,7 +40,7 @@ class LocalQueue {
             QueueItem(
                 queueEntryId = entry.queueEntryId,
                 itemId = entry.itemId,
-                metadata = entry.metadata.takeIf { it.isNotEmpty() },
+                metadata = null,
             )
         }
         return QueueGetReply(revision = revision, index = index, entries = items)

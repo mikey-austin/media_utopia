@@ -2,6 +2,7 @@ package com.mediautopia.app.data.protocol
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 
 @Serializable
 data class RendererState(
@@ -43,5 +44,5 @@ data class QueueState(
 data class CurrentItemState(
     val queueEntryId: String,
     val itemId: String,
-    val metadata: Map<String, JsonElement>? = null,
+    val metadata: JsonObject? = null,
 )

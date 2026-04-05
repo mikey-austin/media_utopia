@@ -4,65 +4,61 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * Utility functions for extracting metadata from MU's metadata maps.
+ * Extension functions for extracting metadata from MU's metadata maps.
  *
  * Key differences from a naive approach:
  * - `artists` is a JSON array, not a single string
  * - `artworkUrl` is the artwork URL field
  */
-object MetadataUtil {
 
-    /** Get a string value from a metadata map. */
-    fun Map<String, JsonElement>.stringValue(key: String): String? {
-        val element = get(key) ?: return null
-        return (element as? JsonPrimitive)?.contentOrNull
-    }
+/** Get a string value from a metadata map. */
+fun Map<String, JsonElement>.stringValue(key: String): String? {
+    val element = get(key) ?: return null
+    return (element as? JsonPrimitive)?.contentOrNull
+}
 
-    /**
-     * Get the artist string from metadata.
-     * Handles both "artists" (array) and "artist" (string) fields.
-     * Joins array entries with ", ".
-     */
-    fun Map<String, JsonElement>.artistString(): String? {
-        // Try "artists" array first (the canonical MU format).
-        val artistsElement = get("artists")
-        if (artistsElement is JsonArray) {
-            val parts = artistsElement.mapNotNull {
-                (it as? JsonPrimitive)?.contentOrNull
-            }
-            if (parts.isNotEmpty()) return parts.joinToString(", ")
+/**
+ * Get the artist string from metadata.
+ * Handles both "artists" (array) and "artist" (string) fields.
+ * Joins array entries with ", ".
+ */
+fun Map<String, JsonElement>.artistString(): String? {
+    // Try "artists" array first (the canonical MU format).
+    val artistsElement = get("artists")
+    if (artistsElement is JsonArray) {
+        val parts = artistsElement.mapNotNull {
+            (it as? JsonPrimitive)?.contentOrNull
         }
-
-        // Fall back to "artist" string.
-        return stringValue("artist")
+        if (parts.isNotEmpty()) return parts.joinToString(", ")
     }
 
-    /** Get the artwork URL from metadata. */
-    fun Map<String, JsonElement>.artworkUrl(): String? {
-        return stringValue("artworkUrl")
-    }
+    // Fall back to "artist" string.
+    return stringValue("artist")
+}
 
-    /** Get the album from metadata. */
-    fun Map<String, JsonElement>.album(): String? {
-        return stringValue("album")
-    }
+/** Get the artwork URL from metadata. */
+fun Map<String, JsonElement>.artworkUrl(): String? {
+    return stringValue("artworkUrl")
+}
 
-    /** Get the title from metadata. */
-    fun Map<String, JsonElement>.title(): String? {
-        return stringValue("title")
-    }
+/** Get the album from metadata. */
+fun Map<String, JsonElement>.album(): String? {
+    return stringValue("album")
+}
 
-    /** Get the format string (e.g. "FLAC"). */
-    fun Map<String, JsonElement>.format(): String? {
-        return stringValue("format")
-    }
+/** Get the title from metadata. */
+fun Map<String, JsonElement>.title(): String? {
+    return stringValue("title")
+}
 
-    /** Get the media type. */
-    fun Map<String, JsonElement>.mediaType(): String? {
-        return stringValue("mediaType") ?: stringValue("type")
-    }
+/** Get the format string (e.g. "FLAC"). */
+fun Map<String, JsonElement>.format(): String? {
+    return stringValue("format")
+}
+
+/** Get the media type. */
+fun Map<String, JsonElement>.mediaType(): String? {
+    return stringValue("mediaType") ?: stringValue("type")
 }

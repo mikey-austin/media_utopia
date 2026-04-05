@@ -5,17 +5,35 @@ import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
 import com.mediautopia.app.data.protocol.PlaybackSetMuteBody
 import com.mediautopia.app.data.protocol.PlaybackSetVolumeBody
-import com.mediautopia.app.data.protocol.RendererState
 import com.mediautopia.app.domain.usecase.CommandCorrelator
 import com.mediautopia.app.domain.usecase.LeaseManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.encodeToJsonElement
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * Wire-format for zone state published by zone_snapcast module.
+ * This is a flat object (NOT nested inside a `playback` wrapper like RendererState).
+ *
+ * Example payload:
+ * ```json
+ * {"volume":0.75,"mute":false,"sourceId":"mu:source:snapcast:office:default","connected":true,"ts":1700000000}
+ * ```
+ */
+@Serializable
+private data class ZoneMqttState(
+    val volume: Double = 0.0,
+    val mute: Boolean = false,
+    val sourceId: String = "",
+    val connected: Boolean = false,
+    val ts: Long = 0,
+)
 
 data class ZoneInfo(
     val nodeId: String,
@@ -178,18 +196,22 @@ class ZoneRepository @Inject constructor(
     private fun handleZoneState(zoneId: String, payload: ByteArray) {
         if (payload.isEmpty()) return
 
+        val raw = payload.toString(Charsets.UTF_8)
+        Log.d(tag, "Zone state for $zoneId: $raw")
+
         val state = try {
-            json.decodeFromString(RendererState.serializer(), payload.toString(Charsets.UTF_8))
+            json.decodeFromString(ZoneMqttState.serializer(), raw)
         } catch (e: Exception) {
             Log.e(tag, "Failed to parse state for zone $zoneId: ${e.message}")
             return
         }
 
         val snapshot = ZoneStateSnapshot(
-            volume = state.playback?.volume?.toFloat() ?: 0f,
-            isMuted = state.playback?.mute ?: false,
+            volume = state.volume.toFloat(),
+            isMuted = state.mute,
         )
 
+        Log.d(tag, "Zone $zoneId -> volume=${snapshot.volume}, muted=${snapshot.isMuted}")
         zoneStates[zoneId] = snapshot
         emitSnapshot()
     }

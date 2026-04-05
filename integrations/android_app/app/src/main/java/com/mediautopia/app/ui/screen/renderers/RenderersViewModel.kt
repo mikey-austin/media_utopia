@@ -2,14 +2,18 @@ package com.mediautopia.app.ui.screen.renderers
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.util.Log
+import com.mediautopia.app.data.cache.MetadataCache
+import com.mediautopia.app.data.cache.ResolvedMetadata
 import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.protocol.RendererState
+import com.mediautopia.app.data.protocol.artistString
+import com.mediautopia.app.data.protocol.title
 import com.mediautopia.app.data.repository.ActiveRendererRepository
+import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
-import com.mediautopia.app.data.protocol.MetadataUtil.artistString
-import com.mediautopia.app.data.protocol.MetadataUtil.title
 import com.mediautopia.app.domain.model.Node
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,10 +51,15 @@ class RenderersViewModel @Inject constructor(
     private val activeRendererRepository: ActiveRendererRepository,
     private val rendererStateRepository: RendererStateRepository,
     private val mqttConnectionManager: MqttConnectionManager,
+    private val libraryRepository: LibraryRepository,
+    private val metadataCache: MetadataCache,
 ) : ViewModel() {
+    private val tag = "RenderersViewModel"
 
     // Per-renderer state observations, keyed by nodeId.
     private val rendererStates = ConcurrentHashMap<String, RendererState>()
+    private val rendererMetadata = ConcurrentHashMap<String, ResolvedMetadata>()
+    private val resolvedItemIds = ConcurrentHashMap<String, String>() // nodeId -> last resolved itemId
     private val _statesUpdated = MutableStateFlow(0L) // bumped to trigger recomposition
     private val observedRenderers = mutableSetOf<String>()
 
@@ -112,9 +121,10 @@ class RenderersViewModel @Inject constructor(
         isConnected: Boolean,
     ): RendererItem {
         val playbackStatus = state?.playback?.status ?: "stopped"
-        val metadata = state?.current?.metadata
-        val title = metadata?.title()
-        val artist = metadata?.artistString()
+        val resolved = rendererMetadata[node.nodeId]
+        val inlineMeta = state?.current?.metadata
+        val title = resolved?.title?.ifBlank { null } ?: inlineMeta?.title()
+        val artist = resolved?.artist?.ifBlank { null } ?: inlineMeta?.artistString()
         val leaseOwner = state?.session?.owner
 
         val status: String
@@ -129,7 +139,7 @@ class RenderersViewModel @Inject constructor(
                 } else {
                     "Playing"
                 }
-                formatBadge = buildFormatBadge(metadata)
+                formatBadge = buildFormatBadge(inlineMeta)
                 currentTrack = title
             }
             "paused" -> {
@@ -139,7 +149,7 @@ class RenderersViewModel @Inject constructor(
                 } else {
                     "Paused"
                 }
-                formatBadge = buildFormatBadge(metadata)
+                formatBadge = buildFormatBadge(inlineMeta)
                 currentTrack = title
             }
             else -> {
@@ -173,8 +183,34 @@ class RenderersViewModel @Inject constructor(
             viewModelScope.launch {
                 rendererStateRepository.observeState(node.nodeId).collect { state ->
                     rendererStates[node.nodeId] = state
+                    // Resolve metadata if current item changed.
+                    val itemId = state.current?.itemId
+                    if (itemId != null && itemId != resolvedItemIds[node.nodeId]) {
+                        resolvedItemIds[node.nodeId] = itemId
+                        resolveMetadata(node.nodeId, itemId)
+                    }
                     _statesUpdated.value = System.currentTimeMillis()
                 }
+            }
+        }
+    }
+
+    private fun resolveMetadata(nodeId: String, itemId: String) {
+        viewModelScope.launch {
+            val cached = metadataCache.get(itemId)
+            if (cached != null) {
+                rendererMetadata[nodeId] = cached
+                _statesUpdated.value = System.currentTimeMillis()
+                return@launch
+            }
+            try {
+                val resolved = libraryRepository.resolve(itemId)
+                if (resolved != null) {
+                    rendererMetadata[nodeId] = resolved
+                    _statesUpdated.value = System.currentTimeMillis()
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to resolve metadata for $itemId: ${e.message}")
             }
         }
     }

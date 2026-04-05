@@ -124,7 +124,12 @@ class RendererStateRepository @Inject constructor(
             return
         }
 
+        Log.d(tag, "State for $nodeId: status=${state.playback?.status} current=${state.current != null} meta=${state.current?.metadata?.keys} session=${state.session?.owner}")
+
         val flow = remoteFlows[nodeId] ?: return
-        flow.tryEmit(state)
+        val emitted = flow.tryEmit(state)
+        if (!emitted) {
+            Log.w(tag, "Failed to emit state for $nodeId (flow full?)")
+        }
     }
 }

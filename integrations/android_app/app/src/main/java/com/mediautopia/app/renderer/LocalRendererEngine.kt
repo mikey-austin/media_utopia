@@ -484,7 +484,7 @@ class LocalRendererEngine(
         currentItem = CurrentItemState(
             queueEntryId = entry.queueEntryId,
             itemId = entry.itemId,
-            metadata = entry.metadata.takeIf { it.isNotEmpty() },
+            metadata = null, // Metadata resolved separately by controllers.
         )
         bumpState()
         return ackReply(cmd)
@@ -528,7 +528,7 @@ class LocalRendererEngine(
         currentItem = CurrentItemState(
             queueEntryId = next.queueEntryId,
             itemId = next.itemId,
-            metadata = next.metadata.takeIf { it.isNotEmpty() },
+            metadata = null, // Metadata resolved separately by controllers.
         )
         bumpState()
     }

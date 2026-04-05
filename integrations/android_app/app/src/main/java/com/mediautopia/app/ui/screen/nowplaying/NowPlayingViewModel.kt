@@ -9,7 +9,15 @@ import com.mediautopia.app.data.protocol.PlaybackSetVolumeBody
 import com.mediautopia.app.data.protocol.QueueRepeatBody
 import com.mediautopia.app.data.protocol.QueueSetShuffleBody
 import com.mediautopia.app.data.protocol.RendererState
+import com.mediautopia.app.data.protocol.album
+import com.mediautopia.app.data.protocol.artistString
+import com.mediautopia.app.data.protocol.artworkUrl
+import com.mediautopia.app.data.protocol.stringValue
+import com.mediautopia.app.data.protocol.title
+import com.mediautopia.app.data.cache.MetadataCache
+import com.mediautopia.app.data.cache.ResolvedMetadata
 import com.mediautopia.app.data.repository.ActiveRendererRepository
+import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
 import com.mediautopia.app.domain.usecase.CommandCorrelator
@@ -32,8 +40,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.encodeToJsonElement
 import javax.inject.Inject
 
@@ -60,6 +66,8 @@ class NowPlayingViewModel @Inject constructor(
     private val activeRendererRepository: ActiveRendererRepository,
     private val rendererStateRepository: RendererStateRepository,
     private val nodeRepository: NodeRepository,
+    private val libraryRepository: LibraryRepository,
+    private val metadataCache: MetadataCache,
     private val leaseManager: LeaseManager,
     private val correlator: CommandCorrelator,
 ) : ViewModel() {
@@ -81,6 +89,10 @@ class NowPlayingViewModel @Inject constructor(
     private var lastServerTimestamp: Long = 0
     private var currentPlaybackStatus: String = "stopped"
 
+    // Resolved metadata for the current item (fetched from library).
+    private val _resolvedMetadata = MutableStateFlow<ResolvedMetadata?>(null)
+    private var lastResolvedItemId: String? = null
+
     // Active renderer ID flow for command targeting.
     private val activeRendererId = activeRendererRepository.activeRendererId
         .stateIn(viewModelScope, SharingStarted.Eagerly, ActiveRendererRepository.LOCAL_RENDERER_ID)
@@ -88,10 +100,47 @@ class NowPlayingViewModel @Inject constructor(
     // Observe the active renderer's state.
     private val rendererState: StateFlow<RendererState?> =
         activeRendererRepository.activeRendererId.flatMapLatest { rendererId ->
+            Log.d(tag, "Active renderer changed to: $rendererId")
             rendererStateRepository.observeState(rendererId)
                 .onStart<RendererState?> { emit(null) }
                 .catch { emit(null) }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    init {
+        // Watch for current item changes and resolve metadata from library.
+        viewModelScope.launch {
+            rendererState.collect { state ->
+                val itemId = state?.current?.itemId
+                if (itemId != null && itemId != lastResolvedItemId) {
+                    lastResolvedItemId = itemId
+                    resolveCurrentItemMetadata(itemId)
+                } else if (itemId == null) {
+                    lastResolvedItemId = null
+                    _resolvedMetadata.value = null
+                }
+            }
+        }
+    }
+
+    private fun resolveCurrentItemMetadata(itemId: String) {
+        viewModelScope.launch {
+            // Check cache first.
+            val cached = metadataCache.get(itemId)
+            if (cached != null) {
+                _resolvedMetadata.value = cached
+                return@launch
+            }
+            // Resolve from library.
+            try {
+                val resolved = libraryRepository.resolve(itemId)
+                if (resolved != null) {
+                    _resolvedMetadata.value = resolved
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to resolve metadata for $itemId: ${e.message}")
+            }
+        }
+    }
 
     // Renderer name, resolved from node repository.
     private val rendererName: StateFlow<String> =
@@ -109,19 +158,21 @@ class NowPlayingViewModel @Inject constructor(
         rendererState,
         rendererName,
         _interpolatedPositionMs,
-    ) { state, name, interpolatedPosition ->
+        _resolvedMetadata,
+    ) { state, name, interpolatedPosition, resolved ->
         if (state == null) {
             return@combine NowPlayingUiState(rendererName = name)
         }
 
-        val metadata = state.current?.metadata
-        val title = metadata?.let { com.mediautopia.app.data.protocol.MetadataUtil.run { it.title() } }
-        val artist = metadata?.let { com.mediautopia.app.data.protocol.MetadataUtil.run { it.artistString() } }
-        val album = metadata?.let { com.mediautopia.app.data.protocol.MetadataUtil.run { it.album() } }
-        val artworkUrl = metadata?.let { com.mediautopia.app.data.protocol.MetadataUtil.run { it.artworkUrl() } }
-        val format = metadata?.stringValue("format")
-        val sampleRate = metadata?.stringValue("sampleRate")
-        val bitDepth = metadata?.stringValue("bitDepth")
+        // Metadata comes from resolved library data (or inline if available).
+        val inlineMeta = state.current?.metadata
+        val title = resolved?.title?.ifBlank { null } ?: inlineMeta?.title()
+        val artist = resolved?.artist?.ifBlank { null } ?: inlineMeta?.artistString()
+        val album = resolved?.album?.ifBlank { null } ?: inlineMeta?.album()
+        val artworkUrl = resolved?.artworkUrl ?: inlineMeta?.artworkUrl()
+        val format = resolved?.format?.ifBlank { null } ?: inlineMeta?.stringValue("format")
+        val sampleRate = inlineMeta?.stringValue("sampleRate")
+        val bitDepth = inlineMeta?.stringValue("bitDepth")
 
         val hiResInfo = buildHiResInfo(format, bitDepth, sampleRate)
 
@@ -360,10 +411,6 @@ class NowPlayingViewModel @Inject constructor(
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
-
-    private fun Map<String, JsonElement>.stringValue(key: String): String? {
-        return (this[key] as? JsonPrimitive)?.contentOrNull
-    }
 
     private fun buildHiResInfo(
         format: String?,

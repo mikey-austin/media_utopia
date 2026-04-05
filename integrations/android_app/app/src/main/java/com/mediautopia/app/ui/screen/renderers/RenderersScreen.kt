@@ -7,7 +7,9 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -289,6 +291,7 @@ private fun LocalRendererCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NetworkRendererCard(
     item: RendererItem,
@@ -328,13 +331,26 @@ private fun NetworkRendererCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(modifier = Modifier.height(2.dp))
+
+            // Use marquee scrolling for track info when playing/paused.
+            val isAnimating = item.currentTrack != null
             Text(
                 text = item.status,
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (item.isActive) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                overflow = if (isAnimating) TextOverflow.Clip else TextOverflow.Ellipsis,
+                modifier = if (isAnimating) {
+                    Modifier.basicMarquee(
+                        iterations = Int.MAX_VALUE,
+                        initialDelayMillis = 2000,
+                        velocity = 50.dp,
+                    )
+                } else {
+                    Modifier
+                },
             )
+
             if (item.leaseOwner != null) {
                 Text(
                     text = "LEASE: ${item.leaseOwner.uppercase()}",

@@ -132,10 +132,12 @@ class LibraryRepository @Inject constructor(
         // Check cache first.
         metadataCache.get(itemId)?.let { return it }
 
-        val libraryNode = findLibraryNode() ?: return null
+        val libraryNode = findLibraryForItem(itemId) ?: return null
+        // Strip the lib:{libraryNodeId}: prefix for the resolve command.
+        val localItemId = stripLibPrefix(itemId, libraryNode)
 
         val body = json.encodeToJsonElement(
-            LibraryResolveBody(itemId = itemId, metadataOnly = true)
+            LibraryResolveBody(itemId = localItemId, metadataOnly = true)
         )
 
         val reply = try {
@@ -182,12 +184,20 @@ class LibraryRepository @Inject constructor(
 
         if (uncached.isEmpty()) return result
 
-        val libraryNode = findLibraryNode() ?: return result
+        // Group uncached items by their library node.
+        val byLibrary = mutableMapOf<String, MutableList<String>>()
+        for (id in uncached) {
+            val lib = findLibraryForItem(id) ?: continue
+            byLibrary.getOrPut(lib) { mutableListOf() }.add(id)
+        }
 
-        // Resolve in batches of 20.
-        for (batch in uncached.chunked(20)) {
+        // Resolve each library's items in batches of 20.
+        for ((libraryNode, items) in byLibrary) {
+        for (batch in items.chunked(20)) {
+            // Strip lib: prefix for the resolve command.
+            val localIds = batch.map { stripLibPrefix(it, libraryNode) }
             val body = json.encodeToJsonElement(
-                LibraryResolveBatchBody(itemIds = batch, metadataOnly = true)
+                LibraryResolveBatchBody(itemIds = localIds, metadataOnly = true)
             )
 
             val reply = try {
@@ -223,6 +233,7 @@ class LibraryRepository @Inject constructor(
 
             metadataCache.putAll(batchResults)
         }
+        } // end byLibrary loop
 
         return result
     }
@@ -238,6 +249,38 @@ class LibraryRepository @Inject constructor(
             return null
         }
         return libraries.first().nodeId
+    }
+
+    /**
+     * Extract the library node ID from an item ID.
+     * Item IDs have the format `lib:{libraryNodeId}:{itemHash}`.
+     * The library node ID itself contains colons, so we match against
+     * known library nodes.
+     */
+    suspend fun findLibraryForItem(itemId: String): String? {
+        if (!itemId.startsWith("lib:")) return findLibraryNode()
+        val stripped = itemId.removePrefix("lib:")
+        val libraries = nodeRepository.libraries.first()
+        for (lib in libraries) {
+            if (stripped.startsWith(lib.nodeId + ":")) {
+                return lib.nodeId
+            }
+        }
+        return libraries.firstOrNull()?.nodeId
+    }
+
+    /**
+     * Strip the `lib:{libraryNodeId}:` prefix from an external item reference,
+     * returning the local item ID that the library expects.
+     * e.g., `lib:mu:library:filesystem:venus:music:audio:abc123` -> `audio:abc123`
+     */
+    private fun stripLibPrefix(itemId: String, libraryNodeId: String): String {
+        val prefix = "lib:$libraryNodeId:"
+        return if (itemId.startsWith(prefix)) {
+            itemId.removePrefix(prefix)
+        } else {
+            itemId
+        }
     }
 
     private fun parseBrowseReply(body: JsonElement, requestedCount: Long): BrowseResult {
