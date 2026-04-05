@@ -1,6 +1,7 @@
 package com.mediautopia.app.data.repository
 
 import android.content.Context
+import android.os.Build
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -40,6 +41,8 @@ class ActiveRendererRepository @Inject constructor(
     }
 
     companion object {
-        const val LOCAL_RENDERER_ID = "mu:renderer:media3:android:this-phone:default"
+        val LOCAL_RENDERER_ID: String = "mu:renderer:media3:android:${
+            Build.MODEL.replace(" ", "-")
+        }:default"
     }
 }

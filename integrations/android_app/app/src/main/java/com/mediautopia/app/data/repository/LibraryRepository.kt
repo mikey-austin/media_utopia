@@ -9,6 +9,11 @@ import com.mediautopia.app.data.protocol.LibraryResolveBatchReply
 import com.mediautopia.app.data.protocol.LibraryResolveBody
 import com.mediautopia.app.data.protocol.LibraryResolveReply
 import com.mediautopia.app.data.protocol.LibrarySearchBody
+import com.mediautopia.app.data.protocol.album
+import com.mediautopia.app.data.protocol.artistString
+import com.mediautopia.app.data.protocol.artworkUrl
+import com.mediautopia.app.data.protocol.format
+import com.mediautopia.app.data.protocol.title
 import com.mediautopia.app.domain.usecase.CommandCorrelator
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
@@ -248,7 +253,12 @@ class LibraryRepository @Inject constructor(
             Log.w(tag, "No library nodes available")
             return null
         }
-        return libraries.first().nodeId
+        // Prefer music libraries (filesystem, jellyfin) over cameras/podcasts.
+        val musicProviders = listOf("filesystem", "jellyfin")
+        val preferred = libraries.firstOrNull { node ->
+            musicProviders.any { node.nodeId.contains(it) }
+        }
+        return (preferred ?: libraries.first()).nodeId
     }
 
     /**
@@ -351,11 +361,11 @@ class LibraryRepository @Inject constructor(
         if (metadata == null) return ResolvedMetadata()
 
         return ResolvedMetadata(
-            title = metadata.stringValue("title") ?: "",
-            artist = metadata.stringValue("artist") ?: "",
-            album = metadata.stringValue("album") ?: "",
-            artworkUrl = metadata.stringValue("artworkUrl"),
-            format = metadata.stringValue("format") ?: "",
+            title = metadata.title() ?: "",
+            artist = metadata.artistString() ?: "",
+            album = metadata.album() ?: "",
+            artworkUrl = metadata.artworkUrl(),
+            format = metadata.format() ?: "",
             sampleRate = metadata.intValue("sampleRate"),
             bitDepth = metadata.intValue("bitDepth"),
             durationMs = metadata.longValue("durationMs"),
