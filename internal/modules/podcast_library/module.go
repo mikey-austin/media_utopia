@@ -72,7 +72,8 @@ type Module struct {
 	dedup       *mu.CommandDedup
 	cacheMu     sync.Mutex
 	feeds       map[string]*feedCache
-	ytDlpRunner func(ctx context.Context, args ...string) ([]byte, error)
+	ytDlpRunner  func(ctx context.Context, args ...string) ([]byte, error)
+	resolvedURLs resolvedURLCache
 }
 
 type feedCache struct {
@@ -165,7 +166,8 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		cmdTopic: cmdTopic,
 		cmdQueue: make(chan cmdWork, 64),
 		dedup:    mu.NewCommandDedup(128),
-		feeds:    make(map[string]*feedCache),
+		feeds:        make(map[string]*feedCache),
+		resolvedURLs: resolvedURLCache{entries: make(map[string]resolvedURLEntry)},
 	}
 	m.ytDlpRunner = m.runYtDlp
 	return m, nil
@@ -585,11 +587,22 @@ func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, 
 	if metadataOnly {
 		return metadata, nil, nil
 	}
-	if episode.AudioURL == "" {
+
+	audioURL := episode.AudioURL
+	if strings.HasPrefix(audioURL, ytidPrefix) {
+		videoID := strings.TrimPrefix(audioURL, ytidPrefix)
+		resolved, err := m.resolveYoutubeURL(videoID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("youtube resolve: %w", err)
+		}
+		audioURL = resolved
+	}
+
+	if audioURL == "" {
 		return nil, nil, errors.New("episode has no audio url")
 	}
 	source := mu.ResolvedSource{
-		URL:       episode.AudioURL,
+		URL:       audioURL,
 		Mime:      episode.AudioType,
 		ByteRange: false,
 	}
@@ -1101,6 +1114,60 @@ func (m *Module) fetchYoutubeFeed(feedURL string) (*cachedFeed, error) {
 		return nil, fmt.Errorf("fetch youtube feed: %w", err)
 	}
 	return m.parseYtDlpPlaylist(feedURL, out)
+}
+
+type resolvedURLCache struct {
+	mu      sync.Mutex
+	entries map[string]resolvedURLEntry
+}
+
+type resolvedURLEntry struct {
+	url       string
+	expiresAt time.Time
+}
+
+const resolvedURLTTL = 4 * time.Hour
+
+func (c *resolvedURLCache) get(videoID string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[videoID]
+	if !ok || time.Now().After(entry.expiresAt) {
+		delete(c.entries, videoID)
+		return "", false
+	}
+	return entry.url, true
+}
+
+func (c *resolvedURLCache) set(videoID string, url string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[videoID] = resolvedURLEntry{
+		url:       url,
+		expiresAt: time.Now().Add(resolvedURLTTL),
+	}
+}
+
+func (m *Module) resolveYoutubeURL(videoID string) (string, error) {
+	if url, ok := m.resolvedURLs.get(videoID); ok {
+		return url, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	out, err := m.ytDlpRunner(ctx, "-f", "bestaudio", "-g", "--no-playlist", "https://www.youtube.com/watch?v="+videoID)
+	if err != nil {
+		return "", err
+	}
+
+	url := strings.TrimSpace(string(out))
+	if url == "" {
+		return "", errors.New("yt-dlp returned empty URL")
+	}
+
+	m.resolvedURLs.set(videoID, url)
+	return url, nil
 }
 
 func errorReply(cmd mu.CommandEnvelope, code string, message string) mu.ReplyEnvelope {

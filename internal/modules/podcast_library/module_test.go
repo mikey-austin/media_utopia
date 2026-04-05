@@ -698,6 +698,81 @@ func TestParseYtDlpDescriptionTruncation(t *testing.T) {
 	}
 }
 
+func TestResolveYoutubeEpisode(t *testing.T) {
+	playlistURL := "https://www.youtube.com/playlist?list=PLabc"
+
+	ytPlaylistOutput := `{"id":"abc123","title":"YT Episode","description":"desc","upload_date":"20240601","duration":3600,"uploader":"Chan","channel":"Chan","thumbnail":"https://img.test/1.jpg","playlist_title":"Playlist"}`
+	resolvedStreamURL := "https://rr1---sn-abc.googlevideo.com/videoplayback?expire=999"
+
+	ytDlpCalls := int32(0)
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{playlistURL},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+	module.ytDlpRunner = func(ctx context.Context, args ...string) ([]byte, error) {
+		atomic.AddInt32(&ytDlpCalls, 1)
+		// Check if this is a resolve call (-g flag) or a playlist fetch.
+		for _, arg := range args {
+			if arg == "-g" {
+				return []byte(resolvedStreamURL + "\n"), nil
+			}
+		}
+		return []byte(ytPlaylistOutput), nil
+	}
+
+	// Browse to get the episode ID.
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{})}
+	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var browse libraryItemsReply
+	json.Unmarshal(reply.Body, &browse)
+	feedID := browse.Items[1].ItemID
+
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID})}
+	reply = module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	json.Unmarshal(reply.Body, &browse)
+	episodeID := browse.Items[0].ItemID
+
+	// Resolve the YouTube episode.
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: episodeID})}
+	resolve := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !resolve.OK {
+		t.Fatalf("expected OK resolve, got error: %+v", resolve.Err)
+	}
+	var resolveBody mu.LibraryResolveReply
+	json.Unmarshal(resolve.Body, &resolveBody)
+
+	if len(resolveBody.Sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(resolveBody.Sources))
+	}
+	if resolveBody.Sources[0].URL != resolvedStreamURL {
+		t.Fatalf("expected stream URL, got %q", resolveBody.Sources[0].URL)
+	}
+	if resolveBody.Metadata["album"] != "Playlist" {
+		t.Fatalf("expected album 'Playlist', got %q", resolveBody.Metadata["album"])
+	}
+
+	// Resolve again — should use cache, not call yt-dlp again.
+	callsBefore := atomic.LoadInt32(&ytDlpCalls)
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: episodeID})}
+	resolve = module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !resolve.OK {
+		t.Fatalf("second resolve failed")
+	}
+	json.Unmarshal(resolve.Body, &resolveBody)
+	if resolveBody.Sources[0].URL != resolvedStreamURL {
+		t.Fatalf("cached URL mismatch")
+	}
+	if atomic.LoadInt32(&ytDlpCalls) != callsBefore {
+		t.Fatalf("expected cached resolve, but yt-dlp was called again")
+	}
+}
+
 const testFeedFiveEpisodes = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
 <channel>
