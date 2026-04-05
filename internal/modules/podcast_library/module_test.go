@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -544,6 +545,107 @@ const testFeed = `<?xml version="1.0" encoding="UTF-8"?>
   </item>
 </channel>
 </rss>`
+
+func TestParseYtDlpPlaylist(t *testing.T) {
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	jsonLines := strings.Join([]string{
+		`{"id":"abc123","title":"Episode One","description":"First ep description here","upload_date":"20240601","duration":3600,"uploader":"TestChannel","channel":"TestChannel","thumbnail":"https://i.ytimg.com/vi/abc123/hqdefault.jpg","playlist_title":"My Playlist"}`,
+		`{"id":"def456","title":"Episode Two","description":"Second ep","upload_date":"20240615","duration":1800,"uploader":"TestChannel","channel":"TestChannel","thumbnail":"https://i.ytimg.com/vi/def456/hqdefault.jpg","playlist_title":"My Playlist"}`,
+	}, "\n")
+
+	feed, err := module.parseYtDlpPlaylist("https://www.youtube.com/playlist?list=PLabc", []byte(jsonLines))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if feed.Title != "My Playlist" {
+		t.Fatalf("expected title 'My Playlist', got %q", feed.Title)
+	}
+	if feed.Author != "TestChannel" {
+		t.Fatalf("expected author 'TestChannel', got %q", feed.Author)
+	}
+	if len(feed.Episodes) != 2 {
+		t.Fatalf("expected 2 episodes, got %d", len(feed.Episodes))
+	}
+
+	ep := feed.Episodes[0]
+	if ep.Title != "Episode One" {
+		t.Fatalf("expected 'Episode One', got %q", ep.Title)
+	}
+	if ep.DurationMS != 3600000 {
+		t.Fatalf("expected 3600000ms, got %d", ep.DurationMS)
+	}
+	if ep.AudioURL != "ytid:abc123" {
+		t.Fatalf("expected 'ytid:abc123', got %q", ep.AudioURL)
+	}
+	if ep.ImageURL != "https://i.ytimg.com/vi/abc123/hqdefault.jpg" {
+		t.Fatalf("unexpected image: %s", ep.ImageURL)
+	}
+
+	// Verify Published is parsed from upload_date 20240601.
+	published := time.Unix(ep.Published, 0).UTC()
+	if published.Year() != 2024 || published.Month() != 6 || published.Day() != 1 {
+		t.Fatalf("unexpected published date: %v", published)
+	}
+}
+
+func TestParseYtDlpPlaylistEmpty(t *testing.T) {
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	feed, err := module.parseYtDlpPlaylist("https://www.youtube.com/playlist?list=PLabc", []byte(""))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(feed.Episodes) != 0 {
+		t.Fatalf("expected 0 episodes, got %d", len(feed.Episodes))
+	}
+	if feed.Title != "https://www.youtube.com/playlist?list=PLabc" {
+		t.Fatalf("expected URL as fallback title, got %q", feed.Title)
+	}
+}
+
+func TestParseYtDlpDescriptionTruncation(t *testing.T) {
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	longDesc := strings.Repeat("x", 1000)
+	jsonLine := fmt.Sprintf(`{"id":"vid1","title":"Long","description":%q,"upload_date":"20240101","duration":60,"uploader":"Chan","channel":"Chan","thumbnail":"https://img.test/1.jpg","playlist_title":"PL"}`, longDesc)
+
+	feed, err := module.parseYtDlpPlaylist("https://yt.test", []byte(jsonLine))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(feed.Episodes[0].Description) > 500 {
+		t.Fatalf("description not truncated: len=%d", len(feed.Episodes[0].Description))
+	}
+}
 
 const testFeedFiveEpisodes = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">

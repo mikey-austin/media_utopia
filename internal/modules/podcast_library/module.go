@@ -995,6 +995,105 @@ func (m *Module) runYtDlp(ctx context.Context, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+const ytidPrefix = "ytid:"
+
+type ytDlpEntry struct {
+	ID            string  `json:"id"`
+	Title         string  `json:"title"`
+	Description   string  `json:"description"`
+	UploadDate    string  `json:"upload_date"`
+	Duration      float64 `json:"duration"`
+	Uploader      string  `json:"uploader"`
+	Channel       string  `json:"channel"`
+	Thumbnail     string  `json:"thumbnail"`
+	PlaylistTitle string  `json:"playlist_title"`
+}
+
+func (m *Module) parseYtDlpPlaylist(feedURL string, data []byte) (*cachedFeed, error) {
+	feedID := hashID("feed", feedURL)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+
+	var playlistTitle, author string
+	episodes := make([]cachedEpisode, 0, len(lines))
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry ytDlpEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			m.log.Warn("skip yt-dlp entry", zap.Error(err))
+			continue
+		}
+		if entry.ID == "" {
+			continue
+		}
+
+		if playlistTitle == "" {
+			playlistTitle = entry.PlaylistTitle
+		}
+		if author == "" {
+			author = entry.Channel
+			if author == "" {
+				author = entry.Uploader
+			}
+		}
+
+		desc := strings.TrimSpace(entry.Description)
+		if len(desc) > 500 {
+			desc = desc[:500]
+		}
+
+		episodes = append(episodes, cachedEpisode{
+			ID:          hashID("episode", feedID+":"+entry.ID),
+			Title:       strings.TrimSpace(entry.Title),
+			Description: desc,
+			Published:   parseUploadDate(entry.UploadDate),
+			DurationMS:  int64(entry.Duration * 1000),
+			AudioURL:    ytidPrefix + entry.ID,
+			ImageURL:    entry.Thumbnail,
+			Author:      author,
+		})
+	}
+
+	title := playlistTitle
+	if title == "" {
+		title = feedURL
+	}
+
+	return &cachedFeed{
+		FeedURL:   feedURL,
+		FeedID:    feedID,
+		Title:     title,
+		Author:    author,
+		FetchedAt: time.Now().Unix(),
+		Episodes:  episodes,
+	}, nil
+}
+
+func parseUploadDate(s string) int64 {
+	if len(s) != 8 {
+		return 0
+	}
+	t, err := time.Parse("20060102", s)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
+}
+
+func (m *Module) fetchYoutubeFeed(feedURL string) (*cachedFeed, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	out, err := m.runYtDlp(ctx, "--flat-playlist", "--dump-json", feedURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch youtube feed: %w", err)
+	}
+	return m.parseYtDlpPlaylist(feedURL, out)
+}
+
 func errorReply(cmd mu.CommandEnvelope, code string, message string) mu.ReplyEnvelope {
 	return mu.ReplyEnvelope{
 		ID:   cmd.ID,
