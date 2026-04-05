@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "primary-container": "#ffbf00",
+                    "surface-tint": "#fbbc00",
+                    "tertiary-fixed-dim": "#adc6ff",
+                    "surface-container-lowest": "#0e0e0e",
+                    "primary": "#ffe2ab",
+                    "inverse-surface": "#e5e2e1",
+                    "secondary-fixed-dim": "#76d6d5",
+                    "on-secondary-fixed-variant": "#004f4f",
+                    "error-container": "#93000a",
+                    "tertiary": "#dce5ff",
+                    "surface-dim": "#131313",
+                    "on-primary": "#402d00",
+                    "on-error": "#690005",
+                    "error": "#ffb4ab",
+                    "on-surface": "#e5e2e1",
+                    "on-background": "#e5e2e1",
+                    "tertiary-fixed": "#d8e2ff",
+                    "on-tertiary": "#002e68",
+                    "on-secondary": "#003737",
+                    "inverse-primary": "#795900",
+                    "surface-container": "#201f1f",
+                    "on-secondary-fixed": "#002020",
+                    "on-tertiary-container": "#0051ad",
+                    "on-primary-container": "#6d5000",
+                    "outline-variant": "#504532",
+                    "secondary-container": "#007f7f",
+                    "inverse-on-surface": "#313030",
+                    "tertiary-container": "#b1c9ff",
+                    "primary-fixed-dim": "#fbbc00",
+                    "on-tertiary-fixed": "#001a41",
+                    "outline": "#9c8f78",
+                    "on-tertiary-fixed-variant": "#004493",
+                    "surface-container-highest": "#353534",
+                    "surface-bright": "#393939",
+                    "surface": "#131313",
+                    "on-primary-fixed-variant": "#5c4300",
+                    "background": "#131313",
+                    "surface-container-high": "#2a2a2a",
+                    "on-secondary-container": "#ddfffe",
+                    "surface-container-low": "#1c1b1b",
+                    "on-error-container": "#ffdad6",
+                    "primary-fixed": "#ffdfa0",
+                    "secondary-fixed": "#93f2f2",
+                    "on-primary-fixed": "#261a00",
+                    "secondary": "#76d6d5",
+                    "surface-variant": "#353534",
+                    "on-surface-variant": "#d4c5ab"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "fontFamily": {
+                    "headline": ["Inter"],
+                    "body": ["Inter"],
+                    "label": ["Inter"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .amber-glow {
+            box-shadow: inset 0 0 12px rgba(255, 191, 0, 0.2), 0 0 4px rgba(255, 191, 0, 0.1);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-surface-container-lowest text-on-surface font-body selection:bg-primary-container selection:text-on-primary-container overflow-hidden h-screen flex flex-col">
+<!-- Top Navigation Anchor -->
+<nav class="bg-[#131313] flex justify-between items-center w-full px-6 py-4 z-50">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-[#e5e2e1] cursor-pointer hover:bg-[#1e1e1e] transition-colors p-2 rounded">menu</span>
+<h1 class="text-xl font-black tracking-tighter text-[#FFBF00] uppercase">Media Utopia</h1>
+</div>
+<div class="flex items-center gap-6">
+<div class="hidden md:flex gap-8 items-center">
+<span class="text-[#FFBF00] font-medium tracking-tight font-['Inter'] cursor-pointer">Now Playing</span>
+<span class="text-[#e5e2e1] font-medium tracking-tight font-['Inter'] hover:bg-[#1e1e1e] transition-colors cursor-pointer px-2 py-1 rounded">Library</span>
+<span class="text-[#e5e2e1] font-medium tracking-tight font-['Inter'] hover:bg-[#1e1e1e] transition-colors cursor-pointer px-2 py-1 rounded">Renderers</span>
+<span class="text-[#e5e2e1] font-medium tracking-tight font-['Inter'] hover:bg-[#1e1e1e] transition-colors cursor-pointer px-2 py-1 rounded">Zones</span>
+</div>
+<span class="material-symbols-outlined text-[#FFBF00]">settings</span>
+</div>
+</nav>
+<!-- Main Canvas: The "Background" (Now Playing Context) -->
+<main class="flex-grow relative flex flex-col items-center justify-center p-8 bg-surface">
+<div class="w-full max-w-lg aspect-square rounded-xl overflow-hidden shadow-2xl relative group">
+<img class="w-full h-full object-cover" data-alt="Modern abstract vinyl record sleeve art with dark aesthetic and neon amber geometric patterns" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAhytyWR1NnwmyGgXQ1jAYcUvBu_29ALbmaV-4tbygt4hguScMclTR9JwYWbrDn0rdEFLNqwRw9WY9OXqjZJBduMETJVQdV1F9XLwJPcUN5odo7f5tpRLXclE7BOvF0pEmKzPutLCL2vp9_-eM54gJVq3X8DeFamePZB5XMgOeqHAaC0iruxc6TOV_xcfwK-axo2wAHvC_xg-B0dOJtRUlr-GWYdztpqOBlB1YhIzR9bQYtakr-uuwD5YO6zxsxRTK02OULIu1Tdr94"/>
+<div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent"></div>
+<div class="absolute bottom-8 left-8 right-8">
+<h2 class="text-3xl font-black tracking-tight text-on-surface">Vanta Black Symphony</h2>
+<p class="text-primary text-lg font-medium opacity-80">The Curator Ensemble</p>
+</div>
+</div>
+<!-- Mini Player Strip (Persistent above Bottom Nav) -->
+<div class="absolute bottom-0 left-0 w-full bg-surface-variant/80 backdrop-blur-2xl px-6 py-4 flex items-center justify-between border-t border-outline-variant/10 z-40">
+<div class="flex items-center gap-4">
+<div class="w-12 h-12 rounded bg-surface-container-highest overflow-hidden border border-primary-container/30">
+<img class="w-full h-full object-cover" data-alt="album thumbnail" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD-fJtHtpMr3RGYj21uDOtVBviSVmkJzmlExRehywPq2pHuIsX5z5STyTDaZ-3u707Yha84F7TjM-4pz1-9J75V9k2jhhrDGlf4sdzUMdL3SS23-cwL-zIfu1wS4eKvtOhZD4Jccoc6WumDym6jIQo08ogqeC9yEC0muIinqJkN2uDJXEsxHHbPiYrj0L3T4SB662-WmEZyUnLkw5W9nw_Fb6DSLN_qPlCkhDLUba_1T3M2IuG6FjRAjxQVlbTI2DEqntRcaRueR2cr"/>
+</div>
+<div>
+<div class="text-sm font-bold text-on-surface leading-tight">Vanta Black Symphony</div>
+<div class="text-xs text-on-surface-variant uppercase tracking-widest font-semibold">Playing Now</div>
+</div>
+</div>
+<div class="flex items-center gap-6">
+<span class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors cursor-pointer">skip_previous</span>
+<span class="material-symbols-outlined text-primary-container text-4xl cursor-pointer">pause_circle</span>
+<span class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors cursor-pointer">skip_next</span>
+</div>
+</div>
+</main>
+<!-- Queue Sheet: Sliding Up from Now Playing -->
+<section class="fixed inset-x-0 bottom-0 top-1/4 bg-[#121212] z-50 rounded-t-[1.5rem] flex flex-col shadow-[0_-12px_40px_rgba(0,0,0,0.8)] border-t border-outline-variant/10">
+<!-- Grab Handle Area -->
+<div class="w-full flex justify-center py-4">
+<div class="w-12 h-1.5 rounded-full bg-surface-container-highest"></div>
+</div>
+<!-- Sticky Header -->
+<header class="px-6 pb-4 flex items-center justify-between">
+<div>
+<h3 class="text-2xl font-black tracking-tighter text-on-surface uppercase">Queue</h3>
+<p class="text-[10px] text-on-surface-variant uppercase tracking-[0.1rem] font-bold">12 Tracks • 45:12</p>
+</div>
+<div class="flex gap-2">
+<button class="bg-surface-container-high hover:bg-surface-container-highest text-primary px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all active:scale-95 flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">shuffle</span> Shuffle
+                </button>
+<button class="bg-surface-container-high hover:bg-surface-container-highest text-primary px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all active:scale-95 flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">repeat</span> Repeat
+                </button>
+<button class="text-on-surface-variant hover:text-error px-2 py-2 text-xs font-bold uppercase tracking-widest transition-all">Clear</button>
+</div>
+</header>
+<!-- Queue List -->
+<div class="flex-grow overflow-y-auto no-scrollbar px-2">
+<div class="space-y-1 pb-32">
+<!-- Track Item: Active -->
+<div class="group flex items-center gap-4 px-4 py-3 rounded-xl bg-surface-container-low border border-primary-container/40 amber-glow">
+<span class="text-primary font-black w-4 text-xs">01</span>
+<div class="w-12 h-12 rounded bg-surface-container-highest overflow-hidden relative">
+<img class="w-full h-full object-cover" data-alt="album art thumbnail" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAYTpZFPQZxz0-B8JAutAvR-kHqN7ZnGE6dMaeYVv1cas_91WrzCwU1ercj4bDe3IH_jmFyQ_KXuy9Uh8le5n4dpkQZnnJ8K-17RI1OEoAZHMwfYGzLR2dbBEUfT_wQzhnwpqgzl_tamtxgKbpk9TiMnv7_moa6ZObYYonXpgPItw2b3pSbkFMB0UfS7FZfctH9Lcl8SwsVjerO4fbP3_MZt7tlh7ohufb-1EQStWm1nBfi1AtTP0bZd4v3hRgqzskpRfDdLuKZlJ5i"/>
+<div class="absolute inset-0 bg-primary-container/20 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary-container text-xl" style="font-variation-settings: 'FILL' 1;">volume_up</span>
+</div>
+</div>
+<div class="flex-grow min-w-0">
+<div class="text-primary font-bold truncate">Vanta Black Symphony</div>
+<div class="text-on-surface-variant text-xs truncate">The Curator Ensemble</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-error opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">delete_sweep</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-grab active:cursor-grabbing">drag_indicator</span>
+</div>
+</div>
+<!-- Track Item -->
+<div class="group flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-surface-container-high transition-colors">
+<span class="text-on-surface-variant font-bold w-4 text-xs opacity-40">02</span>
+<div class="w-12 h-12 rounded bg-surface-container-highest overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="dark atmospheric textures with high contrast" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDWxKfStwgt4ItaNegOWI1cmZ5SK4vtAOGbqf80A5QVAcm5RN-3TXitCi-jWafDnLTyb2oJ26nLn5kzH_FX7aQdbtqc_TMf48wCn4F0Kq2JnWzNgFaRsqj4PwTXj_H-N4TpUeSLIjMXxsxXVv1kEQi-s9nsyTEeMxQi17B1pN5U9FKgynDGGk-PenVKqyhmhgdGAn3f87luZOBv2ySC4u1j4Fjq2RHKL4M0Krf83CewsJkwOLNTzpf4Fir02xG-ZMdkA7d63Vbp46AN"/>
+</div>
+<div class="flex-grow min-w-0">
+<div class="text-on-surface font-bold truncate">Echoes of the Void</div>
+<div class="text-on-surface-variant text-xs truncate">Static Horizon</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-error opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">delete_sweep</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-grab">drag_indicator</span>
+</div>
+</div>
+<!-- Track Item -->
+<div class="group flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-surface-container-high transition-colors">
+<span class="text-on-surface-variant font-bold w-4 text-xs opacity-40">03</span>
+<div class="w-12 h-12 rounded bg-surface-container-highest overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="minimalist studio gear in dark shadows" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBJIQIrfHydYk8F2r8G8vyyWbXIfhz1atYvLposST3JmaYVH9CIOXQZZCihGeGNSJorQMUNjVoT6sMI19_fDhUpaS_rrK7e5dzpu__hZ5n8mGjOI80pdMwd8ldcq-CNLuxXNYaotL0q-TVtWpoH8j1fxXMSsyWdX6Q2ly8rjUlC55IGvoHnSbgwLemFngvNTAPsQKUCb5gI43TGpCEReqQQOYzTZ6saGEQagbGskSGKGaoCM9RIwpfMzzjlCU5rXVH-ms4nawmOMqOW"/>
+</div>
+<div class="flex-grow min-w-0">
+<div class="text-on-surface font-bold truncate">Vacuum Tube Warmth</div>
+<div class="text-on-surface-variant text-xs truncate">Analog Soul</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-error opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">delete_sweep</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-grab">drag_indicator</span>
+</div>
+</div>
+<!-- Track Item -->
+<div class="group flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-surface-container-high transition-colors">
+<span class="text-on-surface-variant font-bold w-4 text-xs opacity-40">04</span>
+<div class="w-12 h-12 rounded bg-surface-container-highest overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="crowd in silhouette at a concert with teal lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB5etz_apLxHBp1fg12-RaHdlaKMz--0mc2cLK30pZPi9EYxmzBgISASpRwZ4nbMN6IVlW2fGu4gFBywsKZxmRzuoFQvMuSvGMM2yymfoZlOwbeZC33PJXGNoJU__d-YSuToLTXoPd3InPB59ilpdWTPp6_C_uRW9MjXetfDh9PGpDx0Egzm30gbGdj-9HvjepEVDtXUBENVmJjk2eS41lB9CixmPfOmB3QGjKKF5vFB6Yo1DcniEGvFyZCW6mtyUnMc2L3wguDPjwd"/>
+</div>
+<div class="flex-grow min-w-0">
+<div class="text-on-surface font-bold truncate">Phase Shift</div>
+<div class="text-on-surface-variant text-xs truncate">The Synthesis</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-error opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">delete_sweep</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-grab">drag_indicator</span>
+</div>
+</div>
+<!-- Track Item -->
+<div class="group flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-surface-container-high transition-colors">
+<span class="text-on-surface-variant font-bold w-4 text-xs opacity-40">05</span>
+<div class="w-12 h-12 rounded bg-surface-container-highest overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="macro shot of microphone mesh with dramatic lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDWmFrpMcvsgI2OonnOEjAb926wRP31e7cQGr7Zvl7ZGttEr7eRPs1ILnOgr_y501cllv9OeCGzb750I8ysdZD2r_DRZ-ZNrovEnxyb3TEn8AUoTofWhb6pbOaksaflubkVpZZ2i5R932_4Ykeoj8VG3_3_-3TcshQ_fOUU4PTKG0oIH8_FgW7JpH7jGyuKHj4r9_v-6OZPQK1jpVNfO2Gxbqbqkz16ZS6czE9PIePkWX62jWVUCVFDuMG5YloSRRLW7d38QtWej4rl"/>
+</div>
+<div class="flex-grow min-w-0">
+<div class="text-on-surface font-bold truncate">Ghost in the Shell</div>
+<div class="text-on-surface-variant text-xs truncate">Cyber-Organic</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-error opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">delete_sweep</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-grab">drag_indicator</span>
+</div>
+</div>
+<!-- Track Item -->
+<div class="group flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-surface-container-high transition-colors">
+<span class="text-on-surface-variant font-bold w-4 text-xs opacity-40">06</span>
+<div class="w-12 h-12 rounded bg-surface-container-highest overflow-hidden">
+<img class="w-full h-full object-cover grayscale" data-alt="turntable stylus on a record in low light" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBvTMEEYZQabP_E6eHIf3YSlYuo1al3KliIuz6rGgQgrgZS6jswv_fdkYDbocibWOMG4ZCUIIExnL_VihXFKPVRN4fLwr6CEJ15a5Rhc3cCMQBz5FdFHx4fCKkjllj8JikNVlehLEQBfGCEv7VWA-v4ermpa2rjIeRJ3B3Pon9sQEKBHRhNpikobVaopRJRoVXHHHhyljWasNzFCgKvIpzLMJ344SPGsTIvHgwBgQCEc08uIvjnSAhGV_Y5HYpHhTPw0zH4_UJ05xN_"/>
+</div>
+<div class="flex-grow min-w-0">
+<div class="text-on-surface font-bold truncate">High Fidelity Dreams</div>
+<div class="text-on-surface-variant text-xs truncate">Audiophile Collective</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-error opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">delete_sweep</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-grab">drag_indicator</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Bottom Navigation Shell -->
+<div class="fixed bottom-0 left-0 w-full flex justify-around items-center pt-3 pb-8 px-4 bg-[#131313]/80 backdrop-blur-xl z-50 shadow-[0_-8px_32px_rgba(0,0,0,0.6)]">
+<div class="flex flex-col items-center justify-center text-[#FFBF00] transition-all cursor-pointer">
+<span class="material-symbols-outlined mb-1">play_circle</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-[0.05rem] font-bold">Now Playing</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#e5e2e1]/40 hover:text-[#76d6d5] transition-all cursor-pointer active:scale-90 duration-200">
+<span class="material-symbols-outlined mb-1">library_music</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-[0.05rem] font-bold">Library</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#e5e2e1]/40 hover:text-[#76d6d5] transition-all cursor-pointer active:scale-90 duration-200">
+<span class="material-symbols-outlined mb-1">speaker_group</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-[0.05rem] font-bold">Renderers</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#e5e2e1]/40 hover:text-[#76d6d5] transition-all cursor-pointer active:scale-90 duration-200">
+<span class="material-symbols-outlined mb-1">layers</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-[0.05rem] font-bold">Zones</span>
+</div>
+</div>
+</body></html>
