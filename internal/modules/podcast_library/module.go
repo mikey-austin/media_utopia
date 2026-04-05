@@ -38,6 +38,22 @@ type Config struct {
 	ReverseSortByDate bool
 }
 
+type feedRef struct {
+	URL  string
+	Type string // "rss" or "youtube"
+}
+
+func (m *Module) allFeeds() []feedRef {
+	refs := make([]feedRef, 0, len(m.config.Feeds)+len(m.config.YoutubePlaylists))
+	for _, u := range m.config.Feeds {
+		refs = append(refs, feedRef{URL: u, Type: "rss"})
+	}
+	for _, u := range m.config.YoutubePlaylists {
+		refs = append(refs, feedRef{URL: u, Type: "youtube"})
+	}
+	return refs
+}
+
 // cmdWork represents a command to be processed by a worker.
 type cmdWork struct {
 	cmd mu.CommandEnvelope
@@ -355,7 +371,7 @@ func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvel
 
 func (m *Module) browseItems(containerID string, start int64, count int64) ([]libraryItem, int64, error) {
 	if containerID == "" {
-		items := make([]libraryItem, 0, len(m.config.Feeds)+1)
+		items := make([]libraryItem, 0, len(m.allFeeds())+1)
 		items = append(items, libraryItem{
 			ItemID:    latestContainerID,
 			Name:      "Latest",
@@ -363,10 +379,10 @@ func (m *Module) browseItems(containerID string, start int64, count int64) ([]li
 			MediaType: "Unknown",
 			Overview:  "Latest episode from each podcast",
 		})
-		for _, feedURL := range m.config.Feeds {
-			feed, err := m.loadFeed(feedURL)
+		for _, ref := range m.allFeeds() {
+			feed, err := m.loadFeed(ref.URL)
 			if err != nil {
-				m.log.Warn("load feed", zap.String("feed", feedURL), zap.Error(err))
+				m.log.Warn("load feed", zap.String("feed", ref.URL), zap.Error(err))
 				continue
 			}
 			items = append(items, libraryItem{
@@ -429,10 +445,10 @@ const latestContainerID = "latest"
 
 func (m *Module) browseLatest(start int64, count int64) ([]libraryItem, int64, error) {
 	items := []libraryItem{}
-	for _, feedURL := range m.config.Feeds {
-		feed, err := m.loadFeed(feedURL)
+	for _, ref := range m.allFeeds() {
+		feed, err := m.loadFeed(ref.URL)
 		if err != nil {
-			m.log.Warn("load feed", zap.String("feed", feedURL), zap.Error(err))
+			m.log.Warn("load feed", zap.String("feed", ref.URL), zap.Error(err))
 			continue
 		}
 		episode, ok := latestEpisode(feed.Feed.Episodes)
@@ -487,10 +503,10 @@ func (m *Module) searchItems(query string, start int64, count int64, types []str
 		published int64
 	}
 	results := []searchItem{}
-	for _, feedURL := range m.config.Feeds {
-		feed, err := m.loadFeed(feedURL)
+	for _, ref := range m.allFeeds() {
+		feed, err := m.loadFeed(ref.URL)
 		if err != nil {
-			m.log.Warn("load feed", zap.String("feed", feedURL), zap.Error(err))
+			m.log.Warn("load feed", zap.String("feed", ref.URL), zap.Error(err))
 			continue
 		}
 		if matchesQuery(query, feed.Feed.Title, feed.Feed.Description) && typeAllowed(typeSet, "Podcast", "Unknown") {
@@ -576,8 +592,8 @@ func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, 
 }
 
 func (m *Module) findEpisode(itemID string) (*cachedEpisode, *cachedFeed) {
-	for _, feedURL := range m.config.Feeds {
-		feed, err := m.loadFeed(feedURL)
+	for _, ref := range m.allFeeds() {
+		feed, err := m.loadFeed(ref.URL)
 		if err != nil {
 			continue
 		}
@@ -590,11 +606,11 @@ func (m *Module) findEpisode(itemID string) (*cachedEpisode, *cachedFeed) {
 }
 
 func (m *Module) loadFeedByID(feedID string) (*feedCache, error) {
-	for _, feedURL := range m.config.Feeds {
-		if hashID("feed", feedURL) != feedID {
+	for _, ref := range m.allFeeds() {
+		if hashID("feed", ref.URL) != feedID {
 			continue
 		}
-		return m.loadFeed(feedURL)
+		return m.loadFeed(ref.URL)
 	}
 	return nil, errors.New("feed not found")
 }

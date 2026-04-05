@@ -397,6 +397,55 @@ func TestBrowsePagination(t *testing.T) {
 	}
 }
 
+func TestAllFeedsIncludesYoutube(t *testing.T) {
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	feeds := module.allFeeds()
+	if len(feeds) != 1 {
+		t.Fatalf("expected 1 feed, got %d", len(feeds))
+	}
+	if feeds[0].URL != "https://www.youtube.com/playlist?list=PLabc" {
+		t.Fatalf("unexpected URL: %s", feeds[0].URL)
+	}
+	if feeds[0].Type != "youtube" {
+		t.Fatalf("expected type=youtube, got %s", feeds[0].Type)
+	}
+}
+
+func TestAllFeedsMergesBoth(t *testing.T) {
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		Feeds:            []string{"https://example.com/feed.xml"},
+		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	feeds := module.allFeeds()
+	if len(feeds) != 2 {
+		t.Fatalf("expected 2 feeds, got %d", len(feeds))
+	}
+	if feeds[0].Type != "rss" {
+		t.Fatalf("expected first feed type=rss, got %s", feeds[0].Type)
+	}
+	if feeds[1].Type != "youtube" {
+		t.Fatalf("expected second feed type=youtube, got %s", feeds[1].Type)
+	}
+}
+
 func mustJSON(v any) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {
