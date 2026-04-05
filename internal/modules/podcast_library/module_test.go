@@ -546,6 +546,57 @@ const testFeed = `<?xml version="1.0" encoding="UTF-8"?>
 </channel>
 </rss>`
 
+func TestBrowseYoutubeFeed(t *testing.T) {
+	playlistURL := "https://www.youtube.com/playlist?list=PLabc"
+
+	ytOutput := strings.Join([]string{
+		`{"id":"abc123","title":"YT Episode One","description":"First yt ep","upload_date":"20240601","duration":3600,"uploader":"TestChannel","channel":"TestChannel","thumbnail":"https://i.ytimg.com/vi/abc123/hq.jpg","playlist_title":"My YT Podcast"}`,
+		`{"id":"def456","title":"YT Episode Two","description":"Second yt ep","upload_date":"20240615","duration":1800,"uploader":"TestChannel","channel":"TestChannel","thumbnail":"https://i.ytimg.com/vi/def456/hq.jpg","playlist_title":"My YT Podcast"}`,
+	}, "\n")
+
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{playlistURL},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+		YtDlpPath:        "echo",
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+	// Override runYtDlp to return test data.
+	module.ytDlpRunner = func(ctx context.Context, args ...string) ([]byte, error) {
+		return []byte(ytOutput), nil
+	}
+
+	// Browse root — should show the YouTube playlist.
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{})}
+	reply := module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var browse libraryItemsReply
+	if err := json.Unmarshal(reply.Body, &browse); err != nil {
+		t.Fatalf("browse decode: %v", err)
+	}
+	// "Latest" + 1 YouTube feed.
+	if len(browse.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(browse.Items))
+	}
+	if browse.Items[1].Name != "My YT Podcast" {
+		t.Fatalf("expected 'My YT Podcast', got %q", browse.Items[1].Name)
+	}
+
+	// Browse into the YouTube feed.
+	feedID := browse.Items[1].ItemID
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryBrowseBody{ContainerID: feedID})}
+	reply = module.libraryBrowse(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if err := json.Unmarshal(reply.Body, &browse); err != nil {
+		t.Fatalf("episodes decode: %v", err)
+	}
+	if len(browse.Items) != 2 {
+		t.Fatalf("expected 2 episodes, got %d", len(browse.Items))
+	}
+}
+
 func TestParseYtDlpPlaylist(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
 		NodeID:           "mu:library:podcast:test",

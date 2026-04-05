@@ -63,15 +63,16 @@ type cmdWork struct {
 
 // Module provides podcast library behavior.
 type Module struct {
-	log      *zap.Logger
-	client   *mqttserver.Client
-	http     *http.Client
-	config   Config
-	cmdTopic string
-	cmdQueue chan cmdWork
-	dedup    *mu.CommandDedup
-	cacheMu  sync.Mutex
-	feeds    map[string]*feedCache
+	log         *zap.Logger
+	client      *mqttserver.Client
+	http        *http.Client
+	config      Config
+	cmdTopic    string
+	cmdQueue    chan cmdWork
+	dedup       *mu.CommandDedup
+	cacheMu     sync.Mutex
+	feeds       map[string]*feedCache
+	ytDlpRunner func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 type feedCache struct {
@@ -156,7 +157,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
 
-	return &Module{
+	m := &Module{
 		log:      log,
 		client:   client,
 		http:     &http.Client{Timeout: cfg.Timeout},
@@ -165,7 +166,9 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		cmdQueue: make(chan cmdWork, 64),
 		dedup:    mu.NewCommandDedup(128),
 		feeds:    make(map[string]*feedCache),
-	}, nil
+	}
+	m.ytDlpRunner = m.runYtDlp
+	return m, nil
 }
 
 // Run starts the module.
@@ -382,7 +385,7 @@ func (m *Module) browseItems(containerID string, start int64, count int64) ([]li
 			Overview:  "Latest episode from each podcast",
 		})
 		for _, ref := range m.allFeeds() {
-			feed, err := m.loadFeed(ref.URL)
+			feed, err := m.loadFeed(ref.URL, ref.Type)
 			if err != nil {
 				m.log.Warn("load feed", zap.String("feed", ref.URL), zap.Error(err))
 				continue
@@ -448,7 +451,7 @@ const latestContainerID = "latest"
 func (m *Module) browseLatest(start int64, count int64) ([]libraryItem, int64, error) {
 	items := []libraryItem{}
 	for _, ref := range m.allFeeds() {
-		feed, err := m.loadFeed(ref.URL)
+		feed, err := m.loadFeed(ref.URL, ref.Type)
 		if err != nil {
 			m.log.Warn("load feed", zap.String("feed", ref.URL), zap.Error(err))
 			continue
@@ -506,7 +509,7 @@ func (m *Module) searchItems(query string, start int64, count int64, types []str
 	}
 	results := []searchItem{}
 	for _, ref := range m.allFeeds() {
-		feed, err := m.loadFeed(ref.URL)
+		feed, err := m.loadFeed(ref.URL, ref.Type)
 		if err != nil {
 			m.log.Warn("load feed", zap.String("feed", ref.URL), zap.Error(err))
 			continue
@@ -595,7 +598,7 @@ func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, 
 
 func (m *Module) findEpisode(itemID string) (*cachedEpisode, *cachedFeed) {
 	for _, ref := range m.allFeeds() {
-		feed, err := m.loadFeed(ref.URL)
+		feed, err := m.loadFeed(ref.URL, ref.Type)
 		if err != nil {
 			continue
 		}
@@ -612,12 +615,12 @@ func (m *Module) loadFeedByID(feedID string) (*feedCache, error) {
 		if hashID("feed", ref.URL) != feedID {
 			continue
 		}
-		return m.loadFeed(ref.URL)
+		return m.loadFeed(ref.URL, ref.Type)
 	}
 	return nil, errors.New("feed not found")
 }
 
-func (m *Module) loadFeed(feedURL string) (*feedCache, error) {
+func (m *Module) loadFeed(feedURL string, feedType string) (*feedCache, error) {
 	feedID := hashID("feed", feedURL)
 
 	m.cacheMu.Lock()
@@ -637,7 +640,13 @@ func (m *Module) loadFeed(feedURL string) (*feedCache, error) {
 		return feed, nil
 	}
 
-	fetched, fetchErr := m.fetchFeed(feedURL)
+	var fetched *cachedFeed
+	var fetchErr error
+	if feedType == "youtube" {
+		fetched, fetchErr = m.fetchYoutubeFeed(feedURL)
+	} else {
+		fetched, fetchErr = m.fetchFeed(feedURL)
+	}
 	if fetchErr != nil {
 		if cached != nil {
 			feed := &feedCache{Feed: *cached, ByID: indexEpisodes(cached.Episodes)}
@@ -1087,7 +1096,7 @@ func (m *Module) fetchYoutubeFeed(feedURL string) (*cachedFeed, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	out, err := m.runYtDlp(ctx, "--flat-playlist", "--dump-json", feedURL)
+	out, err := m.ytDlpRunner(ctx, "--flat-playlist", "--dump-json", feedURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch youtube feed: %w", err)
 	}
