@@ -5,9 +5,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mediautopia.app.data.cache.MetadataCache
 import com.mediautopia.app.data.cache.ResolvedMetadata
-import com.mediautopia.app.data.protocol.LibraryResolveBatchBody
-import com.mediautopia.app.data.protocol.LibraryResolveBatchReply
 import com.mediautopia.app.data.protocol.QueueGetBody
+import com.mediautopia.app.data.protocol.artistString
+import com.mediautopia.app.data.protocol.artworkUrl
+import com.mediautopia.app.data.protocol.title
 import com.mediautopia.app.data.protocol.QueueGetReply
 import com.mediautopia.app.data.protocol.QueueItem
 import com.mediautopia.app.data.protocol.QueueMoveBody
@@ -18,6 +19,7 @@ import com.mediautopia.app.data.protocol.QueueShuffleBody
 import com.mediautopia.app.data.protocol.PlaybackPlayBody
 import com.mediautopia.app.data.protocol.RendererState
 import com.mediautopia.app.data.repository.ActiveRendererRepository
+import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
 import com.mediautopia.app.domain.usecase.CommandCorrelator
@@ -71,6 +73,7 @@ class QueueViewModel @Inject constructor(
     private val activeRendererRepository: ActiveRendererRepository,
     private val rendererStateRepository: RendererStateRepository,
     private val nodeRepository: NodeRepository,
+    private val libraryRepository: LibraryRepository,
     private val metadataCache: MetadataCache,
     private val leaseManager: LeaseManager,
     private val correlator: CommandCorrelator,
@@ -197,13 +200,13 @@ class QueueViewModel @Inject constructor(
             val inlineMeta = item.metadata
             val cached = metadataCache.get(item.itemId)
 
-            val title = inlineMeta?.stringValue("title")
+            val title = inlineMeta?.title()
                 ?: cached?.title
-                ?: item.itemId.substringAfterLast("/")
-            val artist = inlineMeta?.stringValue("artist")
+                ?: item.itemId.substringAfterLast(":")
+            val artist = inlineMeta?.artistString()
                 ?: cached?.artist
                 ?: ""
-            val artworkUrl = inlineMeta?.stringValue("artworkUrl")
+            val artworkUrl = inlineMeta?.artworkUrl()
                 ?: cached?.artworkUrl
             val durationMs = inlineMeta?.longValue("durationMs")
                 ?: cached?.durationMs
@@ -254,54 +257,24 @@ class QueueViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Find a library node to resolve against.
-                val libraryNode = nodeRepository.nodes.value.values
-                    .firstOrNull { it.kind == "library" }
-                    ?: return@launch
-
-                val body = json.encodeToJsonElement(
-                    LibraryResolveBatchBody(itemIds = missingIds, metadataOnly = true)
-                )
-                val reply = correlator.send(
-                    nodeId = libraryNode.nodeId,
-                    cmdType = "library.resolveBatch",
-                    body = body,
-                )
-
-                if (!reply.ok || reply.body == null) {
-                    missingIds.forEach { metadataCache.markFailed(it) }
-                    return@launch
-                }
-
-                val batchReply = json.decodeFromJsonElement<LibraryResolveBatchReply>(reply.body!!)
-
-                // Cache resolved metadata.
-                for (resolved in batchReply.items) {
-                    if (resolved.err != null) {
-                        metadataCache.markFailed(resolved.itemId)
-                        continue
-                    }
-                    val meta = resolved.metadata ?: continue
-                    cacheFromInline(resolved.itemId, meta)
-                }
+                // Use LibraryRepository which handles lib: prefix stripping
+                // and routing to the correct library node.
+                val resolved = libraryRepository.resolveBatch(missingIds)
 
                 // Update entries with newly resolved metadata.
                 _entries.value = _entries.value.map { entry ->
-                    if (entry.itemId in missingIds) {
-                        val cached = metadataCache.get(entry.itemId)
-                        if (cached != null) {
-                            entry.copy(
-                                title = cached.title.ifEmpty { entry.title },
-                                artist = cached.artist,
-                                artworkUrl = cached.artworkUrl ?: entry.artworkUrl,
-                                durationMs = if (cached.durationMs > 0) cached.durationMs else entry.durationMs,
-                            )
-                        } else entry
+                    val meta = resolved[entry.itemId] ?: metadataCache.get(entry.itemId)
+                    if (meta != null && entry.itemId in missingIds) {
+                        entry.copy(
+                            title = meta.title.ifEmpty { entry.title },
+                            artist = meta.artist,
+                            artworkUrl = meta.artworkUrl ?: entry.artworkUrl,
+                            durationMs = if (meta.durationMs > 0) meta.durationMs else entry.durationMs,
+                        )
                     } else entry
                 }
             } catch (e: Exception) {
                 Log.e(tag, "resolveMissingMetadata failed: ${e.message}")
-                missingIds.forEach { metadataCache.markFailed(it) }
             }
         }
     }

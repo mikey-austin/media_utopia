@@ -23,12 +23,13 @@ import com.mediautopia.app.ui.screen.library.LibraryScreen
 import com.mediautopia.app.ui.screen.nowplaying.NowPlayingScreen
 import com.mediautopia.app.ui.screen.renderers.RenderersScreen
 import com.mediautopia.app.ui.screen.settings.SettingsScreen
+import com.mediautopia.app.ui.screen.queue.QueueSheet
 import com.mediautopia.app.ui.screen.zones.ZonesScreen
 
 private val bottomNavItems = listOf(
     Screen.NowPlaying,
+    Screen.Queue,
     Screen.Library,
-    Screen.Renderers,
     Screen.Zones,
 )
 
@@ -43,6 +44,11 @@ fun AppNavigation() {
             TopHeader(
                 onSettingsClick = {
                     navController.navigate(Screen.Settings.route) {
+                        launchSingleTop = true
+                    }
+                },
+                onRenderersClick = {
+                    navController.navigate(Screen.Renderers.route) {
                         launchSingleTop = true
                     }
                 },
@@ -97,6 +103,7 @@ fun AppNavigation() {
             modifier = Modifier.padding(innerPadding),
         ) {
             composable(Screen.NowPlaying.route) { NowPlayingScreen() }
+            composable(Screen.Queue.route) { QueueSheet() }
             composable(Screen.Library.route) { LibraryScreen() }
             composable(Screen.Renderers.route) { RenderersScreen() }
             composable(Screen.Zones.route) { ZonesScreen() }

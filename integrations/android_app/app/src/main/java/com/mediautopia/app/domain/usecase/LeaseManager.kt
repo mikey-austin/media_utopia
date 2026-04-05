@@ -150,7 +150,7 @@ class LeaseManager @Inject constructor(
         val cached = CachedLease(
             sessionId = sessionReply.session.id,
             token = sessionReply.session.token,
-            expiresAt = sessionReply.session.leaseExpiresAt,
+            expiresAt = sessionReply.session.leaseExpiresAt * 1000, // server sends unix seconds, we use millis
         )
         leases[rendererId] = cached
 
@@ -188,7 +188,7 @@ class LeaseManager @Inject constructor(
         val renewed = CachedLease(
             sessionId = sessionReply.session.id,
             token = sessionReply.session.token,
-            expiresAt = sessionReply.session.leaseExpiresAt,
+            expiresAt = sessionReply.session.leaseExpiresAt * 1000, // server sends unix seconds, we use millis
         )
         leases[rendererId] = renewed
 
