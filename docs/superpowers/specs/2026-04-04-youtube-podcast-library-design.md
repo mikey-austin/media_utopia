@@ -10,56 +10,44 @@ Rather than creating a separate YouTube library module, we extend the existing p
 
 ### Config Changes
 
-The `Feeds` field changes from `[]string` to a list of typed feed entries:
+The existing `feeds` field remains unchanged for RSS URLs. A new `youtube_playlists` field is added alongside it:
 
 ```toml
-# RSS feed (default type, backward compatible intent)
-[[modules.podcast.default.feeds]]
-url = "https://example.com/feed.xml"
-type = "rss"
-
-# YouTube playlist
-[[modules.podcast.default.feeds]]
-url = "https://www.youtube.com/playlist?list=PLxyz"
-type = "youtube"
-
-# YouTube channel
-[[modules.podcast.default.feeds]]
-url = "https://www.youtube.com/@ChannelName"
-type = "youtube"
+[modules.podcast.default]
+enabled = true
+name = "Podcasts"
+feeds = [
+    "https://example.com/feed.xml",
+    "https://other.com/podcast.rss",
+]
+youtube_playlists = [
+    "https://www.youtube.com/playlist?list=PLxyz",
+    "https://www.youtube.com/@ChannelName",
+]
+yt_dlp_path = "yt-dlp"  # optional, defaults to "yt-dlp"
 ```
-
-A new optional config field `yt_dlp_path` (default: `"yt-dlp"`) allows specifying the binary location.
 
 **Config structs:**
 
-In `internal/mud/config.go`, `PodcastLibraryConfig.Feeds` changes from `[]string` to `[]PodcastFeedConfig`:
+In `internal/mud/config.go`, two fields are added to `PodcastLibraryConfig`:
 
 ```go
-type PodcastFeedConfig struct {
-    URL  string `toml:"url"`
-    Type string `toml:"type"` // "rss" (default) or "youtube"
-}
+YoutubePlayists []string `toml:"youtube_playlists"`
+YtDlpPath       string   `toml:"yt_dlp_path"`
 ```
 
-A new field is added:
+In `internal/modules/podcast_library/module.go`, two fields are added to `Config`:
 
 ```go
-YtDlpPath string `toml:"yt_dlp_path"` // default: "yt-dlp"
+YoutubePlayists []string
+YtDlpPath       string // default: "yt-dlp"
 ```
 
-In `internal/modules/podcast_library/module.go`, `Config.Feeds` changes from `[]string` to `[]FeedEntry`:
-
-```go
-type FeedEntry struct {
-    URL  string
-    Type string // "rss" or "youtube"
-}
-```
+The existing `Feeds []string` field is untouched.
 
 ### YouTube Metadata Fetch
 
-During periodic scan, for feeds with `type = "youtube"`, the module runs:
+During periodic scan, for each URL in `YoutubePlaylists`, the module runs:
 
 ```
 yt-dlp --flat-playlist --dump-json <url>
@@ -82,6 +70,10 @@ The channel/playlist title is extracted from the first entry's `playlist_title` 
 The `AudioURL` field stores `ytid:<videoID>` during scan instead of a direct stream URL, since YouTube stream URLs expire.
 
 The `cachedFeed` structure is reused without changes. The `FeedURL` stores the original YouTube URL.
+
+### Feed Dispatch
+
+The module iterates over both `config.Feeds` (RSS) and `config.YoutubePlaylists` (YouTube) when browsing, searching, and resolving. The `loadFeed` method is extended to accept a feed type parameter, dispatching to either the existing RSS parser or the new yt-dlp fetcher. Both produce the same `cachedFeed` structure, so all downstream browse/search/resolve logic is shared.
 
 ### YouTube Resolve (On-Demand Stream Extraction)
 
@@ -128,20 +120,20 @@ func (m *Module) runYtDlp(ctx context.Context, args ...string) ([]byte, error)
 
 ### Error Handling
 
-- **yt-dlp not found:** At module startup, if any feed has `type = "youtube"`, the module checks that the yt-dlp binary exists. If not, it logs an error and skips YouTube feeds (RSS feeds continue working).
+- **yt-dlp not found:** At module startup, if `YoutubePlaylists` is non-empty, the module checks that the yt-dlp binary exists. If not, it logs an error and skips YouTube playlists (RSS feeds continue working).
 - **Scan failure:** If yt-dlp fails during periodic metadata fetch (network, rate limit, etc.), the module falls back to the on-disk JSON cache — same pattern as existing RSS fetch failures.
 - **Resolve failure:** If yt-dlp fails at resolve time, an error reply is sent to the renderer — same as the existing "episode has no audio url" path.
 - **Timeout:** yt-dlp calls use context deadlines to prevent hanging.
 
 ### Backward Compatibility
 
-The TOML config format changes from `feeds = ["url1", "url2"]` to a TOML array of tables. Existing configs will need to be updated. Since this is a personal project with a single deployment, a migration path is not needed — just update the config.
+Fully backward compatible. The existing `feeds` field is unchanged. The new `youtube_playlists` and `yt_dlp_path` fields are optional — existing configs work without modification.
 
 ### Files Modified
 
-1. **`internal/mud/config.go`** — Add `PodcastFeedConfig` struct, change `PodcastLibraryConfig.Feeds` type, add `YtDlpPath` field
-2. **`internal/modules/podcast_library/module.go`** — Add `FeedEntry` type, YouTube fetch logic, resolve dispatch for `ytid:` URLs, resolved URL cache, yt-dlp exec helper
-3. **`cmd/mud/main.go`** — Update podcast config mapping to pass new `FeedEntry` slice and `YtDlpPath`
+1. **`internal/mud/config.go`** — Add `YoutubePlaylists` and `YtDlpPath` fields to `PodcastLibraryConfig`
+2. **`internal/modules/podcast_library/module.go`** — Add YouTube fetch logic, resolve dispatch for `ytid:` URLs, resolved URL cache, yt-dlp exec helper
+3. **`cmd/mud/main.go`** — Pass new `YoutubePlaylists` and `YtDlpPath` config fields through to module
 4. **`Dockerfile`** — Add `yt-dlp` and `python3` to the runtime image (yt-dlp requires Python)
 
 ### Verification
