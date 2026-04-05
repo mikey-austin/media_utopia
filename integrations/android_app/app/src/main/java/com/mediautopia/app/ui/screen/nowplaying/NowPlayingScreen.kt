@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -27,6 +29,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.outlined.Speaker
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -93,18 +96,22 @@ private fun NowPlayingContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(modifier = Modifier.height(16.dp))
+        // Active renderer indicator.
+        RendererIndicator(name = state.rendererName)
 
-        // Album artwork.
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Album artwork (constrained height so controls always fit).
         ArtworkSection(
             artworkUrl = state.artworkUrl,
             hiResInfo = state.hiResInfo,
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         // Track metadata.
         MetadataSection(
@@ -113,7 +120,7 @@ private fun NowPlayingContent(
             album = state.album,
         )
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Seek scrubber.
         SeekSection(
@@ -122,7 +129,7 @@ private fun NowPlayingContent(
             onSeek = onSeek,
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         // Transport controls.
         TransportControls(
@@ -136,7 +143,7 @@ private fun NowPlayingContent(
             onToggleRepeat = onToggleRepeat,
         )
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Volume.
         VolumeSection(
@@ -144,7 +151,33 @@ private fun NowPlayingContent(
             onSetVolume = onSetVolume,
         )
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun RendererIndicator(name: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Speaker,
+            contentDescription = null,
+            tint = Secondary,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = name.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = Secondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -162,15 +195,14 @@ private fun ArtworkSection(
                 contentDescription = "Album artwork",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxWidth(0.85f)
                     .aspectRatio(1f)
                     .clip(ArtworkShape),
             )
         } else {
-            // Placeholder when no artwork is available.
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxWidth(0.85f)
                     .aspectRatio(1f)
                     .clip(ArtworkShape)
                     .background(SurfaceContainerHigh),
@@ -256,9 +288,7 @@ private fun SeekSection(
     var seekValue by remember { mutableStateOf(0f) }
     val interactionSource = remember { MutableInteractionSource() }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Slider(
             value = if (isSeeking) seekValue else sliderPosition,
             onValueChange = { value ->
@@ -314,7 +344,6 @@ private fun TransportControls(
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Shuffle.
         IconButton(onClick = onToggleShuffle) {
             Icon(
                 imageVector = Icons.Filled.Shuffle,
@@ -326,7 +355,6 @@ private fun TransportControls(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Previous.
         IconButton(onClick = onPrevious) {
             Icon(
                 imageVector = Icons.Filled.SkipPrevious,
@@ -338,7 +366,6 @@ private fun TransportControls(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Play / Pause — large circular button with amber gradient.
         PlayPauseButton(
             isPlaying = playbackStatus == "playing",
             onClick = onTogglePlayPause,
@@ -346,7 +373,6 @@ private fun TransportControls(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Next.
         IconButton(onClick = onNext) {
             Icon(
                 imageVector = Icons.Filled.SkipNext,
@@ -358,16 +384,13 @@ private fun TransportControls(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Repeat.
-        Box {
-            IconButton(onClick = onToggleRepeat) {
-                Icon(
-                    imageVector = if (repeatMode == "one") Icons.Filled.RepeatOne else Icons.Filled.Repeat,
-                    contentDescription = "Repeat",
-                    tint = if (repeatMode.isNotEmpty()) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(24.dp),
-                )
-            }
+        IconButton(onClick = onToggleRepeat) {
+            Icon(
+                imageVector = if (repeatMode == "one") Icons.Filled.RepeatOne else Icons.Filled.Repeat,
+                contentDescription = "Repeat",
+                tint = if (repeatMode.isNotEmpty()) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp),
+            )
         }
     }
 }

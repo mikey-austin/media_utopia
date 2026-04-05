@@ -191,7 +191,7 @@ data class LibraryResolveBody(
 data class LibraryResolveReply(
     val itemId: String,
     val metadata: JsonObject? = null,
-    val sources: List<ResolvedSource> = emptyList(),
+    val sources: List<ResolvedSource>? = null,
 )
 
 @Serializable
@@ -204,7 +204,7 @@ data class LibraryResolveBatchBody(
 data class LibraryResolveBatchItem(
     val itemId: String,
     val metadata: JsonObject? = null,
-    val sources: List<ResolvedSource> = emptyList(),
+    val sources: List<ResolvedSource>? = null,
     val err: ReplyError? = null,
 )
 

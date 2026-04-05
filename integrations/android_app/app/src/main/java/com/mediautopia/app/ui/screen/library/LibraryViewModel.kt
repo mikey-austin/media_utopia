@@ -9,6 +9,7 @@ import com.mediautopia.app.data.protocol.QueueEntry
 import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.BrowseItem
 import com.mediautopia.app.data.repository.LibraryRepository
+import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.domain.usecase.CommandCorrelator
 import com.mediautopia.app.domain.usecase.LeaseManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -47,6 +49,7 @@ data class BreadcrumbItem(
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
+    private val nodeRepository: NodeRepository,
     private val leaseManager: LeaseManager,
     private val correlator: CommandCorrelator,
     private val activeRendererRepository: ActiveRendererRepository,
@@ -67,9 +70,12 @@ class LibraryViewModel @Inject constructor(
 
     private var loadMoreJob: Job? = null
 
+    // Which library we're currently browsing (null = show library selector).
+    private var selectedLibraryNodeId: String? = null
+
     init {
-        // Initial browse of root.
-        browseContainer("")
+        // Show available libraries as the top-level view.
+        loadLibraryList()
 
         // Debounced search handler.
         viewModelScope.launch {
@@ -89,10 +95,53 @@ class LibraryViewModel @Inject constructor(
     }
 
     // -------------------------------------------------------------------------
+    // Library list (top-level view)
+    // -------------------------------------------------------------------------
+
+    private fun loadLibraryList() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            val libraries = nodeRepository.libraries.first()
+            val items = libraries.map { node ->
+                BrowseItem(
+                    id = node.nodeId,
+                    type = "Library",
+                    title = node.name,
+                    subtitle = node.nodeId.substringAfter("mu:library:").substringBefore(":"),
+                    isContainer = true,
+                )
+            }
+            _uiState.update { it.copy(items = items, isLoading = false) }
+        }
+    }
+
+    /**
+     * Select a library and browse its root.
+     */
+    fun selectLibrary(libraryNodeId: String, name: String) {
+        selectedLibraryNodeId = libraryNodeId
+        _uiState.update { state ->
+            state.copy(
+                breadcrumbs = listOf(
+                    BreadcrumbItem("", "Libraries"),
+                    BreadcrumbItem("__lib__:$libraryNodeId", name),
+                ),
+                isLoading = true,
+            )
+        }
+        browseContainerOnLibrary(libraryNodeId, "")
+    }
+
+    // -------------------------------------------------------------------------
     // Navigation
     // -------------------------------------------------------------------------
 
     fun navigateTo(containerId: String, label: String) {
+        // If at the library list level, this is a library selection.
+        if (selectedLibraryNodeId == null) {
+            selectLibrary(containerId, label)
+            return
+        }
         _uiState.update { state ->
             state.copy(
                 breadcrumbs = state.breadcrumbs + BreadcrumbItem(containerId, label),
@@ -106,6 +155,18 @@ class LibraryViewModel @Inject constructor(
     fun navigateBack(): Boolean {
         val currentBreadcrumbs = _uiState.value.breadcrumbs
         if (currentBreadcrumbs.size <= 1) return false
+
+        // Going back to library list.
+        if (currentBreadcrumbs.size == 2 && selectedLibraryNodeId != null) {
+            selectedLibraryNodeId = null
+            _uiState.update { it.copy(
+                breadcrumbs = listOf(BreadcrumbItem("", "Libraries")),
+                isSearching = false,
+                searchQuery = "",
+            ) }
+            loadLibraryList()
+            return true
+        }
 
         val newBreadcrumbs = currentBreadcrumbs.dropLast(1)
         val target = newBreadcrumbs.last()
@@ -126,6 +187,18 @@ class LibraryViewModel @Inject constructor(
     fun navigateToBreadcrumb(index: Int) {
         val currentBreadcrumbs = _uiState.value.breadcrumbs
         if (index < 0 || index >= currentBreadcrumbs.size) return
+
+        // Going back to library list.
+        if (index == 0 && selectedLibraryNodeId != null) {
+            selectedLibraryNodeId = null
+            _uiState.update { it.copy(
+                breadcrumbs = listOf(BreadcrumbItem("", "Libraries")),
+                isSearching = false,
+                searchQuery = "",
+            ) }
+            loadLibraryList()
+            return
+        }
 
         val newBreadcrumbs = currentBreadcrumbs.take(index + 1)
         val target = newBreadcrumbs.last()
@@ -318,7 +391,37 @@ class LibraryViewModel @Inject constructor(
     // Internal
     // -------------------------------------------------------------------------
 
+    private fun browseContainerOnLibrary(libraryNodeId: String, containerId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null) }
+            try {
+                val result = libraryRepository.browse(
+                    containerId = containerId,
+                    start = 0,
+                    count = pageSize,
+                    libraryNodeId = libraryNodeId,
+                )
+                _uiState.update { state ->
+                    state.copy(
+                        items = result.items,
+                        isLoading = false,
+                        hasMore = result.hasMore,
+                        error = null,
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "browseContainerOnLibrary failed: ${e.message}")
+                _uiState.update { it.copy(isLoading = false, error = e.message) }
+            }
+        }
+    }
+
     private fun browseContainer(containerId: String) {
+        val libId = selectedLibraryNodeId
+        if (libId != null) {
+            browseContainerOnLibrary(libId, containerId)
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
 

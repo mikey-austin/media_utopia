@@ -68,8 +68,9 @@ class LibraryRepository @Inject constructor(
         containerId: String,
         start: Long = 0,
         count: Long = 50,
+        libraryNodeId: String? = null,
     ): BrowseResult {
-        val libraryNode = findLibraryNode()
+        val libraryNode = libraryNodeId ?: findLibraryNode()
             ?: return BrowseResult(items = emptyList(), hasMore = false)
 
         val body = json.encodeToJsonElement(
@@ -253,10 +254,10 @@ class LibraryRepository @Inject constructor(
             Log.w(tag, "No library nodes available")
             return null
         }
-        // Prefer music libraries (filesystem, jellyfin) over cameras/podcasts.
-        val musicProviders = listOf("filesystem", "jellyfin")
-        val preferred = libraries.firstOrNull { node ->
-            musicProviders.any { node.nodeId.contains(it) }
+        // Prefer filesystem library (no auth needed), then jellyfin.
+        val providerPriority = listOf("filesystem", "jellyfin")
+        val preferred = providerPriority.firstNotNullOfOrNull { provider ->
+            libraries.firstOrNull { it.nodeId.contains(provider) }
         }
         return (preferred ?: libraries.first()).nodeId
     }
