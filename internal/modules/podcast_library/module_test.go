@@ -698,6 +698,35 @@ func TestParseYtDlpDescriptionTruncation(t *testing.T) {
 	}
 }
 
+func TestParseYtDlpThumbnailFallback(t *testing.T) {
+	module, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:           "mu:library:podcast:test",
+		TopicBase:        mu.BaseTopic,
+		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
+		CacheDir:         t.TempDir(),
+		RefreshInterval:  24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	// No thumbnail field — simulates --flat-playlist output.
+	jsonLine := `{"id":"vid99","title":"No Thumb","description":"desc","upload_date":"20240101","duration":60,"uploader":"Chan","channel":"Chan","playlist_title":"PL"}`
+
+	feed, err := module.parseYtDlpPlaylist("https://yt.test", []byte(jsonLine))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	expected := "https://i.ytimg.com/vi/vid99/hqdefault.jpg"
+	if feed.Episodes[0].ImageURL != expected {
+		t.Fatalf("expected fallback thumbnail %q, got %q", expected, feed.Episodes[0].ImageURL)
+	}
+	// Feed-level image should also be set from first episode.
+	if feed.ImageURL != expected {
+		t.Fatalf("expected feed image %q, got %q", expected, feed.ImageURL)
+	}
+}
+
 func TestResolveYoutubeEpisode(t *testing.T) {
 	playlistURL := "https://www.youtube.com/playlist?list=PLabc"
 

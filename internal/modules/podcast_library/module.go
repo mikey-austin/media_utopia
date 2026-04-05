@@ -1071,6 +1071,11 @@ func (m *Module) parseYtDlpPlaylist(feedURL string, data []byte) (*cachedFeed, e
 			desc = string([]rune(desc)[:500])
 		}
 
+		imageURL := entry.Thumbnail
+		if imageURL == "" {
+			imageURL = "https://i.ytimg.com/vi/" + entry.ID + "/hqdefault.jpg"
+		}
+
 		episodes = append(episodes, cachedEpisode{
 			ID:          hashID("episode", feedID+":"+entry.ID),
 			Title:       strings.TrimSpace(entry.Title),
@@ -1078,7 +1083,7 @@ func (m *Module) parseYtDlpPlaylist(feedURL string, data []byte) (*cachedFeed, e
 			Published:   parseUploadDate(entry.UploadDate),
 			DurationMS:  int64(entry.Duration * 1000),
 			AudioURL:    ytidPrefix + entry.ID,
-			ImageURL:    entry.Thumbnail,
+			ImageURL:    imageURL,
 			Author:      author,
 		})
 	}
@@ -1088,11 +1093,17 @@ func (m *Module) parseYtDlpPlaylist(feedURL string, data []byte) (*cachedFeed, e
 		title = feedURL
 	}
 
+	var feedImage string
+	if len(episodes) > 0 {
+		feedImage = episodes[0].ImageURL
+	}
+
 	return &cachedFeed{
 		FeedURL:   feedURL,
 		FeedID:    feedID,
 		Title:     title,
 		Author:    author,
+		ImageURL:  feedImage,
 		FetchedAt: time.Now().Unix(),
 		Episodes:  episodes,
 	}, nil
