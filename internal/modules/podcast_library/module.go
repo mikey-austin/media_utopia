@@ -16,6 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/sync/singleflight"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 	"github.com/mmcdole/gofeed"
@@ -72,8 +75,9 @@ type Module struct {
 	dedup       *mu.CommandDedup
 	cacheMu     sync.Mutex
 	feeds       map[string]*feedCache
-	ytDlpRunner  func(ctx context.Context, args ...string) ([]byte, error)
-	resolvedURLs resolvedURLCache
+	ytDlpRunner   func(ctx context.Context, args ...string) ([]byte, error)
+	resolvedURLs  resolvedURLCache
+	ytResolveOnce singleflight.Group
 }
 
 type feedCache struct {
@@ -1063,8 +1067,8 @@ func (m *Module) parseYtDlpPlaylist(feedURL string, data []byte) (*cachedFeed, e
 		}
 
 		desc := strings.TrimSpace(entry.Description)
-		if len(desc) > 500 {
-			desc = desc[:500]
+		if utf8.RuneCountInString(desc) > 500 {
+			desc = string([]rune(desc)[:500])
 		}
 
 		episodes = append(episodes, cachedEpisode{
@@ -1153,21 +1157,32 @@ func (m *Module) resolveYoutubeURL(videoID string) (string, error) {
 		return url, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	result, err, _ := m.ytResolveOnce.Do(videoID, func() (any, error) {
+		// Double-check cache inside singleflight to avoid redundant calls.
+		if url, ok := m.resolvedURLs.get(videoID); ok {
+			return url, nil
+		}
 
-	out, err := m.ytDlpRunner(ctx, "-f", "bestaudio", "-g", "--no-playlist", "https://www.youtube.com/watch?v="+videoID)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		out, err := m.ytDlpRunner(ctx, "-f", "bestaudio", "-g", "--no-playlist", "https://www.youtube.com/watch?v="+videoID)
+		if err != nil {
+			return "", err
+		}
+
+		url := strings.TrimSpace(string(out))
+		if url == "" {
+			return "", errors.New("yt-dlp returned empty URL")
+		}
+
+		m.resolvedURLs.set(videoID, url)
+		return url, nil
+	})
 	if err != nil {
 		return "", err
 	}
-
-	url := strings.TrimSpace(string(out))
-	if url == "" {
-		return "", errors.New("yt-dlp returned empty URL")
-	}
-
-	m.resolvedURLs.set(videoID, url)
-	return url, nil
+	return result.(string), nil
 }
 
 func errorReply(cmd mu.CommandEnvelope, code string, message string) mu.ReplyEnvelope {
