@@ -712,3 +712,9 @@ row > box > box > label.subtitle {
     color: @mu_primary;
     opacity: 1.0;
 }
+
+/* === Zones View === */
+.zone-source-dropdown {
+    background-color: @mu_surface_container_high;
+    border-radius: 8px;
+}

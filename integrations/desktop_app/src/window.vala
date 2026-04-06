@@ -262,7 +262,9 @@ namespace Mu {
                 new Mu.RenderersView (node_repo, state_repo,
                     active_renderer_repo, lease_mgr, mqtt),
                 "renderers");
-            content_stack.add_named (make_placeholder ("Zones"), "zones");
+            content_stack.add_named (
+                new Mu.ZonesView (node_repo, state_repo, correlator),
+                "zones");
             content_stack.add_named (
                 new Mu.SettingsView (settings, mqtt), "settings");
 
@@ -332,14 +334,5 @@ namespace Mu {
             return box;
         }
 
-        private Gtk.Widget make_placeholder (string view_name) {
-            var label = new Gtk.Label (view_name);
-            label.add_css_class ("heading-large");
-            label.halign = Gtk.Align.CENTER;
-            label.valign = Gtk.Align.CENTER;
-            label.hexpand = true;
-            label.vexpand = true;
-            return label;
-        }
     }
 }
