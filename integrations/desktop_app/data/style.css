@@ -419,24 +419,27 @@ switch:checked slider {
 }
 
 .album-art {
+    background-color: @mu_surface_container_low;
     border-radius: 12px;
     box-shadow: 0 8px 32px alpha(black, 0.4);
 }
 
 .track-title {
-    font-size: 24px;
-    font-weight: 700;
+    font-size: 28px;
+    font-weight: 600;
     color: @mu_on_surface;
 }
 
 .track-artist {
     font-size: 16px;
-    color: @mu_on_surface_variant;
+    color: @mu_primary;
 }
 
 .track-album {
-    font-size: 14px;
-    color: @mu_outline;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: @mu_on_surface_variant;
 }
 
 /* === Connection Status === */

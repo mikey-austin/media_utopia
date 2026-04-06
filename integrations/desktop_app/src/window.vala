@@ -238,7 +238,10 @@ namespace Mu {
             content_stack.transition_duration = 200;
 
             /* Add view stubs */
-            content_stack.add_named (new Mu.NowPlayingView (), "now-playing");
+            content_stack.add_named (
+                new Mu.NowPlayingView (state_repo, active_renderer_repo,
+                    correlator, lease_mgr),
+                "now-playing");
             content_stack.add_named (make_placeholder ("Queue"), "queue");
             content_stack.add_named (make_placeholder ("Library"), "library");
             content_stack.add_named (
