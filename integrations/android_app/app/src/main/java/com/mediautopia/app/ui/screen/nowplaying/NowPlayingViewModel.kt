@@ -58,6 +58,7 @@ data class NowPlayingUiState(
     val hiResInfo: String? = null,
     val rendererName: String = "This Phone",
     val isConnected: Boolean = false,
+    val visualizerEnabled: Boolean = false,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -70,6 +71,7 @@ class NowPlayingViewModel @Inject constructor(
     private val metadataCache: MetadataCache,
     private val leaseManager: LeaseManager,
     private val correlator: CommandCorrelator,
+    private val settingsDataStore: com.mediautopia.app.data.cache.SettingsDataStore,
 ) : ViewModel() {
 
     private val tag = "NowPlayingViewModel"
@@ -159,9 +161,10 @@ class NowPlayingViewModel @Inject constructor(
         rendererName,
         _interpolatedPositionMs,
         _resolvedMetadata,
-    ) { state, name, interpolatedPosition, resolved ->
+        settingsDataStore.visualizerEnabled,
+    ) { state, name, interpolatedPosition, resolved, vizEnabled ->
         if (state == null) {
-            return@combine NowPlayingUiState(rendererName = name)
+            return@combine NowPlayingUiState(rendererName = name, visualizerEnabled = vizEnabled)
         }
 
         // Metadata comes from resolved library data (or inline if available).
@@ -202,6 +205,7 @@ class NowPlayingViewModel @Inject constructor(
             hiResInfo = hiResInfo,
             rendererName = name,
             isConnected = state.session != null,
+            visualizerEnabled = vizEnabled,
         )
     }.stateIn(
         scope = viewModelScope,

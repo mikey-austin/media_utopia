@@ -35,6 +35,9 @@ class SettingsViewModel @Inject constructor(
     val connectionState: StateFlow<ConnectionState> = mqttConnectionManager.connectionState
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ConnectionState.DISCONNECTED)
 
+    val visualizerEnabled: StateFlow<Boolean> = settingsDataStore.visualizerEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     init {
         viewModelScope.launch {
             _brokerUrl.value = settingsDataStore.brokerUrl.first()
@@ -56,6 +59,13 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsDataStore.setBrokerUrl(_brokerUrl.value)
             settingsDataStore.setIdentity(_identity.value)
+        }
+    }
+
+    fun toggleVisualizer() {
+        viewModelScope.launch {
+            val current = settingsDataStore.visualizerEnabled.first()
+            settingsDataStore.setVisualizerEnabled(!current)
         }
     }
 

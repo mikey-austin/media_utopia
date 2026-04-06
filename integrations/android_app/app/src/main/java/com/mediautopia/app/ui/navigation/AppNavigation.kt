@@ -35,7 +35,7 @@ import com.mediautopia.app.ui.components.TopHeader
 import com.mediautopia.app.ui.screen.library.LibraryScreen
 import com.mediautopia.app.ui.screen.nowplaying.NowPlayingScreen
 import com.mediautopia.app.ui.screen.renderers.RenderersSheet
-import com.mediautopia.app.ui.screen.settings.SettingsScreen
+import com.mediautopia.app.ui.screen.settings.SettingsSheet
 import com.mediautopia.app.ui.screen.queue.QueueSheet
 import com.mediautopia.app.ui.screen.zones.ZonesScreen
 import com.mediautopia.app.ui.theme.Secondary
@@ -60,7 +60,9 @@ fun AppNavigation(
     val activeRendererName by mainViewModel.activeRendererName.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var showRenderersSheet by remember { mutableStateOf(false) }
+    var showSettingsSheet by remember { mutableStateOf(false) }
     val renderersSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val settingsSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // Observe snackbar messages.
     LaunchedEffect(Unit) {
@@ -83,6 +85,20 @@ fun AppNavigation(
         }
     }
 
+    // Settings bottom sheet overlay.
+    if (showSettingsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettingsSheet = false },
+            sheetState = settingsSheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            dragHandle = null,
+        ) {
+            SettingsSheet(
+                onDismiss = { showSettingsSheet = false },
+            )
+        }
+    }
+
     Scaffold(
         snackbarHost = {
             SnackbarHost(hostState = snackbarHostState) { data ->
@@ -95,11 +111,7 @@ fun AppNavigation(
         },
         topBar = {
             TopHeader(
-                onSettingsClick = {
-                    navController.navigate(Screen.Settings.route) {
-                        launchSingleTop = true
-                    }
-                },
+                onSettingsClick = { showSettingsSheet = true },
                 onRenderersClick = { showRenderersSheet = true },
                 activeRendererName = activeRendererName,
             )
@@ -156,11 +168,6 @@ fun AppNavigation(
             composable(Screen.Queue.route) { QueueSheet() }
             composable(Screen.Library.route) { LibraryScreen() }
             composable(Screen.Zones.route) { ZonesScreen() }
-            composable(Screen.Settings.route) {
-                SettingsScreen(
-                    onNavigateBack = { navController.popBackStack() },
-                )
-            }
         }
     }
 }

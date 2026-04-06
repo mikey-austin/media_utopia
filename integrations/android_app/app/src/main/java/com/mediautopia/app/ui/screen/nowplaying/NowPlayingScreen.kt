@@ -117,6 +117,15 @@ private fun NowPlayingContent(
             hiResInfo = state.hiResInfo,
         )
 
+        // Audio visualizer (below artwork, above metadata).
+        if (state.visualizerEnabled && state.playbackStatus == "playing") {
+            Spacer(modifier = Modifier.height(8.dp))
+            com.mediautopia.app.ui.components.AudioVisualizer(
+                audioSessionId = 0,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            )
+        }
+
         Spacer(modifier = Modifier.height(20.dp))
 
         // Track metadata.

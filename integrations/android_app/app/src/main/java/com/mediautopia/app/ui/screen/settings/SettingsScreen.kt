@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -30,44 +30,47 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.ui.components.GradientButton
+import com.mediautopia.app.ui.theme.Secondary
 
 @Composable
-fun SettingsScreen(
-    onNavigateBack: () -> Unit,
+fun SettingsSheet(
+    onDismiss: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val brokerUrl by viewModel.brokerUrl.collectAsStateWithLifecycle()
     val identity by viewModel.identity.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    val visualizerEnabled by viewModel.visualizerEnabled.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surface)
+            .fillMaxWidth()
             .padding(horizontal = 16.dp),
     ) {
-        // ---- Back button + title ----
+        // ---- Header with close ----
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 12.dp),
+                .padding(top = 16.dp, bottom = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onNavigateBack) {
+            Text(
+                text = "Settings",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            IconButton(onClick = onDismiss) {
                 Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = "Back",
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Close",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(
-                text = "SETTINGS",
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.primary,
-                letterSpacing = 2.sp,
-            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -99,7 +102,38 @@ fun SettingsScreen(
             Text("SAVE")
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // ---- Visualizer toggle ----
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column {
+                Text(
+                    text = "AUDIO VISUALIZER",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    letterSpacing = 0.8.sp,
+                )
+                Text(
+                    text = "Show frequency bars on Now Playing",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
+            }
+            Switch(
+                checked = visualizerEnabled,
+                onCheckedChange = { viewModel.toggleVisualizer() },
+                colors = SwitchDefaults.colors(
+                    checkedTrackColor = Secondary,
+                    checkedThumbColor = MaterialTheme.colorScheme.onSecondary,
+                ),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
 
         // ---- Connection status ----
         Row(
@@ -120,6 +154,8 @@ fun SettingsScreen(
         GradientButton(onClick = viewModel::reconnect) {
             Text("RECONNECT")
         }
+
+        Spacer(modifier = Modifier.height(32.dp))
     }
 }
 

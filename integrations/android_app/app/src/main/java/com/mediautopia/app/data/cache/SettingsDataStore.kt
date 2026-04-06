@@ -1,6 +1,7 @@
 package com.mediautopia.app.data.cache
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -21,6 +22,7 @@ class SettingsDataStore @Inject constructor(
         val KEY_BROKER_URL = stringPreferencesKey("broker_url")
         val KEY_CLIENT_ID = stringPreferencesKey("client_id")
         val KEY_IDENTITY = stringPreferencesKey("identity")
+        val KEY_VISUALIZER_ENABLED = booleanPreferencesKey("visualizer_enabled")
 
         const val DEFAULT_BROKER_URL = "mqtt://mqtt.lan:1883"
     }
@@ -54,6 +56,16 @@ class SettingsDataStore @Inject constructor(
     suspend fun setIdentity(identity: String) {
         context.dataStore.edit { prefs ->
             prefs[KEY_IDENTITY] = identity
+        }
+    }
+
+    val visualizerEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[KEY_VISUALIZER_ENABLED] ?: false
+    }
+
+    suspend fun setVisualizerEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_VISUALIZER_ENABLED] = enabled
         }
     }
 }

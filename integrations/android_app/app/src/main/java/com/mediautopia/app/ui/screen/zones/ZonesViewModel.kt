@@ -34,7 +34,10 @@ data class ZoneUiItem(
     val isOnline: Boolean,
 )
 
+enum class ZonesTab { ZONES, SOURCES }
+
 data class ZonesUiState(
+    val activeTab: ZonesTab = ZonesTab.ZONES,
     val localVolume: Float = 0.5f,
     val zones: List<ZoneUiItem> = emptyList(),
     val activeCount: Int = 0,
@@ -59,7 +62,7 @@ class ZonesViewModel @Inject constructor(
     private val activeRendererId = activeRendererRepository.activeRendererId
         .stateIn(viewModelScope, SharingStarted.Eagerly, ActiveRendererRepository.LOCAL_RENDERER_ID)
 
-    // Track local renderer volume from its state.
+    private val _activeTab = MutableStateFlow(ZonesTab.ZONES)
     private val _localVolume = MutableStateFlow(0.5f)
 
     init {
@@ -79,7 +82,8 @@ class ZonesViewModel @Inject constructor(
     val uiState: StateFlow<ZonesUiState> = combine(
         zoneRepository.zones,
         _localVolume,
-    ) { zones, localVol ->
+        _activeTab,
+    ) { zones, localVol, tab ->
         val items = zones.map { zone ->
             ZoneUiItem(
                 nodeId = zone.nodeId,
@@ -93,6 +97,7 @@ class ZonesViewModel @Inject constructor(
         }
 
         ZonesUiState(
+            activeTab = tab,
             localVolume = localVol,
             zones = items,
             activeCount = items.count { it.isOnline },
@@ -157,5 +162,9 @@ class ZonesViewModel @Inject constructor(
                 Log.e(tag, "selectSource failed for $nodeId: ${e.message}")
             }
         }
+    }
+
+    fun switchTab(tab: ZonesTab) {
+        _activeTab.value = tab
     }
 }
