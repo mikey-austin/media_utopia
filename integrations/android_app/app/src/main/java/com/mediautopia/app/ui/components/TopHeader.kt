@@ -1,5 +1,6 @@
 package com.mediautopia.app.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -24,9 +26,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.mediautopia.app.R
 import com.mediautopia.app.ui.theme.Secondary
 import com.mediautopia.app.ui.theme.SurfaceContainerHigh
 
@@ -46,16 +50,17 @@ fun TopHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "MEDIA UTOPIA",
-            style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.primary,
-            letterSpacing = 2.sp,
-            modifier = Modifier.padding(start = 8.dp),
+        Image(
+            painter = painterResource(id = R.drawable.mu_logo),
+            contentDescription = "Media Utopia",
+            contentScale = ContentScale.FillHeight,
+            modifier = Modifier
+                .height(32.dp)
+                .padding(start = 8.dp),
         )
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // Renderer selector chip — tappable area with cast icon + name.
+            // Renderer selector chip.
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))

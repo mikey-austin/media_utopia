@@ -59,6 +59,7 @@ import com.mediautopia.app.ui.theme.OnPrimary
 import com.mediautopia.app.ui.theme.Primary
 import com.mediautopia.app.ui.theme.PrimaryContainer
 import com.mediautopia.app.ui.theme.Secondary
+import com.mediautopia.app.ui.theme.Surface
 import com.mediautopia.app.ui.theme.SurfaceContainerHigh
 import com.mediautopia.app.ui.theme.SurfaceContainerHighest
 
@@ -96,6 +97,16 @@ private fun NowPlayingContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(
+                androidx.compose.ui.graphics.Brush.verticalGradient(
+                    colors = listOf(
+                        PrimaryContainer.copy(alpha = 0.6f),
+                        Surface,
+                    ),
+                    startY = 0f,
+                    endY = 800f,
+                )
+            )
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
