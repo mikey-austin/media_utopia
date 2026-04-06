@@ -64,14 +64,7 @@ namespace Mu {
             this.playlist_repo = playlist_repo;
             this.local_renderer = local_renderer;
             this.artwork_loader = new ArtworkLoader ();
-
-            /* Wire connection status updates */
-            update_connection_label (mqtt.connection_state);
-            mqtt.connection_changed.connect (update_connection_label);
-        }
-
-        construct {
-            settings = new GLib.Settings ("com.mediautopia.desktop");
+            this.settings = new GLib.Settings ("com.mediautopia.desktop");
 
             /* Restore saved geometry */
             default_width = settings.get_int ("window-width");
@@ -96,6 +89,11 @@ namespace Mu {
                 return false;  /* allow normal close */
             });
 
+            /* Wire connection status updates */
+            update_connection_label (mqtt.connection_state);
+            mqtt.connection_changed.connect (update_connection_label);
+
+            /* Build UI after all services are assigned */
             build_ui ();
         }
 
