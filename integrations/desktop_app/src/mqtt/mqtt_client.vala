@@ -2,6 +2,18 @@
 
 namespace Mu {
 
+    /**
+     * Safely convert a uint8[] MQTT payload to a null-terminated string.
+     * MQTT payloads are NOT null-terminated, so a simple (string) cast reads garbage.
+     */
+    public string payload_to_string (uint8[] payload) {
+        if (payload.length == 0) return "";
+        var buf = new uint8[payload.length + 1];
+        Memory.copy (buf, payload, payload.length);
+        buf[payload.length] = 0;
+        return (string) buf;
+    }
+
     public enum ConnectionState {
         DISCONNECTED,
         CONNECTING,

@@ -138,7 +138,7 @@ namespace Mu {
 
             ReplyEnvelope? reply = null;
             try {
-                reply = ReplyEnvelope.from_json_string ((string) payload);
+                reply = ReplyEnvelope.from_json_string (payload_to_string (payload));
             } catch (GLib.Error e) {
                 warning ("CommandCorrelator: failed to parse reply: %s", e.message);
                 return;

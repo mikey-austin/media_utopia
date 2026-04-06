@@ -156,7 +156,7 @@ namespace Mu {
             if (topic != cmd_topic) return;
             if (payload.length == 0) return;
 
-            var json_str = (string) payload;
+            var json_str = payload_to_string (payload);
 
             Json.Object root;
             try {

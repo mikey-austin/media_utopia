@@ -119,7 +119,7 @@ namespace Mu {
 
             Presence? presence = null;
             try {
-                presence = Presence.from_json_string ((string) payload);
+                presence = Presence.from_json_string (payload_to_string (payload));
             } catch (GLib.Error e) {
                 warning ("NodeRepository: failed to parse presence for %s: %s",
                          node_id, e.message);

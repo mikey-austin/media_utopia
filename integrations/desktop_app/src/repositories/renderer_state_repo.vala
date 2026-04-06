@@ -84,7 +84,7 @@ namespace Mu {
 
             RendererState? state = null;
             try {
-                state = RendererState.from_json_string ((string) payload);
+                state = RendererState.from_json_string (payload_to_string (payload));
             } catch (GLib.Error e) {
                 warning ("RendererStateRepository: failed to parse state for %s: %s",
                          node_id, e.message);
