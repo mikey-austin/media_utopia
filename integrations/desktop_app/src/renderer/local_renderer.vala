@@ -31,6 +31,10 @@ namespace Mu {
         private uint position_poll_id = 0;
         private ulong message_handler_id = 0;
 
+        /* Queue persistence */
+        private uint persist_source_id = 0;
+        private int64 restored_position_ms = -1;
+
         public signal void state_updated (RendererState state);
         public signal void spectrum_data (float[] magnitudes);
 
@@ -52,6 +56,9 @@ namespace Mu {
         /* ---- Lifecycle ---- */
 
         public void start () {
+            /* Restore persisted queue state before anything else */
+            restore_queue_snapshot ();
+
             /* Subscribe to command topic */
             var cmd_topic = MqttTopics.commands (node_id);
             mqtt.subscribe (cmd_topic, 1);
@@ -65,6 +72,13 @@ namespace Mu {
         }
 
         public void stop () {
+            /* Flush a final queue snapshot before shutdown */
+            if (persist_source_id != 0) {
+                Source.remove (persist_source_id);
+                persist_source_id = 0;
+            }
+            save_queue_snapshot ();
+
             /* Stop polling */
             if (position_poll_id != 0) {
                 Source.remove (position_poll_id);
@@ -553,9 +567,18 @@ namespace Mu {
                 return;
             }
 
-            driver.play (entry.url);
+            /* Use restored position on first play after snapshot restore */
+            int64 start_ms = 0;
+            if (restored_position_ms >= 0) {
+                start_ms = restored_position_ms;
+                position_ms = start_ms;
+                restored_position_ms = -1;
+            } else {
+                position_ms = 0;
+            }
+
+            driver.play (entry.url, start_ms);
             playback_status = "playing";
-            position_ms = 0;
         }
 
         private void on_track_finished () {
@@ -653,11 +676,13 @@ namespace Mu {
             state_version++;
             send_ack_reply (cmd_id, reply_to, cmd_from);
             schedule_state_publish ();
+            schedule_persist ();
         }
 
         private void bump_and_publish () {
             state_version++;
             schedule_state_publish ();
+            schedule_persist ();
         }
 
         private void schedule_state_publish () {
@@ -775,6 +800,137 @@ namespace Mu {
             obj.set_int_member ("ts", state.ts);
 
             return json_obj_to_string (obj);
+        }
+
+        /* ---- Queue persistence ---- */
+
+        private static string get_snapshot_path () {
+            return Environment.get_user_data_dir () + "/mediautopia/queue.json";
+        }
+
+        private void schedule_persist () {
+            if (persist_source_id > 0) {
+                Source.remove (persist_source_id);
+            }
+            persist_source_id = Timeout.add_seconds (2, () => {
+                persist_source_id = 0;
+                save_queue_snapshot ();
+                return Source.REMOVE;
+            });
+        }
+
+        private void save_queue_snapshot () {
+            var obj = new Json.Object ();
+            obj.set_int_member ("revision", queue.revision);
+            obj.set_int_member ("index", queue.index);
+            obj.set_boolean_member ("repeat", queue.repeat);
+            obj.set_string_member ("repeatMode", queue.repeat_mode);
+            obj.set_boolean_member ("shuffle", queue.shuffle);
+            obj.set_double_member ("volume", driver.volume);
+            obj.set_boolean_member ("mute", driver.muted);
+            obj.set_int_member ("positionMs", position_ms);
+
+            var entries_arr = new Json.Array ();
+            for (uint i = 0; i < queue.entries.length; i++) {
+                var entry = queue.entries[i];
+                var entry_obj = new Json.Object ();
+                entry_obj.set_string_member ("queueEntryId", entry.queue_entry_id);
+                entry_obj.set_string_member ("itemId", entry.item_id);
+                entry_obj.set_string_member ("url", entry.url);
+                entry_obj.set_string_member ("mime", entry.mime);
+                if (entry.metadata != null) {
+                    entry_obj.set_object_member ("metadata", entry.metadata);
+                }
+                entries_arr.add_object_element (entry_obj);
+            }
+            obj.set_array_member ("entries", entries_arr);
+
+            var json = json_obj_to_string (obj);
+            var path = get_snapshot_path ();
+            var dir = Path.get_dirname (path);
+
+            DirUtils.create_with_parents (dir, 0755);
+            try {
+                FileUtils.set_contents (path, json);
+            } catch (FileError e) {
+                warning ("LocalRenderer: failed to save queue snapshot: %s", e.message);
+            }
+        }
+
+        private void restore_queue_snapshot () {
+            var path = get_snapshot_path ();
+
+            string contents;
+            if (!FileUtils.test (path, FileTest.EXISTS)) return;
+            try {
+                FileUtils.get_contents (path, out contents);
+            } catch (FileError e) {
+                warning ("LocalRenderer: failed to read queue snapshot: %s", e.message);
+                return;
+            }
+
+            Json.Object root;
+            try {
+                var parser = new Json.Parser ();
+                parser.load_from_data (contents);
+                root = parser.get_root ().get_object ();
+            } catch (GLib.Error e) {
+                warning ("LocalRenderer: failed to parse queue snapshot: %s", e.message);
+                return;
+            }
+
+            /* Restore queue entries */
+            var restored_entries = new GenericArray<LocalQueueEntry> ();
+            if (root.has_member ("entries") && !root.get_null_member ("entries")) {
+                var arr = root.get_array_member ("entries");
+                for (uint i = 0; i < arr.get_length (); i++) {
+                    var entry_obj = arr.get_object_element (i);
+                    var qeid = entry_obj.has_member ("queueEntryId")
+                        ? entry_obj.get_string_member ("queueEntryId") : "";
+                    var item_id = entry_obj.has_member ("itemId")
+                        ? entry_obj.get_string_member ("itemId") : "";
+                    var url = entry_obj.has_member ("url")
+                        ? entry_obj.get_string_member ("url") : "";
+                    var mime = entry_obj.has_member ("mime")
+                        ? entry_obj.get_string_member ("mime") : "";
+                    Json.Object? metadata = null;
+                    if (entry_obj.has_member ("metadata") && !entry_obj.get_null_member ("metadata")) {
+                        metadata = entry_obj.get_object_member ("metadata");
+                    }
+                    restored_entries.add (new LocalQueueEntry.with_id (qeid, item_id, url, mime, metadata));
+                }
+            }
+
+            if (restored_entries.length == 0) return;
+
+            /* Restore queue state */
+            var start_index = root.has_member ("index") ? root.get_int_member ("index") : 0;
+            queue.set_entries (start_index, restored_entries);
+
+            /* Restore repeat/shuffle modes */
+            if (root.has_member ("repeatMode")) {
+                queue.apply_repeat_mode (root.get_string_member ("repeatMode"));
+            }
+            if (root.has_member ("shuffle")) {
+                queue.set_shuffle_mode (root.get_boolean_member ("shuffle"));
+            }
+
+            /* Restore volume/mute */
+            if (root.has_member ("volume")) {
+                driver.volume = root.get_double_member ("volume");
+            }
+            if (root.has_member ("mute")) {
+                driver.muted = root.get_boolean_member ("mute");
+            }
+
+            /* Store restored position — will seek on first play */
+            if (root.has_member ("positionMs")) {
+                restored_position_ms = root.get_int_member ("positionMs");
+                position_ms = restored_position_ms;
+            }
+
+            message ("LocalRenderer: restored queue snapshot (%u entries, index %lld)",
+                     queue.entries.length, queue.index);
         }
 
         /* ---- Utilities ---- */

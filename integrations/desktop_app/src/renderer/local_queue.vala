@@ -19,6 +19,16 @@ namespace Mu {
             this.mime = mime;
             this.metadata = metadata;
         }
+
+        public LocalQueueEntry.with_id (string queue_entry_id, string item_id,
+                                         string url = "", string mime = "",
+                                         Json.Object? metadata = null) {
+            this.queue_entry_id = queue_entry_id;
+            this.item_id = item_id;
+            this.url = url;
+            this.mime = mime;
+            this.metadata = metadata;
+        }
     }
 
     public class LocalQueue : Object {
