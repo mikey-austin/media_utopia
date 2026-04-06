@@ -494,3 +494,94 @@ row.property > box > box > label.subtitle,
 row > box > box > label.subtitle {
     color: @mu_on_surface_variant;
 }
+
+/* === Renderers View === */
+.section-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: @mu_on_surface;
+}
+
+.meta-label {
+    font-size: 13px;
+    color: @mu_on_surface_variant;
+}
+
+.mu-card {
+    background-color: @mu_surface_container;
+    border-radius: 12px;
+    padding: 14px 16px;
+    border: 1px solid alpha(@mu_outline, 0.12);
+    transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.mu-card:hover {
+    background-color: @mu_surface_container_high;
+    border-color: alpha(@mu_outline, 0.25);
+}
+
+.mu-card.active {
+    background-color: @mu_primary_container;
+    border-color: alpha(@mu_primary, 0.35);
+}
+
+.mu-card.active:hover {
+    background-color: shade(@mu_primary_container, 1.1);
+}
+
+.device-chip {
+    background-color: @mu_surface_variant;
+    color: @mu_on_surface;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.hires-badge {
+    background-color: alpha(@mu_tertiary, 0.15);
+    color: @mu_tertiary;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.renderer-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: @mu_on_surface;
+}
+
+.renderer-status {
+    font-size: 12px;
+    color: @mu_on_surface_variant;
+}
+
+.lease-owner-label {
+    font-size: 11px;
+    color: @mu_outline;
+    font-style: italic;
+}
+
+.scanning-label {
+    font-size: 12px;
+    color: @mu_on_surface_variant;
+    font-style: italic;
+}
+
+.release-button {
+    background-color: alpha(@mu_error, 0.12);
+    color: @mu_error;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 6px;
+    min-height: 0;
+}
+
+.release-button:hover {
+    background-color: alpha(@mu_error, 0.22);
+}

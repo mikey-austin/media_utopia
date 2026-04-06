@@ -241,7 +241,10 @@ namespace Mu {
             content_stack.add_named (new Mu.NowPlayingView (), "now-playing");
             content_stack.add_named (make_placeholder ("Queue"), "queue");
             content_stack.add_named (make_placeholder ("Library"), "library");
-            content_stack.add_named (make_placeholder ("Renderers"), "renderers");
+            content_stack.add_named (
+                new Mu.RenderersView (node_repo, state_repo,
+                    active_renderer_repo, lease_mgr, mqtt),
+                "renderers");
             content_stack.add_named (make_placeholder ("Zones"), "zones");
             content_stack.add_named (
                 new Mu.SettingsView (settings, mqtt), "settings");
