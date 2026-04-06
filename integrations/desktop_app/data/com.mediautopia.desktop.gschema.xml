@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="media-utopia">
+  <schema id="com.mediautopia.desktop" path="/com/mediautopia/desktop/">
+
+    <key name="broker-url" type="s">
+      <default>'mqtt://mqtt.lan:1883'</default>
+      <summary>MQTT broker URL</summary>
+      <description>URL of the MQTT broker for Media Utopia communication.</description>
+    </key>
+
+    <key name="identity" type="s">
+      <default>''</default>
+      <summary>Client identity</summary>
+      <description>Identity string sent to the MU daemon. If empty, hostname is used.</description>
+    </key>
+
+    <key name="visualizer-enabled" type="b">
+      <default>true</default>
+      <summary>Enable audio visualizer</summary>
+      <description>Whether the audio visualizer is displayed on the Now Playing view.</description>
+    </key>
+
+    <key name="window-width" type="i">
+      <default>1100</default>
+      <summary>Window width</summary>
+      <description>Last saved window width in pixels.</description>
+    </key>
+
+    <key name="window-height" type="i">
+      <default>700</default>
+      <summary>Window height</summary>
+      <description>Last saved window height in pixels.</description>
+    </key>
+
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Window maximized</summary>
+      <description>Whether the window was maximized when last closed.</description>
+    </key>
+
+    <key name="active-renderer-id" type="s">
+      <default>''</default>
+      <summary>Active renderer ID</summary>
+      <description>The ID of the currently selected audio renderer.</description>
+    </key>
+
+    <key name="close-to-tray" type="b">
+      <default>true</default>
+      <summary>Close to tray</summary>
+      <description>Whether closing the window hides to system tray instead of quitting.</description>
+    </key>
+
+  </schema>
+</schemalist>

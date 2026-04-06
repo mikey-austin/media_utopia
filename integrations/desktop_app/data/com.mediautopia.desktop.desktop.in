@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Media Utopia
+Comment=Multi-room audio controller for the Media Utopia ecosystem
+Exec=media-utopia
+Icon=com.mediautopia.desktop
+Terminal=false
+Categories=Audio;Music;Player;GTK;
+Keywords=music;audio;player;mqtt;multiroom;
+StartupWMClass=com.mediautopia.desktop

@@ -1,0 +1,440 @@
+/* Media Utopia — Sonic Curator Theme */
+/* GTK4 + libadwaita CSS */
+
+/* === Color Definitions === */
+@define-color mu_primary #CCFF00;
+@define-color mu_on_primary #1A1C1A;
+@define-color mu_primary_container #123724;
+@define-color mu_surface #121412;
+@define-color mu_surface_container_lowest #0E100E;
+@define-color mu_surface_container_low #1A1C1A;
+@define-color mu_surface_container #1E201E;
+@define-color mu_surface_container_high #282A28;
+@define-color mu_surface_container_highest #333533;
+@define-color mu_surface_variant #3A3E3A;
+@define-color mu_on_surface #E2E3DE;
+@define-color mu_on_surface_variant #9EA99C;
+@define-color mu_outline #6A7568;
+@define-color mu_tertiary #7BC47F;
+@define-color mu_error #FFB4AB;
+
+/* === Window === */
+window {
+    background-color: @mu_surface;
+    color: @mu_on_surface;
+}
+
+/* === Header Bar === */
+headerbar {
+    background-color: @mu_surface_container_low;
+    color: @mu_on_surface;
+    border-bottom: 1px solid alpha(@mu_outline, 0.2);
+    box-shadow: none;
+}
+
+headerbar .title {
+    color: @mu_on_surface;
+    font-weight: 600;
+}
+
+headerbar button {
+    color: @mu_on_surface_variant;
+}
+
+headerbar button:hover {
+    color: @mu_on_surface;
+    background-color: alpha(@mu_on_surface, 0.08);
+}
+
+/* === Sidebar === */
+.sidebar {
+    background-color: @mu_surface_container_lowest;
+    border-right: 1px solid alpha(@mu_outline, 0.15);
+}
+
+.sidebar-logo {
+    padding: 16px 12px 8px 12px;
+}
+
+.navigation-sidebar {
+    background-color: transparent;
+    padding: 4px 8px;
+}
+
+.navigation-sidebar row {
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin: 2px 0;
+    color: @mu_on_surface_variant;
+    transition: background-color 150ms ease;
+}
+
+.navigation-sidebar row:hover {
+    background-color: alpha(@mu_on_surface, 0.06);
+    color: @mu_on_surface;
+}
+
+.navigation-sidebar row:selected {
+    background-color: @mu_surface_container;
+    color: @mu_primary;
+}
+
+.navigation-sidebar row:selected label {
+    color: @mu_primary;
+    font-weight: 600;
+}
+
+.navigation-sidebar row:selected image {
+    color: @mu_primary;
+}
+
+.nav-icon {
+    color: @mu_on_surface_variant;
+    margin-right: 8px;
+}
+
+.nav-label {
+    font-size: 14px;
+}
+
+/* === Content Stack === */
+.content-area {
+    background-color: @mu_surface;
+}
+
+/* === Transport Buttons === */
+.transport-button {
+    background-color: transparent;
+    color: @mu_on_surface;
+    border-radius: 50%;
+    min-width: 48px;
+    min-height: 48px;
+    padding: 8px;
+    transition: background-color 150ms ease;
+}
+
+.transport-button:hover {
+    background-color: alpha(@mu_on_surface, 0.08);
+}
+
+.transport-button-play {
+    background-color: @mu_primary;
+    color: @mu_on_primary;
+    border-radius: 50%;
+    min-width: 56px;
+    min-height: 56px;
+}
+
+.transport-button-play:hover {
+    background-color: shade(@mu_primary, 1.1);
+}
+
+/* === Sliders / Scales === */
+scale trough {
+    background-color: @mu_surface_variant;
+    border-radius: 4px;
+    min-height: 4px;
+}
+
+scale highlight {
+    background-color: @mu_primary;
+    border-radius: 4px;
+    min-height: 4px;
+}
+
+scale slider {
+    background-color: @mu_primary;
+    border-radius: 50%;
+    min-width: 16px;
+    min-height: 16px;
+    margin: -6px;
+}
+
+scale slider:hover {
+    background-color: shade(@mu_primary, 1.1);
+    min-width: 20px;
+    min-height: 20px;
+    margin: -8px;
+}
+
+/* Volume scale — thinner */
+.volume-scale trough {
+    min-height: 3px;
+}
+
+.volume-scale highlight {
+    min-height: 3px;
+}
+
+.volume-scale slider {
+    min-width: 12px;
+    min-height: 12px;
+    margin: -5px;
+}
+
+/* === Cards === */
+.card {
+    background-color: @mu_surface_container_high;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid alpha(@mu_outline, 0.1);
+}
+
+.card:hover {
+    background-color: shade(@mu_surface_container_high, 1.05);
+}
+
+/* === Mini Player === */
+.mini-player {
+    background-color: @mu_surface_container_low;
+    border-top: 1px solid alpha(@mu_outline, 0.2);
+    padding: 8px 16px;
+}
+
+.mini-player-title {
+    color: @mu_on_surface;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.mini-player-artist {
+    color: @mu_on_surface_variant;
+    font-size: 12px;
+}
+
+/* === Text Styles === */
+.text-primary {
+    color: @mu_on_surface;
+}
+
+.text-secondary {
+    color: @mu_on_surface_variant;
+}
+
+.text-accent {
+    color: @mu_primary;
+}
+
+.text-tertiary {
+    color: @mu_tertiary;
+}
+
+.text-error {
+    color: @mu_error;
+}
+
+.text-timestamp {
+    color: @mu_outline;
+    font-size: 12px;
+    font-feature-settings: "tnum" 1;
+}
+
+.heading-large {
+    font-size: 22px;
+    font-weight: 700;
+    color: @mu_on_surface;
+}
+
+.heading-medium {
+    font-size: 18px;
+    font-weight: 600;
+    color: @mu_on_surface;
+}
+
+.heading-small {
+    font-size: 14px;
+    font-weight: 600;
+    color: @mu_on_surface;
+}
+
+/* === Badges === */
+.badge {
+    background-color: @mu_surface_variant;
+    color: @mu_on_surface;
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.badge-primary {
+    background-color: @mu_primary_container;
+    color: @mu_primary;
+}
+
+.badge-renderer {
+    background-color: @mu_primary_container;
+    color: @mu_tertiary;
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* === Entries === */
+entry {
+    background-color: @mu_surface_container_high;
+    color: @mu_on_surface;
+    border: 1px solid @mu_outline;
+    border-radius: 8px;
+    padding: 8px 12px;
+    caret-color: @mu_primary;
+}
+
+entry:focus {
+    border-color: @mu_primary;
+    outline: 2px solid alpha(@mu_primary, 0.3);
+    outline-offset: -1px;
+}
+
+entry placeholder {
+    color: @mu_on_surface_variant;
+}
+
+/* === List Rows === */
+list {
+    background-color: transparent;
+}
+
+list row {
+    padding: 8px 16px;
+    border-radius: 8px;
+    transition: background-color 150ms ease;
+}
+
+list row:hover {
+    background-color: alpha(@mu_on_surface, 0.04);
+}
+
+list row:selected {
+    background-color: @mu_surface_container;
+}
+
+list row:active {
+    background-color: alpha(@mu_primary, 0.12);
+}
+
+/* Track list — inactive tracks */
+.track-inactive {
+    color: @mu_surface_container_highest;
+}
+
+.track-active {
+    color: @mu_primary;
+    font-weight: 600;
+}
+
+/* === Scrollbars === */
+scrollbar slider {
+    background-color: alpha(@mu_on_surface, 0.3);
+    border-radius: 99px;
+    min-width: 6px;
+    min-height: 6px;
+}
+
+scrollbar slider:hover {
+    background-color: alpha(@mu_on_surface, 0.5);
+    min-width: 8px;
+}
+
+scrollbar.overlay-indicator:not(.hovering) slider {
+    background-color: alpha(@mu_on_surface, 0.2);
+    min-width: 4px;
+}
+
+/* === Separator === */
+separator {
+    background-color: alpha(@mu_outline, 0.15);
+    min-height: 1px;
+}
+
+/* === Buttons === */
+button {
+    border-radius: 8px;
+    transition: background-color 150ms ease;
+}
+
+button.suggested-action {
+    background-color: @mu_primary;
+    color: @mu_on_primary;
+    font-weight: 600;
+}
+
+button.suggested-action:hover {
+    background-color: shade(@mu_primary, 1.1);
+}
+
+button.destructive-action {
+    background-color: alpha(@mu_error, 0.15);
+    color: @mu_error;
+}
+
+button.destructive-action:hover {
+    background-color: alpha(@mu_error, 0.25);
+}
+
+/* === Popovers === */
+popover contents {
+    background-color: @mu_surface_container_high;
+    border: 1px solid alpha(@mu_outline, 0.2);
+    border-radius: 12px;
+    color: @mu_on_surface;
+}
+
+/* === Tooltips === */
+tooltip {
+    background-color: @mu_surface_container_highest;
+    color: @mu_on_surface;
+    border-radius: 6px;
+}
+
+/* === Switch === */
+switch {
+    background-color: @mu_surface_variant;
+    border-radius: 99px;
+}
+
+switch:checked {
+    background-color: @mu_primary_container;
+}
+
+switch slider {
+    background-color: @mu_on_surface_variant;
+    border-radius: 99px;
+}
+
+switch:checked slider {
+    background-color: @mu_primary;
+}
+
+/* === Visualizer === */
+.visualizer {
+    background-color: transparent;
+}
+
+/* === Now Playing === */
+.now-playing-view {
+    background-color: @mu_surface;
+    padding: 24px;
+}
+
+.album-art {
+    border-radius: 12px;
+    box-shadow: 0 8px 32px alpha(black, 0.4);
+}
+
+.track-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: @mu_on_surface;
+}
+
+.track-artist {
+    font-size: 16px;
+    color: @mu_on_surface_variant;
+}
+
+.track-album {
+    font-size: 14px;
+    color: @mu_outline;
+}

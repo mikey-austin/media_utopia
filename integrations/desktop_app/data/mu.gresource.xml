@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/mediautopia/desktop">
+    <file>style.css</file>
+    <file>icons/mu-motif.svg</file>
+  </gresource>
+</gresources>
