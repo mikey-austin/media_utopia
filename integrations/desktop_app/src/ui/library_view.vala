@@ -1331,7 +1331,26 @@ namespace Mu {
                 playlist_spinner.visible = false;
                 playlist_spinner.spinning = false;
 
-                if (entries == null || entries.get_length () == 0) return;
+                if (entries == null || entries.get_length () == 0) {
+                    warning ("LibraryView: playlist.get returned null or empty");
+                    return;
+                }
+
+                message ("LibraryView: playlist.get returned %u entries", entries.get_length ());
+
+                /* Debug: dump first entry to see structure */
+                if (entries.get_length () > 0) {
+                    var first = entries.get_object_element (0);
+                    var members = first.get_members ();
+                    var sb = new StringBuilder ("entry[0] keys: ");
+                    foreach (unowned string m in members) {
+                        sb.append (m);
+                        sb.append (" ");
+                    }
+                    message ("LibraryView: %s", sb.str);
+                    var first_id = get_playlist_entry_item_id (first);
+                    message ("LibraryView: entry[0] itemId = '%s'", first_id);
+                }
 
                 /* Collect item IDs that need metadata resolution */
                 var item_ids = new GenericArray<string> ();
@@ -1344,9 +1363,12 @@ namespace Mu {
                     }
                 }
 
+                message ("LibraryView: %u entries need metadata resolution", item_ids.length);
+
                 if (item_ids.length > 0) {
                     /* Resolve metadata for entries that lack it */
                     var lib_id = get_first_library_id ();
+                    message ("LibraryView: resolving via library '%s'", lib_id ?? "null");
                     if (lib_id != null) {
                         var id_array = new string[item_ids.length];
                         for (uint k = 0; k < item_ids.length; k++) {
@@ -1354,6 +1376,8 @@ namespace Mu {
                         }
                         library_repo.resolve_batch.begin (lib_id, id_array, true, (robj, rres) => {
                             var resolved = library_repo.resolve_batch.end (rres);
+                            message ("LibraryView: resolve_batch returned %s",
+                                     resolved != null ? "%u items".printf (resolved.length) : "null");
                             /* Metadata is now cached in library_repo — rebuild rows */
                             populate_playlist_track_rows (entries);
                         });
@@ -1544,16 +1568,111 @@ namespace Mu {
             if (renderer_id.length == 0 || server_id == null ||
                 viewing_playlist_id == null) return;
 
-            playlist_repo.load_playlist.begin (
-                renderer_id, server_id, viewing_playlist_id, mode,
-                (obj, res) => {
-                    var success = playlist_repo.load_playlist.end (res);
-                    if (!success) {
-                        warning ("LibraryView: failed to load playlist %s",
-                                 viewing_playlist_id);
+            /* Fetch playlist entries, resolve them, then queue.set/add directly.
+             * This avoids queue.loadPlaylist which requires server-side resolution
+             * that the local renderer doesn't support. */
+            var pl_id = viewing_playlist_id;
+            playlist_repo.get_playlist.begin (server_id, pl_id, (obj, res) => {
+                var entries = playlist_repo.get_playlist.end (res);
+                if (entries == null || entries.get_length () == 0) {
+                    warning ("LibraryView: failed to fetch playlist entries for %s", pl_id);
+                    return;
+                }
+
+                /* Collect item IDs for resolution */
+                var item_ids = new GenericArray<string> ();
+                for (uint i = 0; i < entries.get_length (); i++) {
+                    var entry = entries.get_object_element (i);
+                    var item_id = get_playlist_entry_item_id (entry);
+                    if (item_id.length > 0) {
+                        item_ids.add (item_id);
                     }
                 }
-            );
+
+                if (item_ids.length == 0) return;
+
+                /* Resolve all items to get playback URLs */
+                var lib_id = get_first_library_id ();
+                if (lib_id == null) {
+                    warning ("LibraryView: no library available for resolution");
+                    return;
+                }
+
+                var id_array = new string[item_ids.length];
+                for (uint k = 0; k < item_ids.length; k++) {
+                    id_array[k] = item_ids[k];
+                }
+
+                library_repo.resolve_batch.begin (lib_id, id_array, false, (robj, rres) => {
+                    var resolved_items = library_repo.resolve_batch.end (rres);
+                    if (resolved_items == null || resolved_items.length == 0) {
+                        warning ("LibraryView: failed to resolve playlist entries");
+                        return;
+                    }
+
+                    /* Build queue entries from resolved items */
+                    var queue_entries = new Json.Array ();
+                    for (uint j = 0; j < resolved_items.length; j++) {
+                        var resolved = resolved_items[j];
+                        var item_id = resolved.has_member ("itemId")
+                            ? resolved.get_string_member ("itemId") : "";
+
+                        string? url = null;
+                        string? mime = null;
+                        bool byte_range = false;
+
+                        if (resolved.has_member ("sources") &&
+                            !resolved.get_null_member ("sources")) {
+                            var sources = resolved.get_array_member ("sources");
+                            if (sources.get_length () > 0) {
+                                var src = sources.get_object_element (0);
+                                url = src.has_member ("url") ? src.get_string_member ("url") : null;
+                                mime = src.has_member ("mime") ? src.get_string_member ("mime") : null;
+                                byte_range = src.has_member ("byteRange")
+                                    ? src.get_boolean_member ("byteRange") : false;
+                            }
+                        }
+
+                        Json.Object? metadata = null;
+                        if (resolved.has_member ("metadata") &&
+                            !resolved.get_null_member ("metadata")) {
+                            metadata = resolved.get_object_member ("metadata");
+                        }
+
+                        if (url != null) {
+                            var entry = QueueEntryBuilder.build (item_id, url, mime, byte_range, metadata);
+                            queue_entries.add_object_element (entry);
+                        }
+                    }
+
+                    if (queue_entries.get_length () == 0) return;
+
+                    /* Send queue command with lease */
+                    lease_mgr.ensure_lease.begin (renderer_id, (lobj, lres) => {
+                        var lease = lease_mgr.ensure_lease.end (lres);
+                        if (lease == null) return;
+
+                        if (mode == "replace") {
+                            var set_body = QueueBodies.set_entries (0, queue_entries);
+                            correlator.send.begin (
+                                renderer_id, "queue.set", set_body, lease, -1, 5000,
+                                (sobj, sres) => {
+                                    var set_reply = correlator.send.end (sres);
+                                    if (set_reply != null && set_reply.ok) {
+                                        correlator.send_fire_and_forget (
+                                            renderer_id, "playback.play",
+                                            PlaybackBodies.play (0), lease);
+                                    }
+                                }
+                            );
+                        } else {
+                            var add_body = QueueBodies.add ("end", queue_entries);
+                            correlator.send_fire_and_forget (
+                                renderer_id, "queue.add", add_body, lease);
+                        }
+                    });
+                });
+            });
         }
 
         private void clear_playlist_content () {
