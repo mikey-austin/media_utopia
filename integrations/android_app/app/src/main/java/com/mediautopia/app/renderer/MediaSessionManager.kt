@@ -46,7 +46,9 @@ class MediaSessionManager(
         val fwd = MuForwardingPlayer(exoPlayer, onTransportCommand, hasLease = false)
         forwardingPlayer = fwd
 
-        val session = MediaSession.Builder(context, fwd).build()
+        val session = MediaSession.Builder(context, fwd)
+            .setId("mu-local-renderer")
+            .build()
         mediaSession = session
         Log.i(tag, "MediaSession created")
         return session
