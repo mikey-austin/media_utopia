@@ -86,6 +86,53 @@ class LocalRendererEngine(
     val stateFlow: StateFlow<RendererState> = _stateFlow
 
     // -----------------------------------------------------------------
+    // Snapshot restore (called before MQTT subscriptions start)
+    // -----------------------------------------------------------------
+
+    fun restoreFromSnapshot(snapshot: com.mediautopia.app.data.cache.QueueSnapshot) {
+        engineLock.write {
+            val entries = snapshot.entries.map { e ->
+                LocalQueueEntry(
+                    queueEntryId = e.queueEntryId,
+                    itemId = e.itemId,
+                    url = e.url,
+                    mime = e.mime,
+                    metadata = e.metadata,
+                )
+            }
+            queue.entries = entries.toMutableList()
+            queue.index = snapshot.index.coerceIn(0, (entries.size - 1).toLong().coerceAtLeast(0))
+            queue.restoreState(
+                rev = snapshot.revision,
+                shuf = snapshot.shuffle,
+                rep = snapshot.repeat,
+                repMode = snapshot.repeatMode,
+            )
+            volume = snapshot.volume
+            mute = snapshot.mute
+            positionMs = snapshot.positionMs
+            // Always restore as stopped — user can resume manually.
+            playbackStatus = "stopped"
+
+            if (entries.isNotEmpty()) {
+                val entry = queue.currentEntry()
+                if (entry != null) {
+                    currentItem = CurrentItemState(
+                        queueEntryId = entry.queueEntryId,
+                        itemId = entry.itemId,
+                        metadata = entry.metadata.takeIf { it.isNotEmpty() }?.let { kotlinx.serialization.json.JsonObject(it) },
+                    )
+                }
+            }
+
+            driver.setVolume(volume.toFloat())
+            driver.setMute(mute)
+            bumpState()
+            Log.i(tag, "Restored snapshot: ${entries.size} entries, index=${snapshot.index}")
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Session commands (separate lock)
     // -----------------------------------------------------------------
 

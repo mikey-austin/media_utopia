@@ -6,6 +6,7 @@ import com.mediautopia.app.data.cache.SettingsDataStore
 import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
+import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.domain.usecase.CommandCorrelator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +23,7 @@ class SettingsViewModel @Inject constructor(
     private val settingsDataStore: SettingsDataStore,
     private val mqttConnectionManager: MqttConnectionManager,
     private val commandCorrelator: CommandCorrelator,
+    private val nodeRepository: NodeRepository,
 ) : ViewModel() {
 
     private val _brokerUrl = MutableStateFlow("")
@@ -59,7 +61,8 @@ class SettingsViewModel @Inject constructor(
 
     fun reconnect() {
         viewModelScope.launch {
-            // Tear down existing connection.
+            // Tear down existing connection and discovery.
+            nodeRepository.stopDiscovery()
             commandCorrelator.cleanup()
             try {
                 mqttConnectionManager.disconnect()
@@ -78,6 +81,9 @@ class SettingsViewModel @Inject constructor(
                 controllerId = clientId,
                 identity = identity,
             )
+
+            // Restart discovery so renderers/libraries/zones re-appear.
+            nodeRepository.startDiscovery()
         }
     }
 }

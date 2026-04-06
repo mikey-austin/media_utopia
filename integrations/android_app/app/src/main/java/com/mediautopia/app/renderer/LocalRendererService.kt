@@ -47,6 +47,7 @@ class LocalRendererService(
     private val nodeRepository: NodeRepository,
     private val rendererStateRepository: RendererStateRepository,
     private val context: Context,
+    private val queueStore: com.mediautopia.app.data.cache.QueueStore,
 ) {
     private val tag = "LocalRendererService"
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -135,6 +136,19 @@ class LocalRendererService(
     }
 
     private suspend fun startAsync(eng: LocalRendererEngine) {
+        // Restore persisted queue before publishing state.
+        try {
+            val snapshot = queueStore.load()
+            if (snapshot != null && snapshot.entries.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    eng.restoreFromSnapshot(snapshot)
+                }
+                Log.i(tag, "Restored ${snapshot.entries.size} queue entries from disk")
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to restore queue: ${e.message}")
+        }
+
         // Publish presence (retained).
         publishPresence()
 
@@ -172,6 +186,16 @@ class LocalRendererService(
                 }
         }
 
+        // Persistence debouncer: save queue snapshot every 2 seconds on change.
+        workerJobs += scope.launch {
+            @OptIn(FlowPreview::class)
+            eng.stateFlow
+                .debounce(2000)
+                .collectLatest { state ->
+                    saveSnapshot(eng, state)
+                }
+        }
+
         // Position updater: every 1 second on the main thread (ExoPlayer requirement).
         workerJobs += scope.launch {
             while (isActive) {
@@ -204,6 +228,18 @@ class LocalRendererService(
 
     fun stop() {
         Log.i(tag, "Stopping local renderer: $nodeId")
+
+        // Persist queue state before shutdown.
+        engine?.let { eng ->
+            try {
+                kotlinx.coroutines.runBlocking {
+                    saveSnapshot(eng, eng.buildState())
+                }
+                Log.i(tag, "Queue snapshot saved on stop")
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to save queue on stop: ${e.message}")
+            }
+        }
 
         // Unsubscribe from commands.
         cmdSubscriptionId?.let { mqtt.unsubscribe(it) }
@@ -403,6 +439,31 @@ class LocalRendererService(
             retained = false,
             payload = payload,
         )
+    }
+
+    private suspend fun saveSnapshot(eng: LocalRendererEngine, state: RendererState) {
+        val entries = eng.queue.entries.map { e ->
+            com.mediautopia.app.data.cache.QueueEntrySnapshot(
+                queueEntryId = e.queueEntryId,
+                itemId = e.itemId,
+                url = e.url,
+                mime = e.mime,
+                metadata = e.metadata,
+            )
+        }
+        val snapshot = com.mediautopia.app.data.cache.QueueSnapshot(
+            entries = entries,
+            index = eng.queue.index,
+            revision = eng.queue.revision,
+            shuffle = eng.queue.shuffle,
+            repeat = eng.queue.repeat,
+            repeatMode = eng.queue.repeatMode,
+            volume = state.playback?.volume ?: 1.0,
+            mute = state.playback?.mute ?: false,
+            positionMs = state.playback?.positionMs ?: 0,
+            playbackStatus = state.playback?.status ?: "stopped",
+        )
+        queueStore.save(snapshot)
     }
 
     companion object {

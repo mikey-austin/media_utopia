@@ -26,6 +26,13 @@ class LocalQueue {
     var repeatMode: String = ""
         private set
 
+    fun restoreState(rev: Long, shuf: Boolean, rep: Boolean, repMode: String) {
+        revision = rev
+        shuffle = shuf
+        repeat = rep
+        repeatMode = repMode
+    }
+
     // -----------------------------------------------------------------
     // Query
     // -----------------------------------------------------------------

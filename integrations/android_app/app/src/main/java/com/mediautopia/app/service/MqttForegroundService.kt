@@ -6,12 +6,17 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaStyleNotificationHelper
 import com.mediautopia.app.MainActivity
+import com.mediautopia.app.data.cache.QueueStore
 import com.mediautopia.app.data.cache.SettingsDataStore
 import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
@@ -38,10 +43,12 @@ class MqttForegroundService : Service() {
     @Inject lateinit var nodeRepository: NodeRepository
     @Inject lateinit var settingsDataStore: SettingsDataStore
     @Inject lateinit var rendererStateRepository: RendererStateRepository
+    @Inject lateinit var queueStore: QueueStore
 
     private val tag = "MqttForegroundService"
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var localRenderer: LocalRendererService? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     companion object {
         private const val CHANNEL_ID = "mu_service"
@@ -99,6 +106,7 @@ class MqttForegroundService : Service() {
                     nodeRepository = nodeRepository,
                     rendererStateRepository = rendererStateRepository,
                     context = this@MqttForegroundService,
+                    queueStore = queueStore,
                 )
 
                 // When renderer state changes, update the notification.
@@ -114,6 +122,9 @@ class MqttForegroundService : Service() {
                 Log.e(tag, "Failed to start MQTT session: ${e.message}", e)
             }
         }
+
+        // Monitor network changes — trigger MQTT reconnect when network is regained.
+        registerNetworkCallback()
 
         // Observe connection state and update the notification text.
         serviceScope.launch {
@@ -138,6 +149,7 @@ class MqttForegroundService : Service() {
 
     override fun onDestroy() {
         Log.i(tag, "Service destroying, cleaning up")
+        unregisterNetworkCallback()
         localRenderer?.stop()
         localRenderer = null
         nodeRepository.stopDiscovery()
@@ -153,6 +165,50 @@ class MqttForegroundService : Service() {
 
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.i(tag, "Network available, checking MQTT connection")
+                if (mqttConnectionManager.connectionState.value == ConnectionState.DISCONNECTED) {
+                    serviceScope.launch {
+                        try {
+                            val brokerUrl = settingsDataStore.brokerUrl.first()
+                            val clientId = "mu-android-${settingsDataStore.clientId.first()}"
+                            val identity = settingsDataStore.identity.first()
+                            mqttConnectionManager.connect(brokerUrl, clientId)
+                            commandCorrelator.setup(
+                                topicBase = MqttTopics.BASE,
+                                controllerId = clientId,
+                                identity = identity,
+                            )
+                            nodeRepository.stopDiscovery()
+                            nodeRepository.startDiscovery()
+                            Log.i(tag, "Reconnected after network change")
+                        } catch (e: Exception) {
+                            Log.w(tag, "Reconnect on network change failed: ${e.message}")
+                        }
+                    }
+                }
+            }
+        }
+        networkCallback = callback
+        cm.registerNetworkCallback(request, callback)
+    }
+
+    private fun unregisterNetworkCallback() {
+        networkCallback?.let { cb ->
+            try {
+                val cm = getSystemService(ConnectivityManager::class.java)
+                cm?.unregisterNetworkCallback(cb)
+            } catch (_: Exception) {}
+        }
+        networkCallback = null
     }
 
     private fun updateMediaNotification(renderer: LocalRendererService, state: RendererState) {
