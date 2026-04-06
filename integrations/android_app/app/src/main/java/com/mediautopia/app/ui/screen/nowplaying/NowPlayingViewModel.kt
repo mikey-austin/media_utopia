@@ -105,6 +105,10 @@ class NowPlayingViewModel @Inject constructor(
     private val rendererState: StateFlow<RendererState?> =
         activeRendererRepository.activeRendererId.flatMapLatest { rendererId ->
             Log.d(tag, "Active renderer changed to: $rendererId")
+            // Reset resolved metadata when switching renderers.
+            _resolvedMetadata.value = null
+            lastResolvedItemId = null
+            _interpolatedPositionMs.value = 0
             rendererStateRepository.observeState(rendererId)
                 .onStart<RendererState?> { emit(null) }
                 .catch { emit(null) }
@@ -156,7 +160,7 @@ class NowPlayingViewModel @Inject constructor(
                     nodes[rendererId]?.name ?: "Unknown Renderer"
                 }
             }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "This Phone")
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, "This Phone")
 
     val uiState: StateFlow<NowPlayingUiState> = combine(
         rendererState,
@@ -212,7 +216,7 @@ class NowPlayingViewModel @Inject constructor(
         )
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
+        started = SharingStarted.Eagerly,
         initialValue = NowPlayingUiState(),
     )
 
