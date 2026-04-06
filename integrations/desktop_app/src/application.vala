@@ -39,6 +39,7 @@ namespace Mu {
             load_css ();
             init_services ();
             register_notification_actions ();
+            register_keyboard_shortcuts ();
         }
 
         protected override void activate () {
@@ -233,6 +234,118 @@ namespace Mu {
                 activate ();
             });
             add_action (raise_action);
+        }
+
+        /**
+         * Register keyboard shortcut actions and bind accelerators.
+         */
+        private void register_keyboard_shortcuts () {
+            /* app.previous — previous track */
+            var prev_action = new SimpleAction ("previous", null);
+            prev_action.activate.connect (() => {
+                send_active_command ("playback.prev", new Json.Object ());
+            });
+            add_action (prev_action);
+
+            /* app.seek-forward — seek +10s */
+            var seek_fwd_action = new SimpleAction ("seek-forward", null);
+            seek_fwd_action.activate.connect (() => {
+                var renderer_id = active_renderer_repo.active_renderer_id;
+                if (renderer_id.length == 0) return;
+
+                var state = state_repo.get_state (renderer_id);
+                if (state != null && state.playback != null) {
+                    var target = state.playback.position_ms + 10000;
+                    if (state.playback.duration_ms > 0) {
+                        target = int64.min (target, state.playback.duration_ms);
+                    }
+                    send_active_command ("playback.seek",
+                        PlaybackBodies.seek (target));
+                }
+            });
+            add_action (seek_fwd_action);
+
+            /* app.seek-back — seek -10s */
+            var seek_back_action = new SimpleAction ("seek-back", null);
+            seek_back_action.activate.connect (() => {
+                var renderer_id = active_renderer_repo.active_renderer_id;
+                if (renderer_id.length == 0) return;
+
+                var state = state_repo.get_state (renderer_id);
+                if (state != null && state.playback != null) {
+                    var target = int64.max (0, state.playback.position_ms - 10000);
+                    send_active_command ("playback.seek",
+                        PlaybackBodies.seek (target));
+                }
+            });
+            add_action (seek_back_action);
+
+            /* app.volume-up — increase volume by 5% */
+            var vol_up_action = new SimpleAction ("volume-up", null);
+            vol_up_action.activate.connect (() => {
+                var renderer_id = active_renderer_repo.active_renderer_id;
+                if (renderer_id.length == 0) return;
+
+                var state = state_repo.get_state (renderer_id);
+                if (state != null && state.playback != null) {
+                    var target = double.min (1.0, state.playback.volume + 0.05);
+                    send_active_command ("playback.setVolume",
+                        PlaybackBodies.set_volume (target));
+                }
+            });
+            add_action (vol_up_action);
+
+            /* app.volume-down — decrease volume by 5% */
+            var vol_down_action = new SimpleAction ("volume-down", null);
+            vol_down_action.activate.connect (() => {
+                var renderer_id = active_renderer_repo.active_renderer_id;
+                if (renderer_id.length == 0) return;
+
+                var state = state_repo.get_state (renderer_id);
+                if (state != null && state.playback != null) {
+                    var target = double.max (0.0, state.playback.volume - 0.05);
+                    send_active_command ("playback.setVolume",
+                        PlaybackBodies.set_volume (target));
+                }
+            });
+            add_action (vol_down_action);
+
+            /* app.mute-toggle — toggle mute */
+            var mute_action = new SimpleAction ("mute-toggle", null);
+            mute_action.activate.connect (() => {
+                var renderer_id = active_renderer_repo.active_renderer_id;
+                if (renderer_id.length == 0) return;
+
+                var state = state_repo.get_state (renderer_id);
+                if (state != null && state.playback != null) {
+                    send_active_command ("playback.setMute",
+                        PlaybackBodies.set_mute (!state.playback.mute));
+                }
+            });
+            add_action (mute_action);
+
+            /* app.quit-or-hide — quit or hide to tray */
+            var quit_action = new SimpleAction ("quit-or-hide", null);
+            quit_action.activate.connect (() => {
+                var window = active_window;
+                if (window != null && app_settings.get_boolean ("close-to-tray")) {
+                    window.set_visible (false);
+                } else {
+                    quit ();
+                }
+            });
+            add_action (quit_action);
+
+            /* Bind keyboard accelerators to actions */
+            set_accels_for_action ("app.play-pause", { "space" });
+            set_accels_for_action ("app.next", { "n" });
+            set_accels_for_action ("app.previous", { "p" });
+            set_accels_for_action ("app.seek-forward", { "Right" });
+            set_accels_for_action ("app.seek-back", { "Left" });
+            set_accels_for_action ("app.volume-up", { "Up" });
+            set_accels_for_action ("app.volume-down", { "Down" });
+            set_accels_for_action ("app.mute-toggle", { "m" });
+            set_accels_for_action ("app.quit-or-hide", { "<Control>q" });
         }
 
         /**
