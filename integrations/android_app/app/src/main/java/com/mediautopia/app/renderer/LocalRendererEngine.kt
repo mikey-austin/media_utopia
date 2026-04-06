@@ -449,9 +449,12 @@ class LocalRendererEngine(
     private fun handlePlaybackNext(cmd: CommandEnvelope): ReplyEnvelope {
         engineLock.write {
             requireLease(cmd)?.let { return it }
+            Log.d(tag, "playback.next: index=${queue.index}, size=${queue.entries.size}, repeat=${queue.repeat}, mode=${queue.repeatMode}")
             if (queue.nextEntry() == null) {
+                Log.d(tag, "playback.next: end of queue, no wrap")
                 return errorReply(cmd, "NOT_FOUND", "end of queue")
             }
+            Log.d(tag, "playback.next: now at index=${queue.index}")
             return startCurrentPlayback(cmd)
         }
     }

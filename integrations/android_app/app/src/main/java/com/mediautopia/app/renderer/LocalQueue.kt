@@ -127,8 +127,12 @@ class LocalQueue {
     }
 
     fun jump(jumpIndex: Long): LocalQueueEntry? {
-        if (jumpIndex < 0 || jumpIndex >= entries.size) return null
-        index = jumpIndex
+        val resolvedIndex = if (jumpIndex < 0) {
+            // Negative index counts from end: -1 = last, -2 = second to last, etc.
+            (entries.size + jumpIndex).toLong()
+        } else jumpIndex
+        if (resolvedIndex < 0 || resolvedIndex >= entries.size) return null
+        index = resolvedIndex
         bumpRevision()
         return entries[index.toInt()]
     }

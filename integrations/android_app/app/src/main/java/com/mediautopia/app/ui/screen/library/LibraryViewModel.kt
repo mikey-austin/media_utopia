@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mediautopia.app.data.protocol.ItemRef
+import com.mediautopia.app.data.protocol.PlaybackPlayBody
 import com.mediautopia.app.data.protocol.QueueAddBody
 import com.mediautopia.app.data.protocol.QueueEntry
 import com.mediautopia.app.data.protocol.ResolvedSource
@@ -407,13 +408,13 @@ class LibraryViewModel @Inject constructor(
                 val entry = buildQueueEntry(itemId)
                 val lease = leaseManager.ensureLease(rendererId)
 
-                // Add as next item in queue, then skip to it.
+                // Add to end of queue, then jump to and play the last item.
                 correlator.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
                         QueueAddBody(
-                            position = "next",
+                            position = "end",
                             entries = listOf(entry),
                         )
                     ),
@@ -422,8 +423,10 @@ class LibraryViewModel @Inject constructor(
 
                 correlator.send(
                     nodeId = rendererId,
-                    cmdType = "playback.next",
-                    body = json.encodeToJsonElement(mapOf<String, String>()),
+                    cmdType = "playback.play",
+                    body = json.encodeToJsonElement(
+                        PlaybackPlayBody(index = -1)
+                    ),
                     lease = lease,
                 )
                 snackbarManager.show("Playing")
