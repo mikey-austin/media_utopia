@@ -64,6 +64,9 @@ sources = files(
     'src/protocol/state.vala',
     'src/protocol/presence.vala',
     'src/protocol/bodies.vala',
+    'src/services/command_dedup.vala',
+    'src/services/command_correlator.vala',
+    'src/services/lease_manager.vala',
 )
 
 # Build
