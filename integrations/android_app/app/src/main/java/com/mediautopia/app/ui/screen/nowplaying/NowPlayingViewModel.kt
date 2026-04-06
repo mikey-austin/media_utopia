@@ -72,6 +72,7 @@ class NowPlayingViewModel @Inject constructor(
     private val leaseManager: LeaseManager,
     private val correlator: CommandCorrelator,
     private val settingsDataStore: com.mediautopia.app.data.cache.SettingsDataStore,
+    val audioSessionHolder: com.mediautopia.app.renderer.AudioSessionHolder,
 ) : ViewModel() {
 
     private val tag = "NowPlayingViewModel"

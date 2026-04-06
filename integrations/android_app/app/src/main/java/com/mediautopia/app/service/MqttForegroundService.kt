@@ -44,6 +44,7 @@ class MqttForegroundService : Service() {
     @Inject lateinit var settingsDataStore: SettingsDataStore
     @Inject lateinit var rendererStateRepository: RendererStateRepository
     @Inject lateinit var queueStore: QueueStore
+    @Inject lateinit var audioSessionHolder: com.mediautopia.app.renderer.AudioSessionHolder
 
     private val tag = "MqttForegroundService"
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -107,6 +108,7 @@ class MqttForegroundService : Service() {
                     rendererStateRepository = rendererStateRepository,
                     context = this@MqttForegroundService,
                     queueStore = queueStore,
+                    audioSessionHolder = audioSessionHolder,
                 )
 
                 // When renderer state changes, update the notification.

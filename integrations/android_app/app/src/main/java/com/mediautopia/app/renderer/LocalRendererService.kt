@@ -48,6 +48,7 @@ class LocalRendererService(
     private val rendererStateRepository: RendererStateRepository,
     private val context: Context,
     private val queueStore: com.mediautopia.app.data.cache.QueueStore,
+    private val audioSessionHolder: AudioSessionHolder,
 ) {
     private val tag = "LocalRendererService"
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -90,6 +91,7 @@ class LocalRendererService(
                 engine?.onTrackFinished()
             }
             driver = exoDriver
+            audioSessionHolder.set(exoDriver.exoPlayer.audioSessionId)
 
             val eng = LocalRendererEngine(
                 nodeId = nodeId,
@@ -268,6 +270,7 @@ class LocalRendererService(
             mediaSession = null
             audioFocusManager?.abandonFocus()
             audioFocusManager = null
+            audioSessionHolder.clear()
             driver?.release()
             driver = null
             engine = null

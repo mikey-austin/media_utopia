@@ -70,9 +70,29 @@ fun NowPlayingScreen(
     viewModel: NowPlayingViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val audioSessionId by viewModel.audioSessionHolder.sessionId.collectAsStateWithLifecycle()
+
+    // Request RECORD_AUDIO permission when visualizer is enabled.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val permissionGranted = remember {
+        androidx.compose.runtime.mutableStateOf(
+            context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted -> permissionGranted.value = granted }
+
+    androidx.compose.runtime.LaunchedEffect(uiState.visualizerEnabled) {
+        if (uiState.visualizerEnabled && !permissionGranted.value) {
+            permissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     NowPlayingContent(
         state = uiState,
+        audioSessionId = if (permissionGranted.value) audioSessionId else 0,
         onTogglePlayPause = viewModel::togglePlayPause,
         onNext = viewModel::next,
         onPrevious = viewModel::previous,
@@ -86,6 +106,7 @@ fun NowPlayingScreen(
 @Composable
 private fun NowPlayingContent(
     state: NowPlayingUiState,
+    audioSessionId: Int = 0,
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -118,10 +139,10 @@ private fun NowPlayingContent(
         )
 
         // Audio visualizer (below artwork, above metadata).
-        if (state.visualizerEnabled && state.playbackStatus == "playing") {
+        if (state.visualizerEnabled && state.playbackStatus == "playing" && audioSessionId != 0) {
             Spacer(modifier = Modifier.height(8.dp))
             com.mediautopia.app.ui.components.AudioVisualizer(
-                audioSessionId = 0,
+                audioSessionId = audioSessionId,
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
         }
