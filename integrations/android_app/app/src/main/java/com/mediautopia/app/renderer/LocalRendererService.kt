@@ -5,9 +5,11 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.media3.session.MediaSession
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
 import com.mediautopia.app.data.protocol.CommandEnvelope
+import com.mediautopia.app.data.protocol.PlaybackSeekBody
 import com.mediautopia.app.data.protocol.Presence
 import com.mediautopia.app.data.protocol.ReplyEnvelope
 import com.mediautopia.app.data.protocol.RendererState
@@ -29,6 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.encodeToJsonElement
 
 /**
  * Wires together the local renderer: ExoPlayer driver, command engine,
@@ -58,6 +61,14 @@ class LocalRendererService(
     private var driver: ExoPlayerDriver? = null
     private var engine: LocalRendererEngine? = null
     private var audioFocusManager: AudioFocusManager? = null
+    private var mediaSessionManager: MediaSessionManager? = null
+
+    /** Exposed so MqttForegroundService can use the session token for MediaStyle notification. */
+    var mediaSession: MediaSession? = null
+        private set
+
+    /** Callback invoked when the notification needs updating (state or metadata changed). */
+    var onNotificationUpdate: ((RendererState) -> Unit)? = null
 
     private var cmdSubscriptionId: String? = null
     private val cmdChannel = Channel<CommandEnvelope>(capacity = 64)
@@ -106,6 +117,18 @@ class LocalRendererService(
             })
             audioFocusManager = afm
 
+            // MediaSession: wraps ExoPlayer with ForwardingPlayer that routes
+            // transport commands through the MU engine (with lease validation).
+            val msm = MediaSessionManager(
+                context = context,
+                exoPlayer = exoDriver.exoPlayer,
+                scope = scope,
+                onTransportCommand = { command -> handleTransportCommand(eng, command) },
+            )
+            val session = msm.create()
+            mediaSessionManager = msm
+            mediaSession = session
+
             // Now launch the async work on the coroutine scope.
             scope.launch { startAsync(eng) }
         }
@@ -134,13 +157,18 @@ class LocalRendererService(
             }
         }
 
-        // State debouncer: collect stateFlow, debounce 50ms, publish.
+        // State debouncer: collect stateFlow, debounce 50ms, publish + update MediaSession.
         workerJobs += scope.launch {
             @OptIn(FlowPreview::class)
             eng.stateFlow
                 .debounce(50)
                 .collectLatest { state ->
                     publishState(state)
+                    // Update MediaSession on main thread.
+                    withContext(Dispatchers.Main) {
+                        mediaSessionManager?.updateState(state, eng.currentEntry())
+                    }
+                    onNotificationUpdate?.invoke(state)
                 }
         }
 
@@ -197,8 +225,11 @@ class LocalRendererService(
         scope.cancel()
         cmdChannel.close()
 
-        // Release ExoPlayer on main thread.
+        // Release MediaSession + ExoPlayer on main thread.
         mainHandler.post {
+            mediaSessionManager?.release()
+            mediaSessionManager = null
+            mediaSession = null
             audioFocusManager?.abandonFocus()
             audioFocusManager = null
             driver?.release()
@@ -207,6 +238,60 @@ class LocalRendererService(
         }
 
         Log.i(tag, "Local renderer stopped")
+    }
+
+    /**
+     * Handle transport commands from the MediaSession bridge player.
+     * These come from the system notification / lock screen / Bluetooth controls.
+     */
+    private fun handleTransportCommand(eng: LocalRendererEngine, command: String) {
+        scope.launch {
+            try {
+                val lease = eng.currentLease()
+                if (lease == null) {
+                    Log.w(tag, "Transport command $command ignored — no lease")
+                    return@launch
+                }
+                val emptyBody = json.encodeToJsonElement(mapOf<String, String>())
+
+                when {
+                    command == "playback.play" || command == "playback.pause" ||
+                    command == "playback.stop" || command == "playback.next" ||
+                    command == "playback.prev" -> {
+                        val cmd = CommandEnvelope(
+                            id = "mediasession-${System.currentTimeMillis()}",
+                            type = command,
+                            from = "mediasession",
+                            lease = lease,
+                            body = emptyBody,
+                            ts = System.currentTimeMillis() / 1000,
+                        )
+                        withContext(Dispatchers.Main) {
+                            if (command == "playback.play") {
+                                audioFocusManager?.requestFocus()
+                            }
+                            eng.handleCommand(cmd)
+                        }
+                    }
+                    command.startsWith("playback.seek:") -> {
+                        val posMs = command.substringAfter(":").toLongOrNull() ?: return@launch
+                        val cmd = CommandEnvelope(
+                            id = "mediasession-${System.currentTimeMillis()}",
+                            type = "playback.seek",
+                            from = "mediasession",
+                            lease = lease,
+                            body = json.encodeToJsonElement(PlaybackSeekBody(positionMs = posMs)),
+                            ts = System.currentTimeMillis() / 1000,
+                        )
+                        withContext(Dispatchers.Main) {
+                            eng.handleCommand(cmd)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Transport command $command failed: ${e.message}")
+            }
+        }
     }
 
     // -----------------------------------------------------------------

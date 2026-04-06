@@ -2,16 +2,21 @@ package com.mediautopia.app.service
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaStyleNotificationHelper
+import com.mediautopia.app.MainActivity
 import com.mediautopia.app.data.cache.SettingsDataStore
 import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
+import com.mediautopia.app.data.protocol.RendererState
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
 import com.mediautopia.app.domain.usecase.CommandCorrelator
@@ -40,6 +45,7 @@ class MqttForegroundService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "mu_service"
+        private const val MEDIA_CHANNEL_ID = "mu_media"
         private const val NOTIFICATION_ID = 1
 
         fun start(context: Context) {
@@ -56,8 +62,8 @@ class MqttForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
+        createNotificationChannels()
+        startForeground(NOTIFICATION_ID, buildServiceNotification("Connecting..."))
 
         serviceScope.launch {
             try {
@@ -83,6 +89,12 @@ class MqttForegroundService : Service() {
                     rendererStateRepository = rendererStateRepository,
                     context = this@MqttForegroundService,
                 )
+
+                // When renderer state changes, update the notification.
+                renderer.onNotificationUpdate = { state ->
+                    updateMediaNotification(renderer, state)
+                }
+
                 renderer.start()
                 localRenderer = renderer
 
@@ -101,8 +113,12 @@ class MqttForegroundService : Service() {
                     ConnectionState.RECONNECTING -> "Reconnecting..."
                     ConnectionState.DISCONNECTED -> "Disconnected"
                 }
-                val manager = getSystemService(NotificationManager::class.java)
-                manager.notify(NOTIFICATION_ID, buildNotification(text))
+                // Only update with service notification when no media is playing.
+                val renderer = localRenderer
+                if (renderer?.mediaSession == null) {
+                    val manager = getSystemService(NotificationManager::class.java)
+                    manager.notify(NOTIFICATION_ID, buildServiceNotification(text))
+                }
             }
         }
 
@@ -128,20 +144,78 @@ class MqttForegroundService : Service() {
         super.onDestroy()
     }
 
-    private fun createNotificationChannel() {
-        val channel = NotificationChannel(
+    private fun updateMediaNotification(renderer: LocalRendererService, state: RendererState) {
+        val session = renderer.mediaSession ?: return
+        val manager = getSystemService(NotificationManager::class.java)
+
+        val status = state.playback?.status ?: "stopped"
+        if (status == "stopped" && state.current == null) {
+            // No media playing — revert to simple service notification.
+            manager.notify(NOTIFICATION_ID, buildServiceNotification("Connected"))
+            return
+        }
+
+        val notification = buildMediaNotification(session, state)
+        manager.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun buildMediaNotification(session: MediaSession, state: RendererState): android.app.Notification {
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val status = state.playback?.status ?: "stopped"
+        val title = state.current?.metadata?.let { meta ->
+            (meta["title"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+        } ?: "Media Utopia"
+        val artist = state.current?.metadata?.let { meta ->
+            (meta["artist"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+        }
+
+        return NotificationCompat.Builder(this, MEDIA_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(artist ?: if (status == "playing") "Playing" else "Paused")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentIntent(contentIntent)
+            .setOngoing(status == "playing")
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setStyle(MediaStyleNotificationHelper.MediaStyle(session))
+            .setSilent(true)
+            .build()
+    }
+
+    private fun createNotificationChannels() {
+        val manager = getSystemService(NotificationManager::class.java)
+
+        // Service channel (low priority, connection status).
+        val serviceChannel = NotificationChannel(
             CHANNEL_ID,
-            "Media Utopia",
+            "Media Utopia Service",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "Keeps the MQTT connection alive"
             setSound(null, null)
         }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(channel)
+        manager.createNotificationChannel(serviceChannel)
+
+        // Media channel (default priority, playback controls).
+        val mediaChannel = NotificationChannel(
+            MEDIA_CHANNEL_ID,
+            "Media Utopia Playback",
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = "Media playback controls"
+            setSound(null, null)
+        }
+        manager.createNotificationChannel(mediaChannel)
     }
 
-    private fun buildNotification(text: String) =
+    private fun buildServiceNotification(text: String) =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Media Utopia")
             .setContentText(text)

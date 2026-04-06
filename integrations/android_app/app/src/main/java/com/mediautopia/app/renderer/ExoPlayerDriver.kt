@@ -22,7 +22,7 @@ class ExoPlayerDriver(
 
     private val tag = "ExoPlayerDriver"
 
-    private val player: ExoPlayer = ExoPlayer.Builder(context).build().also { p ->
+    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context).build().also { p ->
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
@@ -44,36 +44,36 @@ class ExoPlayerDriver(
     @OptIn(UnstableApi::class)
     override fun play(url: String, positionMs: Long) {
         Log.d(tag, "play url=$url positionMs=$positionMs")
-        player.stop()
-        player.clearMediaItems()
-        player.setMediaItem(MediaItem.fromUri(url))
-        player.prepare()
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
+        exoPlayer.setMediaItem(MediaItem.fromUri(url))
+        exoPlayer.prepare()
         if (positionMs > 0) {
-            player.seekTo(positionMs)
+            exoPlayer.seekTo(positionMs)
         }
-        player.play()
+        exoPlayer.play()
     }
 
     override fun pause() {
-        player.pause()
+        exoPlayer.pause()
     }
 
     override fun resume() {
-        player.play()
+        exoPlayer.play()
     }
 
     override fun stop() {
-        player.stop()
-        player.clearMediaItems()
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
     }
 
     override fun seekTo(positionMs: Long) {
-        player.seekTo(positionMs)
+        exoPlayer.seekTo(positionMs)
     }
 
     override fun setVolume(volume: Float) {
         val clamped = volume.coerceIn(0.0f, 1.0f)
-        player.volume = clamped
+        exoPlayer.volume = clamped
         if (!isMuted) {
             savedVolume = clamped
         }
@@ -82,25 +82,25 @@ class ExoPlayerDriver(
     override fun setMute(mute: Boolean) {
         isMuted = mute
         if (mute) {
-            savedVolume = player.volume
-            player.volume = 0.0f
+            savedVolume = exoPlayer.volume
+            exoPlayer.volume = 0.0f
         } else {
-            player.volume = savedVolume
+            exoPlayer.volume = savedVolume
         }
     }
 
     override fun position(): DriverPosition {
-        val valid = player.playbackState == Player.STATE_READY ||
-            player.playbackState == Player.STATE_BUFFERING
+        val valid = exoPlayer.playbackState == Player.STATE_READY ||
+            exoPlayer.playbackState == Player.STATE_BUFFERING
         return DriverPosition(
-            positionMs = player.currentPosition,
-            durationMs = player.duration.coerceAtLeast(0),
+            positionMs = exoPlayer.currentPosition,
+            durationMs = exoPlayer.duration.coerceAtLeast(0),
             isValid = valid,
         )
     }
 
     override fun release() {
         Log.i(tag, "Releasing ExoPlayer")
-        player.release()
+        exoPlayer.release()
     }
 }

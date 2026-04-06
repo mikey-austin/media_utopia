@@ -194,6 +194,28 @@ class LocalRendererEngine(
         }
     }
 
+    /**
+     * Get the current queue entry (for metadata in MediaSession).
+     */
+    fun currentEntry(): LocalQueueEntry? {
+        engineLock.read {
+            val idx = queue.index.toInt()
+            return queue.entries.getOrNull(idx)
+        }
+    }
+
+    /**
+     * Get the current lease as a protocol Lease, or null if no active session.
+     * Used by MediaSession transport to build valid command envelopes.
+     */
+    fun currentLease(): com.mediautopia.app.data.protocol.Lease? {
+        val session = leaseManager.current() ?: return null
+        return com.mediautopia.app.data.protocol.Lease(
+            sessionId = session.id,
+            token = leaseManager.currentToken() ?: return null,
+        )
+    }
+
     // -----------------------------------------------------------------
     // Session handlers
     // -----------------------------------------------------------------
@@ -610,10 +632,14 @@ class LocalRendererEngine(
             val itemId = entry.ref?.id ?: entry.resolved?.url ?: ""
             val url = entry.resolved?.url ?: ""
             val mime = entry.resolved?.mime ?: ""
+            val meta = entry.metadata?.let { obj ->
+                obj.mapValues { (_, v) -> v as kotlinx.serialization.json.JsonElement }
+            } ?: emptyMap()
             LocalQueueEntry(
                 itemId = itemId,
                 url = url,
                 mime = mime,
+                metadata = meta,
             )
         }
     }
@@ -708,6 +734,13 @@ internal class RendererLeaseManager(private val idPrefix: String = "renderer") {
         lock.withLock {
             if (!isActiveLocked()) return false
             return sessionId == sid && token == tok
+        }
+    }
+
+    fun currentToken(): String? {
+        lock.withLock {
+            if (!isActiveLocked()) return null
+            return token
         }
     }
 
