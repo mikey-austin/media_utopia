@@ -194,7 +194,6 @@ class RenderersViewModel @Inject constructor(
      */
     private fun ensureStateObservations(renderers: List<Node>) {
         for (node in renderers) {
-            if (node.isLocal) continue
             if (node.nodeId in observedRenderers) continue
             observedRenderers.add(node.nodeId)
 

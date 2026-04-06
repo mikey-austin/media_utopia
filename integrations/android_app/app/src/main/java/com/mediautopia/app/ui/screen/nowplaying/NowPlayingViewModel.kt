@@ -385,12 +385,11 @@ class NowPlayingViewModel @Inject constructor(
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             val currentMode = rendererState.value?.queue?.repeatMode ?: ""
-            // Cycle: "" (off) -> "all" -> "one" -> "" (off)
-            val (nextRepeat, nextMode) = when (currentMode) {
-                "" -> true to "all"
-                "all" -> true to "one"
-                "one" -> false to ""
-                else -> false to ""
+            // Cycle: off -> "all" -> "one" -> off
+            val nextMode = when (currentMode) {
+                "", "off" -> "all"
+                "all" -> "one"
+                else -> "off"
             }
             try {
                 val lease = leaseManager.ensureLease(rendererId)
@@ -398,7 +397,7 @@ class NowPlayingViewModel @Inject constructor(
                     nodeId = rendererId,
                     cmdType = "queue.setRepeat",
                     body = json.encodeToJsonElement(
-                        QueueRepeatBody(repeat = nextRepeat, mode = nextMode)
+                        QueueRepeatBody(repeat = nextMode != "off", mode = nextMode)
                     ),
                     lease = lease,
                 )
