@@ -55,7 +55,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.mediautopia.app.ui.components.HiResBadge
-import com.mediautopia.app.ui.theme.OnPrimary
+import com.mediautopia.app.ui.theme.OnSecondary
 import com.mediautopia.app.ui.theme.Primary
 import com.mediautopia.app.ui.theme.PrimaryContainer
 import com.mediautopia.app.ui.theme.Secondary
@@ -98,13 +98,11 @@ private fun NowPlayingContent(
         modifier = Modifier
             .fillMaxSize()
             .background(
-                androidx.compose.ui.graphics.Brush.verticalGradient(
+                Brush.verticalGradient(
                     colors = listOf(
-                        PrimaryContainer.copy(alpha = 0.6f),
                         Surface,
+                        PrimaryContainer.copy(alpha = 0.5f),
                     ),
-                    startY = 0f,
-                    endY = 800f,
                 )
             )
             .verticalScroll(rememberScrollState())
@@ -408,24 +406,18 @@ private fun PlayPauseButton(
     isPlaying: Boolean,
     onClick: () -> Unit,
 ) {
-    val gradient = Brush.linearGradient(
-        colors = listOf(Primary, PrimaryContainer),
-        start = Offset(0f, 0f),
-        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-    )
-
     Box(
         modifier = Modifier
             .size(64.dp)
             .clip(CircleShape)
-            .background(gradient)
+            .background(Secondary)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
             contentDescription = if (isPlaying) "Pause" else "Play",
-            tint = OnPrimary,
+            tint = OnSecondary,
             modifier = Modifier.size(36.dp),
         )
     }

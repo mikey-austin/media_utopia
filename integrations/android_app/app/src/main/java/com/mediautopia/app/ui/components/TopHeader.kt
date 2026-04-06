@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mediautopia.app.R
 import com.mediautopia.app.ui.theme.Secondary
+import com.mediautopia.app.ui.theme.SurfaceContainerLow
 import com.mediautopia.app.ui.theme.SurfaceContainerHigh
 
 @Composable
@@ -44,19 +46,17 @@ fun TopHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
+            .background(SurfaceContainerLow)
             .padding(top = statusBarPadding.calculateTopPadding())
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Image(
-            painter = painterResource(id = R.drawable.mu_logo),
+            painter = painterResource(id = R.drawable.mu_motif),
             contentDescription = "Media Utopia",
             contentScale = ContentScale.FillHeight,
-            modifier = Modifier
-                .height(32.dp)
-                .padding(start = 8.dp),
+            modifier = Modifier.height(24.dp),
         )
 
         Row(verticalAlignment = Alignment.CenterVertically) {
