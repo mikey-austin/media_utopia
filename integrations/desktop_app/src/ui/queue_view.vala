@@ -329,7 +329,7 @@ namespace Mu {
                 var art_url = item.metadata.get_string_member ("artworkUrl");
                 if (art_url != null && art_url.length > 0) {
                     artwork_loader.load_async (art_url, (texture) => {
-                        if (texture != null) {
+                        if (texture != null && art_picture.get_parent () != null) {
                             art_picture.paintable = texture;
                             art_picture.visible = true;
                             art_icon.visible = false;

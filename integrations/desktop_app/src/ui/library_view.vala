@@ -900,7 +900,7 @@ namespace Mu {
                 var art_url = get_item_artwork_url (item);
                 if (art_url.length > 0) {
                     artwork_loader.load_async (art_url, (texture) => {
-                        if (texture != null) {
+                        if (texture != null && art_picture.get_parent () != null) {
                             art_picture.paintable = texture;
                             art_picture.visible = true;
                             art_icon.visible = false;
@@ -1508,7 +1508,7 @@ namespace Mu {
             var art_url = get_item_artwork_url (entry);
             if (art_url.length > 0) {
                 artwork_loader.load_async (art_url, (texture) => {
-                    if (texture != null) {
+                    if (texture != null && art_picture.get_parent () != null) {
                         art_picture.paintable = texture;
                         art_picture.visible = true;
                         art_icon.visible = false;
