@@ -12,6 +12,7 @@ namespace Mu {
         private ActiveRendererRepository active_repo;
         private CommandCorrelator correlator;
         private LeaseManager lease_mgr;
+        private ArtworkLoader artwork_loader;
 
         /* Header widgets */
         private Gtk.Label track_count_label;
@@ -40,11 +41,13 @@ namespace Mu {
         public QueueView (RendererStateRepository state_repo,
                           ActiveRendererRepository active_repo,
                           CommandCorrelator correlator,
-                          LeaseManager lease_mgr) {
+                          LeaseManager lease_mgr,
+                          ArtworkLoader artwork_loader) {
             this.state_repo = state_repo;
             this.active_repo = active_repo;
             this.correlator = correlator;
             this.lease_mgr = lease_mgr;
+            this.artwork_loader = artwork_loader;
             this.items = new GenericArray<QueueItem> ();
 
             build_ui ();
@@ -299,7 +302,7 @@ namespace Mu {
             }
             card.append (index_label);
 
-            /* Artwork placeholder */
+            /* Artwork */
             var art = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
             art.add_css_class ("queue-art");
             art.width_request = 40;
@@ -313,6 +316,27 @@ namespace Mu {
             art_icon.hexpand = true;
             art_icon.vexpand = true;
             art.append (art_icon);
+
+            var art_picture = new Gtk.Picture ();
+            art_picture.content_fit = Gtk.ContentFit.COVER;
+            art_picture.width_request = 40;
+            art_picture.height_request = 40;
+            art_picture.visible = false;
+            art.append (art_picture);
+
+            /* Load artwork from metadata */
+            if (item.metadata != null && item.metadata.has_member ("artworkUrl")) {
+                var art_url = item.metadata.get_string_member ("artworkUrl");
+                if (art_url != null && art_url.length > 0) {
+                    artwork_loader.load_async (art_url, (texture) => {
+                        if (texture != null) {
+                            art_picture.paintable = texture;
+                            art_picture.visible = true;
+                            art_icon.visible = false;
+                        }
+                    });
+                }
+            }
 
             card.append (art);
 

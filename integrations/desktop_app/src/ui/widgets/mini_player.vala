@@ -12,9 +12,12 @@ namespace Mu {
         private ActiveRendererRepository active_repo;
         private CommandCorrelator correlator;
         private LeaseManager lease_mgr;
+        private ArtworkLoader artwork_loader;
 
         /* Layout widgets */
         private Gtk.Box art_box;
+        private Gtk.Image art_icon;
+        private Gtk.Picture art_picture;
         private Gtk.Label title_label;
         private Gtk.Label artist_label;
         private Gtk.Button prev_button;
@@ -29,6 +32,9 @@ namespace Mu {
         private ulong state_changed_id = 0;
         private ulong active_changed_id = 0;
 
+        /* Track last loaded artwork URL to avoid redundant loads */
+        private string last_artwork_url = "";
+
         /* Signals */
         public signal void clicked ();           /* Navigate to Now Playing */
         public signal void play_pause_clicked ();
@@ -38,13 +44,15 @@ namespace Mu {
         public MiniPlayer (RendererStateRepository state_repo,
                            ActiveRendererRepository active_repo,
                            CommandCorrelator correlator,
-                           LeaseManager lease_mgr) {
+                           LeaseManager lease_mgr,
+                           ArtworkLoader artwork_loader) {
             Object (orientation: Gtk.Orientation.HORIZONTAL, spacing: 0);
 
             this.state_repo = state_repo;
             this.active_repo = active_repo;
             this.correlator = correlator;
             this.lease_mgr = lease_mgr;
+            this.artwork_loader = artwork_loader;
 
             build_ui ();
             connect_signals ();
@@ -94,7 +102,7 @@ namespace Mu {
             art_box.overflow = Gtk.Overflow.HIDDEN;
             art_box.add_css_class ("queue-art");  /* reuse the rounded dark placeholder style */
 
-            var art_icon = new Gtk.Image.from_icon_name ("media-optical-symbolic");
+            art_icon = new Gtk.Image.from_icon_name ("media-optical-symbolic");
             art_icon.pixel_size = 20;
             art_icon.add_css_class ("text-secondary");
             art_icon.halign = Gtk.Align.CENTER;
@@ -102,6 +110,13 @@ namespace Mu {
             art_icon.hexpand = true;
             art_icon.vexpand = true;
             art_box.append (art_icon);
+
+            art_picture = new Gtk.Picture ();
+            art_picture.content_fit = Gtk.ContentFit.COVER;
+            art_picture.width_request = 40;
+            art_picture.height_request = 40;
+            art_picture.visible = false;
+            art_box.append (art_picture);
 
             append (art_box);
 
@@ -213,8 +228,32 @@ namespace Mu {
                 } else {
                     has_track = false;
                 }
+
+                /* Load artwork thumbnail */
+                var art_url = meta.has_member ("artworkUrl")
+                    ? meta.get_string_member ("artworkUrl") : "";
+                if (art_url != null && art_url.length > 0 && art_url != last_artwork_url) {
+                    last_artwork_url = art_url;
+                    artwork_loader.load_async (art_url, (texture) => {
+                        if (texture != null) {
+                            art_picture.paintable = texture;
+                            art_picture.visible = true;
+                            art_icon.visible = false;
+                        } else {
+                            art_picture.visible = false;
+                            art_icon.visible = true;
+                        }
+                    });
+                } else if (art_url == null || art_url.length == 0) {
+                    last_artwork_url = "";
+                    art_picture.visible = false;
+                    art_icon.visible = true;
+                }
             } else {
                 has_track = false;
+                last_artwork_url = "";
+                art_picture.visible = false;
+                art_icon.visible = true;
             }
 
             /* Playback state */

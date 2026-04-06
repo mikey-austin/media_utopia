@@ -19,6 +19,7 @@ namespace Mu {
         private LibraryRepository library_repo;
         private PlaylistRepository playlist_repo;
         private LocalRenderer local_renderer;
+        private ArtworkLoader artwork_loader;
 
         /* ---- Connection status ---- */
         private Gtk.Label connection_label;
@@ -62,6 +63,7 @@ namespace Mu {
             this.library_repo = library_repo;
             this.playlist_repo = playlist_repo;
             this.local_renderer = local_renderer;
+            this.artwork_loader = new ArtworkLoader ();
 
             /* Wire connection status updates */
             update_connection_label (mqtt.connection_state);
@@ -248,15 +250,15 @@ namespace Mu {
             /* Add view stubs */
             content_stack.add_named (
                 new Mu.NowPlayingView (state_repo, active_renderer_repo,
-                    correlator, lease_mgr, local_renderer),
+                    correlator, lease_mgr, artwork_loader, local_renderer),
                 "now-playing");
             content_stack.add_named (
                 new Mu.QueueView (state_repo, active_renderer_repo,
-                    correlator, lease_mgr),
+                    correlator, lease_mgr, artwork_loader),
                 "queue");
             content_stack.add_named (
                 new Mu.LibraryView (node_repo, library_repo, playlist_repo,
-                    active_renderer_repo, correlator, lease_mgr),
+                    active_renderer_repo, correlator, lease_mgr, artwork_loader),
                 "library");
             content_stack.add_named (
                 new Mu.RenderersView (node_repo, state_repo,
@@ -274,7 +276,7 @@ namespace Mu {
 
             /* Mini player — bottom bar below the content stack */
             mini_player = new MiniPlayer (state_repo, active_renderer_repo,
-                correlator, lease_mgr);
+                correlator, lease_mgr, artwork_loader);
             mini_player.visible = false;  /* Hidden until a track is playing and not on Now Playing */
 
             mini_player.clicked.connect (() => {

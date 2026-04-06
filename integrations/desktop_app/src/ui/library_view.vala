@@ -25,6 +25,7 @@ namespace Mu {
         private ActiveRendererRepository active_repo;
         private CommandCorrelator correlator;
         private LeaseManager lease_mgr;
+        private ArtworkLoader artwork_loader;
 
         /* Main layout */
         private Gtk.Stack tab_stack;
@@ -81,13 +82,15 @@ namespace Mu {
                             PlaylistRepository playlist_repo,
                             ActiveRendererRepository active_repo,
                             CommandCorrelator correlator,
-                            LeaseManager lease_mgr) {
+                            LeaseManager lease_mgr,
+                            ArtworkLoader artwork_loader) {
             this.node_repo = node_repo;
             this.library_repo = library_repo;
             this.playlist_repo = playlist_repo;
             this.active_repo = active_repo;
             this.correlator = correlator;
             this.lease_mgr = lease_mgr;
+            this.artwork_loader = artwork_loader;
 
             this.libraries = new GenericArray<Presence> ();
             this.library_model = new GLib.ListStore (typeof (Gtk.StringObject));
@@ -871,7 +874,7 @@ namespace Mu {
                 chevron.valign = Gtk.Align.CENTER;
                 card.append (chevron);
             } else {
-                /* Track row: art placeholder + title/artist + duration + action buttons */
+                /* Track row: artwork + title/artist + duration + action buttons */
                 var art = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
                 art.add_css_class ("queue-art");
                 art.width_request = 40;
@@ -885,6 +888,26 @@ namespace Mu {
                 art_icon.hexpand = true;
                 art_icon.vexpand = true;
                 art.append (art_icon);
+
+                var art_picture = new Gtk.Picture ();
+                art_picture.content_fit = Gtk.ContentFit.COVER;
+                art_picture.width_request = 40;
+                art_picture.height_request = 40;
+                art_picture.visible = false;
+                art.append (art_picture);
+
+                /* Load artwork from metadata */
+                var art_url = get_item_artwork_url (item);
+                if (art_url.length > 0) {
+                    artwork_loader.load_async (art_url, (texture) => {
+                        if (texture != null) {
+                            art_picture.paintable = texture;
+                            art_picture.visible = true;
+                            art_icon.visible = false;
+                        }
+                    });
+                }
+
                 card.append (art);
 
                 /* Text */
@@ -1337,6 +1360,42 @@ namespace Mu {
             index_label.halign = Gtk.Align.CENTER;
             card.append (index_label);
 
+            /* Artwork thumbnail */
+            var art = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
+            art.add_css_class ("queue-art");
+            art.width_request = 40;
+            art.height_request = 40;
+
+            var art_icon = new Gtk.Image.from_icon_name ("media-optical-symbolic");
+            art_icon.pixel_size = 20;
+            art_icon.add_css_class ("text-secondary");
+            art_icon.halign = Gtk.Align.CENTER;
+            art_icon.valign = Gtk.Align.CENTER;
+            art_icon.hexpand = true;
+            art_icon.vexpand = true;
+            art.append (art_icon);
+
+            var art_picture = new Gtk.Picture ();
+            art_picture.content_fit = Gtk.ContentFit.COVER;
+            art_picture.width_request = 40;
+            art_picture.height_request = 40;
+            art_picture.visible = false;
+            art.append (art_picture);
+
+            /* Load artwork from entry metadata */
+            var art_url = get_item_artwork_url (entry);
+            if (art_url.length > 0) {
+                artwork_loader.load_async (art_url, (texture) => {
+                    if (texture != null) {
+                        art_picture.paintable = texture;
+                        art_picture.visible = true;
+                        art_icon.visible = false;
+                    }
+                });
+            }
+
+            card.append (art);
+
             /* Track info from entry metadata */
             var text_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 2);
             text_box.hexpand = true;
@@ -1498,6 +1557,23 @@ namespace Mu {
             }
 
             return "Unknown";
+        }
+
+        private string get_item_artwork_url (Json.Object item) {
+            if (item.has_member ("artworkUrl")) {
+                var url = item.get_string_member ("artworkUrl");
+                if (url != null && url.length > 0) return url;
+            }
+
+            if (item.has_member ("metadata") && !item.get_null_member ("metadata")) {
+                var meta = item.get_object_member ("metadata");
+                if (meta.has_member ("artworkUrl")) {
+                    var url = meta.get_string_member ("artworkUrl");
+                    if (url != null && url.length > 0) return url;
+                }
+            }
+
+            return "";
         }
 
         private string get_item_artist (Json.Object item) {

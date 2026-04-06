@@ -12,9 +12,11 @@ namespace Mu {
         private CommandCorrelator correlator;
         private LeaseManager lease_mgr;
         private LocalRenderer? local_renderer;
+        private ArtworkLoader artwork_loader;
 
         /* Layout widgets */
         private Gtk.Picture artwork;
+        private Gtk.Image art_placeholder;
         private HiResBadge hires_badge;
         private Gtk.Label title_label;
         private Gtk.Label artist_label;
@@ -35,15 +37,20 @@ namespace Mu {
         /* Volume debounce */
         private uint volume_debounce_id = 0;
 
+        /* Track last loaded artwork URL to avoid redundant loads */
+        private string last_artwork_url = "";
+
         public NowPlayingView (RendererStateRepository state_repo,
                                ActiveRendererRepository active_repo,
                                CommandCorrelator correlator,
                                LeaseManager lease_mgr,
+                               ArtworkLoader artwork_loader,
                                LocalRenderer? local_renderer = null) {
             this.state_repo = state_repo;
             this.active_repo = active_repo;
             this.correlator = correlator;
             this.lease_mgr = lease_mgr;
+            this.artwork_loader = artwork_loader;
             this.local_renderer = local_renderer;
 
             build_ui ();
@@ -86,7 +93,7 @@ namespace Mu {
             art_bg.overflow = Gtk.Overflow.HIDDEN;
 
             /* Album art placeholder icon */
-            var art_placeholder = new Gtk.Image.from_icon_name ("media-optical-symbolic");
+            art_placeholder = new Gtk.Image.from_icon_name ("media-optical-symbolic");
             art_placeholder.pixel_size = 80;
             art_placeholder.add_css_class ("text-secondary");
             art_placeholder.hexpand = true;
@@ -252,6 +259,9 @@ namespace Mu {
             placeholder_box.visible = true;
             metadata_box.visible = false;
             visualizer.clear ();
+            last_artwork_url = "";
+            artwork.visible = false;
+            art_placeholder.visible = true;
         }
 
         private void apply_state (RendererState state) {
@@ -280,6 +290,27 @@ namespace Mu {
 
                 /* HiRes badge */
                 hires_badge.update_from_metadata (meta);
+
+                /* Load artwork */
+                var art_url = meta.has_member ("artworkUrl")
+                    ? meta.get_string_member ("artworkUrl") : "";
+                if (art_url != null && art_url.length > 0 && art_url != last_artwork_url) {
+                    last_artwork_url = art_url;
+                    artwork_loader.load_async (art_url, (texture) => {
+                        if (texture != null) {
+                            artwork.paintable = texture;
+                            artwork.visible = true;
+                            art_placeholder.visible = false;
+                        } else {
+                            artwork.visible = false;
+                            art_placeholder.visible = true;
+                        }
+                    });
+                } else if (art_url == null || art_url.length == 0) {
+                    last_artwork_url = "";
+                    artwork.visible = false;
+                    art_placeholder.visible = true;
+                }
             } else {
                 show_placeholder ();
                 return;
