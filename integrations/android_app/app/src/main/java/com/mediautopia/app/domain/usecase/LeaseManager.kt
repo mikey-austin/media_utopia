@@ -97,6 +97,7 @@ class LeaseManager @Inject constructor(
         }
 
         try {
+            val lease = Lease(sessionId = cached.sessionId, token = cached.token)
             val body = json.encodeToJsonElement(
                 mapOf("sessionId" to cached.sessionId, "token" to cached.token)
             )
@@ -104,6 +105,7 @@ class LeaseManager @Inject constructor(
                 nodeId = rendererId,
                 cmdType = "session.release",
                 body = body,
+                lease = lease,
             )
             Log.i(tag, "Released lease for $rendererId")
         } catch (e: Exception) {

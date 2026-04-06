@@ -10,17 +10,20 @@ import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.protocol.RendererState
 import com.mediautopia.app.data.protocol.artistString
 import com.mediautopia.app.data.protocol.title
+import com.mediautopia.app.data.cache.SettingsDataStore
 import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
 import com.mediautopia.app.domain.model.Node
 import com.mediautopia.app.domain.usecase.LeaseManager
+import com.mediautopia.app.ui.SnackbarManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
@@ -38,6 +41,7 @@ data class RendererItem(
     val formatBadge: String? = null,
     val currentTrack: String? = null,
     val leaseOwner: String? = null,
+    val isOwnLease: Boolean = false,
 )
 
 data class RenderersUiState(
@@ -55,8 +59,13 @@ class RenderersViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val metadataCache: MetadataCache,
     private val leaseManager: LeaseManager,
+    private val snackbarManager: SnackbarManager,
+    private val settingsDataStore: SettingsDataStore,
 ) : ViewModel() {
     private val tag = "RenderersViewModel"
+
+    private val appIdentity = settingsDataStore.identity
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     // Per-renderer state observations, keyed by nodeId.
     private val rendererStates = ConcurrentHashMap<String, RendererState>()
@@ -85,6 +94,7 @@ class RenderersViewModel @Inject constructor(
             val isLocalActive = activeId == ActiveRendererRepository.LOCAL_RENDERER_ID ||
                 activeId == localId
 
+            val identity = appIdentity.value
             val localState = rendererStates[localId]
             val localLeaseOwner = localState?.session?.owner
 
@@ -96,6 +106,7 @@ class RenderersViewModel @Inject constructor(
                     isActive = isLocalActive,
                     status = if (isLocalActive) "LOCAL PLAYBACK" else "Local playback",
                     leaseOwner = localLeaseOwner,
+                    isOwnLease = localLeaseOwner != null && localLeaseOwner == identity,
                 )
             )
 
@@ -174,6 +185,7 @@ class RenderersViewModel @Inject constructor(
             formatBadge = formatBadge,
             currentTrack = currentTrack,
             leaseOwner = leaseOwner,
+            isOwnLease = leaseOwner != null && leaseOwner == appIdentity.value,
         )
     }
 
@@ -232,8 +244,10 @@ class RenderersViewModel @Inject constructor(
             try {
                 leaseManager.releaseLease(nodeId)
                 Log.i(tag, "Released lease for $nodeId")
+                snackbarManager.show("Lease released")
             } catch (e: Exception) {
-                Log.e(tag, "releaseLease failed for $nodeId: ${e.message}")
+                Log.e(tag, "releaseLease failed for $nodeId: ${e.message}", e)
+                snackbarManager.show("Release failed: ${e.message}")
             }
         }
     }

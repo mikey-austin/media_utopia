@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mediautopia.app.ui.components.HiResBadge
+import com.mediautopia.app.ui.theme.Primary
 import com.mediautopia.app.ui.theme.Secondary
 import com.mediautopia.app.ui.theme.SurfaceContainerHigh
 import com.mediautopia.app.ui.theme.SurfaceContainerLow
@@ -238,7 +239,6 @@ private fun LocalRendererCard(
         targetValue = if (item.isActive) SurfaceContainerHigh else SurfaceContainerLow,
         label = "localBg",
     )
-    var showMenu by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -279,15 +279,7 @@ private fun LocalRendererCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (item.leaseOwner != null) {
-                Text(
-                    text = "LEASE: ${item.leaseOwner.uppercase()}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            LeaseIndicator(item)
         }
 
         if (item.isActive) {
@@ -303,37 +295,14 @@ private fun LocalRendererCard(
             )
         }
 
-        Box {
-            IconButton(onClick = { showMenu = true }, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    imageVector = Icons.Filled.MoreVert,
-                    contentDescription = "Options",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text("Release lease") },
-                    onClick = {
-                        showMenu = false
-                        onReleaseLease()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Select") },
-                    onClick = {
-                        showMenu = false
-                        onClick()
-                    },
-                )
-            }
-        }
+        RendererMenu(
+            hasLease = item.leaseOwner != null,
+            onRelease = onReleaseLease,
+            onSelect = onClick,
+        )
     }
 }
+
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -346,7 +315,6 @@ private fun NetworkRendererCard(
         targetValue = if (item.isActive) SurfaceContainerHigh else SurfaceContainerLow,
         label = "networkBg",
     )
-    var showMenu by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -392,15 +360,7 @@ private fun NetworkRendererCard(
                 } else Modifier,
             )
 
-            if (item.leaseOwner != null) {
-                Text(
-                    text = "LEASE: ${item.leaseOwner.uppercase()}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            LeaseIndicator(item)
         }
 
         if (item.formatBadge != null) {
@@ -421,37 +381,78 @@ private fun NetworkRendererCard(
             )
         }
 
-        // Hamburger menu.
-        Box {
-            IconButton(onClick = { showMenu = true }, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    imageVector = Icons.Filled.MoreVert,
-                    contentDescription = "Options",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-            ) {
-                if (item.leaseOwner != null) {
-                    DropdownMenuItem(
-                        text = { Text("Release lease") },
-                        onClick = {
-                            showMenu = false
-                            onReleaseLease()
-                        },
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Text("Select") },
-                    onClick = {
-                        showMenu = false
-                        onClick()
-                    },
-                )
-            }
+        RendererMenu(
+            hasLease = item.leaseOwner != null,
+            onRelease = onReleaseLease,
+            onSelect = onClick,
+        )
+    }
+}
+
+// =============================================================================
+// Shared components
+// =============================================================================
+
+@Composable
+private fun LeaseIndicator(item: RendererItem) {
+    when {
+        item.isOwnLease -> {
+            Text(
+                text = "CONTROLLED",
+                style = MaterialTheme.typography.labelSmall,
+                color = Primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Primary.copy(alpha = 0.12f))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+        item.leaseOwner != null -> {
+            Text(
+                text = "LEASE: ${item.leaseOwner.uppercase()}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RendererMenu(
+    hasLease: Boolean,
+    onRelease: () -> Unit,
+    onSelect: () -> Unit,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { showMenu = true }, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = Icons.Filled.MoreVert,
+                contentDescription = "Options",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        DropdownMenu(
+            expanded = showMenu,
+            onDismissRequest = { showMenu = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text(if (hasLease) "Release lease" else "Force release") },
+                onClick = {
+                    showMenu = false
+                    onRelease()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Select") },
+                onClick = {
+                    showMenu = false
+                    onSelect()
+                },
+            )
         }
     }
 }

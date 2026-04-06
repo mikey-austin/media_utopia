@@ -40,7 +40,7 @@ class LocalQueue {
             QueueItem(
                 queueEntryId = entry.queueEntryId,
                 itemId = entry.itemId,
-                metadata = null,
+                metadata = entry.metadata.takeIf { it.isNotEmpty() }?.let { kotlinx.serialization.json.JsonObject(it) },
             )
         }
         return QueueGetReply(revision = revision, index = index, entries = items)

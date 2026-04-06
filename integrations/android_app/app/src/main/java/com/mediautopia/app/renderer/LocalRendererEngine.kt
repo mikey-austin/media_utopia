@@ -506,7 +506,7 @@ class LocalRendererEngine(
         currentItem = CurrentItemState(
             queueEntryId = entry.queueEntryId,
             itemId = entry.itemId,
-            metadata = null, // Metadata resolved separately by controllers.
+            metadata = entry.metadata.takeIf { it.isNotEmpty() }?.let { kotlinx.serialization.json.JsonObject(it) },
         )
         bumpState()
         return ackReply(cmd)
@@ -550,7 +550,7 @@ class LocalRendererEngine(
         currentItem = CurrentItemState(
             queueEntryId = next.queueEntryId,
             itemId = next.itemId,
-            metadata = null, // Metadata resolved separately by controllers.
+            metadata = next.metadata.takeIf { it.isNotEmpty() }?.let { kotlinx.serialization.json.JsonObject(it) },
         )
         bumpState()
     }
@@ -632,9 +632,7 @@ class LocalRendererEngine(
             val itemId = entry.ref?.id ?: entry.resolved?.url ?: ""
             val url = entry.resolved?.url ?: ""
             val mime = entry.resolved?.mime ?: ""
-            val meta = entry.metadata?.let { obj ->
-                obj.mapValues { (_, v) -> v as kotlinx.serialization.json.JsonElement }
-            } ?: emptyMap()
+            val meta: Map<String, kotlinx.serialization.json.JsonElement> = entry.metadata ?: emptyMap()
             LocalQueueEntry(
                 itemId = itemId,
                 url = url,

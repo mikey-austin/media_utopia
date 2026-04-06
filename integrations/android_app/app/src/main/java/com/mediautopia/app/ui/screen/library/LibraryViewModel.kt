@@ -314,8 +314,11 @@ class LibraryViewModel @Inject constructor(
     }
 
     private suspend fun buildQueueEntry(itemId: String): QueueEntry {
+        Log.d(tag, "buildQueueEntry: itemId=$itemId, libraryNodeId=$selectedLibraryNodeId")
         val source = libraryRepository.resolveForPlayback(itemId, selectedLibraryNodeId)
+        Log.d(tag, "buildQueueEntry: resolved=${source != null}, url=${source?.url?.take(80)}")
         val meta = buildMetadataJson(itemId)
+        Log.d(tag, "buildQueueEntry: metadata keys=${meta?.keys}")
         return if (source != null) {
             QueueEntry(
                 ref = ItemRef(id = itemId),
@@ -355,9 +358,12 @@ class LibraryViewModel @Inject constructor(
     fun playItem(itemId: String) {
         viewModelScope.launch {
             val rendererId = activeRendererId.value
+            Log.d(tag, "playItem: itemId=$itemId, renderer=$rendererId")
             try {
                 val entry = buildQueueEntry(itemId)
+                Log.d(tag, "playItem: entry built, hasResolved=${entry.resolved != null}")
                 val lease = leaseManager.ensureLease(rendererId)
+                Log.d(tag, "playItem: lease acquired, session=${lease.sessionId}")
 
                 correlator.send(
                     nodeId = rendererId,
@@ -378,7 +384,8 @@ class LibraryViewModel @Inject constructor(
                     lease = lease,
                 )
             } catch (e: Exception) {
-                Log.e(tag, "playItem failed: ${e.message}")
+                Log.e(tag, "playItem failed: ${e.message}", e)
+                snackbarManager.show("Play failed: ${e.message}")
             }
         }
     }
@@ -411,6 +418,7 @@ class LibraryViewModel @Inject constructor(
     fun addToQueue(itemId: String) {
         viewModelScope.launch {
             val rendererId = activeRendererId.value
+            Log.d(tag, "addToQueue: itemId=$itemId, renderer=$rendererId")
             try {
                 val entry = buildQueueEntry(itemId)
                 val lease = leaseManager.ensureLease(rendererId)
@@ -428,7 +436,7 @@ class LibraryViewModel @Inject constructor(
                 )
                 snackbarManager.show("1 item added to queue")
             } catch (e: Exception) {
-                Log.e(tag, "addToQueue failed: ${e.message}")
+                Log.e(tag, "addToQueue failed: ${e.message}", e)
             }
         }
     }
