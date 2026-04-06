@@ -85,6 +85,9 @@ sources = files(
     'src/renderer/gst_driver.vala',
     'src/renderer/local_queue.vala',
     'src/renderer/local_renderer.vala',
+    'src/platform/mpris2.vala',
+    'src/platform/tray_icon.vala',
+    'src/platform/notifications.vala',
 )
 
 # Build

@@ -16,6 +16,11 @@ namespace Mu {
         private PlaylistRepository playlist_repo;
         private LocalRenderer local_renderer;
 
+        /* ---- Platform services ---- */
+        private Mpris2 mpris2;
+        private TrayManager tray_mgr;
+        private Notifications notifications;
+
         /* ---- Identity ---- */
         private string controller_id;
         private string local_renderer_id;
@@ -33,6 +38,7 @@ namespace Mu {
             base.startup ();
             load_css ();
             init_services ();
+            register_notification_actions ();
         }
 
         protected override void activate () {
@@ -55,7 +61,12 @@ namespace Mu {
         }
 
         protected override void shutdown () {
-            /* Clean up services */
+            /* Clean up platform services */
+            notifications.stop ();
+            tray_mgr.stop ();
+            mpris2.stop ();
+
+            /* Clean up core services */
             local_renderer.stop ();
             lease_mgr.release_all ();
             correlator.cleanup ();
@@ -141,6 +152,17 @@ namespace Mu {
                 }
             });
 
+            /* 11. MPRIS2 D-Bus media player interface */
+            mpris2 = new Mpris2 (this, state_repo, active_renderer_repo,
+                correlator, lease_mgr);
+            mpris2.start ();
+
+            /* 12. Tray manager (keep-alive when window hidden) */
+            tray_mgr = new TrayManager (this, app_settings);
+
+            /* 13. Desktop notifications on track change */
+            notifications = new Notifications (this, state_repo, active_renderer_repo);
+
             /* Connect to MQTT broker */
             connect_mqtt_broker ();
         }
@@ -175,6 +197,58 @@ namespace Mu {
 
             message ("Connecting to MQTT broker at %s:%d (controller=%s)", host, port, controller_id);
             mqtt.connect_to_broker (host, port);
+        }
+
+        /**
+         * Register GLib.SimpleAction handlers for notification buttons
+         * and MPRIS2 Raise action.
+         */
+        private void register_notification_actions () {
+            /* app.next — skip to next track */
+            var next_action = new SimpleAction ("next", null);
+            next_action.activate.connect (() => {
+                send_active_command ("playback.next", new Json.Object ());
+            });
+            add_action (next_action);
+
+            /* app.play-pause — toggle playback */
+            var play_pause_action = new SimpleAction ("play-pause", null);
+            play_pause_action.activate.connect (() => {
+                var renderer_id = active_renderer_repo.active_renderer_id;
+                if (renderer_id.length == 0) return;
+
+                var state = state_repo.get_state (renderer_id);
+                if (state != null && state.playback != null &&
+                    state.playback.status == "playing") {
+                    send_active_command ("playback.pause", new Json.Object ());
+                } else {
+                    send_active_command ("playback.play", PlaybackBodies.play ());
+                }
+            });
+            add_action (play_pause_action);
+
+            /* app.raise-window — bring the window to front */
+            var raise_action = new SimpleAction ("raise-window", null);
+            raise_action.activate.connect (() => {
+                activate ();
+            });
+            add_action (raise_action);
+        }
+
+        /**
+         * Send a fire-and-forget command to the active renderer.
+         * Shared helper for notification action handlers.
+         */
+        private void send_active_command (string cmd_type, Json.Object body) {
+            var renderer_id = active_renderer_repo.active_renderer_id;
+            if (renderer_id.length == 0) return;
+
+            lease_mgr.ensure_lease.begin (renderer_id, (obj, res) => {
+                var lease = lease_mgr.ensure_lease.end (res);
+                if (lease != null) {
+                    correlator.send_fire_and_forget (renderer_id, cmd_type, body, lease);
+                }
+            });
         }
 
         private void load_css () {
