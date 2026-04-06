@@ -360,10 +360,14 @@ namespace Mu {
             session_owner = cmd_from;
             session_expires_at = now_ms () + ttl;
 
+            var session_obj = new Json.Object ();
+            session_obj.set_string_member ("id", session_id);
+            session_obj.set_string_member ("token", session_token);
+            session_obj.set_string_member ("owner", session_owner);
+            session_obj.set_int_member ("leaseExpiresAt", session_expires_at);
+
             var reply_body = new Json.Object ();
-            reply_body.set_string_member ("sessionId", session_id);
-            reply_body.set_string_member ("token", session_token);
-            reply_body.set_int_member ("expiresAt", session_expires_at);
+            reply_body.set_object_member ("session", session_obj);
             reply_body.set_int_member ("stateVersion", state_version);
             reply_body.set_int_member ("queueRevision", queue.revision);
 
@@ -376,8 +380,14 @@ namespace Mu {
             var ttl = body.has_member ("ttlMs") ? body.get_int_member ("ttlMs") : SESSION_TTL_MS;
             session_expires_at = now_ms () + ttl;
 
+            var session_obj = new Json.Object ();
+            session_obj.set_string_member ("id", session_id);
+            session_obj.set_string_member ("token", session_token);
+            session_obj.set_string_member ("owner", session_owner);
+            session_obj.set_int_member ("leaseExpiresAt", session_expires_at);
+
             var reply_body = new Json.Object ();
-            reply_body.set_int_member ("expiresAt", session_expires_at);
+            reply_body.set_object_member ("session", session_obj);
             reply_body.set_int_member ("stateVersion", state_version);
             reply_body.set_int_member ("queueRevision", queue.revision);
 

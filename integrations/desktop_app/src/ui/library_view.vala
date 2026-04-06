@@ -1333,12 +1333,87 @@ namespace Mu {
 
                 if (entries == null || entries.get_length () == 0) return;
 
+                /* Collect item IDs that need metadata resolution */
+                var item_ids = new GenericArray<string> ();
                 for (uint i = 0; i < entries.get_length (); i++) {
                     var entry = entries.get_object_element (i);
-                    var track_row = build_playlist_track_row ((int) i, entry);
-                    playlist_track_list.append (track_row);
+                    var item_id = get_playlist_entry_item_id (entry);
+                    if (item_id.length > 0 &&
+                        !(entry.has_member ("metadata") && !entry.get_null_member ("metadata"))) {
+                        item_ids.add (item_id);
+                    }
+                }
+
+                if (item_ids.length > 0) {
+                    /* Resolve metadata for entries that lack it */
+                    var lib_id = get_first_library_id ();
+                    if (lib_id != null) {
+                        var id_array = new string[item_ids.length];
+                        for (uint k = 0; k < item_ids.length; k++) {
+                            id_array[k] = item_ids[k];
+                        }
+                        library_repo.resolve_batch.begin (lib_id, id_array, true, (robj, rres) => {
+                            var resolved = library_repo.resolve_batch.end (rres);
+                            /* Metadata is now cached in library_repo — rebuild rows */
+                            populate_playlist_track_rows (entries);
+                        });
+                    } else {
+                        populate_playlist_track_rows (entries);
+                    }
+                } else {
+                    populate_playlist_track_rows (entries);
                 }
             });
+        }
+
+        private void populate_playlist_track_rows (Json.Array entries) {
+            /* Clear existing */
+            Gtk.Widget? child = playlist_track_list.get_first_child ();
+            while (child != null) {
+                var next = child.get_next_sibling ();
+                playlist_track_list.remove (child);
+                child = next;
+            }
+
+            for (uint i = 0; i < entries.get_length (); i++) {
+                var entry = entries.get_object_element (i);
+
+                /* Merge cached metadata into entry if it has none */
+                var item_id = get_playlist_entry_item_id (entry);
+                if (item_id.length > 0 &&
+                    !(entry.has_member ("metadata") && !entry.get_null_member ("metadata"))) {
+                    var cached = library_repo.get_cached_metadata (item_id);
+                    if (cached != null) {
+                        entry.set_object_member ("metadata", cached);
+                    }
+                }
+
+                var track_row = build_playlist_track_row ((int) i, entry);
+                playlist_track_list.append (track_row);
+            }
+        }
+
+        private string get_playlist_entry_item_id (Json.Object entry) {
+            /* Entry may have itemId directly, or ref.id */
+            if (entry.has_member ("itemId")) {
+                var id = entry.get_string_member ("itemId");
+                if (id != null && id.length > 0) return id;
+            }
+            if (entry.has_member ("ref") && !entry.get_null_member ("ref")) {
+                var ref_obj = entry.get_object_member ("ref");
+                if (ref_obj.has_member ("id")) {
+                    return ref_obj.get_string_member ("id");
+                }
+            }
+            return "";
+        }
+
+        private string? get_first_library_id () {
+            var libraries = node_repo.get_libraries ();
+            if (libraries.length > 0) {
+                return libraries[0].node_id;
+            }
+            return null;
         }
 
         private Gtk.ListBoxRow build_playlist_track_row (int index, Json.Object entry) {
