@@ -6,6 +6,7 @@ namespace Mu {
 
         private Gtk.ListBox nav_list;
         private Gtk.Stack content_stack;
+        private MiniPlayer mini_player;
         private GLib.Settings settings;
 
         /* ---- Service references ---- */
@@ -232,7 +233,11 @@ namespace Mu {
             /* Vertical separator between sidebar and content */
             paned.append (new Gtk.Separator (Gtk.Orientation.VERTICAL));
 
-            /* --- Content area --- */
+            /* --- Content area (stack + mini player) --- */
+            var content_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
+            content_box.hexpand = true;
+            content_box.vexpand = true;
+
             content_stack = new Gtk.Stack ();
             content_stack.add_css_class ("content-area");
             content_stack.hexpand = true;
@@ -263,7 +268,31 @@ namespace Mu {
 
             content_stack.visible_child_name = "now-playing";
 
-            paned.append (content_stack);
+            content_box.append (content_stack);
+
+            /* Mini player — bottom bar below the content stack */
+            mini_player = new MiniPlayer (state_repo, active_renderer_repo,
+                correlator, lease_mgr);
+            mini_player.visible = false;  /* Hidden until a track is playing and not on Now Playing */
+
+            mini_player.clicked.connect (() => {
+                content_stack.visible_child_name = "now-playing";
+                nav_list.select_row (nav_list.get_row_at_index (0));
+            });
+
+            content_box.append (mini_player);
+
+            /* Show/hide mini player based on current view and track state */
+            content_stack.notify["visible-child-name"].connect (update_mini_player_visibility);
+
+            /* Also update when renderer state changes (track may appear/disappear) */
+            state_repo.state_changed.connect ((node_id, state) => {
+                if (node_id == active_renderer_repo.active_renderer_id) {
+                    update_mini_player_visibility ();
+                }
+            });
+
+            paned.append (content_box);
 
             /* Wire sidebar selection to stack */
             nav_list.row_selected.connect ((row) => {
@@ -278,6 +307,11 @@ namespace Mu {
             nav_list.select_row (nav_list.get_row_at_index (0));
 
             this.content = paned;
+        }
+
+        private void update_mini_player_visibility () {
+            var on_now_playing = content_stack.visible_child_name == "now-playing";
+            mini_player.visible = !on_now_playing && mini_player.get_has_track ();
         }
 
         private Gtk.Box make_nav_row (string label, string icon_name) {
