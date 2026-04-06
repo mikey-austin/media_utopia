@@ -11,6 +11,7 @@ namespace Mu {
         private ActiveRendererRepository active_repo;
         private CommandCorrelator correlator;
         private LeaseManager lease_mgr;
+        private LocalRenderer? local_renderer;
 
         /* Layout widgets */
         private Gtk.Picture artwork;
@@ -18,6 +19,7 @@ namespace Mu {
         private Gtk.Label title_label;
         private Gtk.Label artist_label;
         private Gtk.Label album_label;
+        private AudioVisualizer visualizer;
         private SeekBar seek_bar;
         private TransportControls transport;
 
@@ -28,6 +30,7 @@ namespace Mu {
         /* Signal handler IDs */
         private ulong state_changed_id = 0;
         private ulong active_changed_id = 0;
+        private ulong spectrum_handler_id = 0;
 
         /* Volume debounce */
         private uint volume_debounce_id = 0;
@@ -35,11 +38,13 @@ namespace Mu {
         public NowPlayingView (RendererStateRepository state_repo,
                                ActiveRendererRepository active_repo,
                                CommandCorrelator correlator,
-                               LeaseManager lease_mgr) {
+                               LeaseManager lease_mgr,
+                               LocalRenderer? local_renderer = null) {
             this.state_repo = state_repo;
             this.active_repo = active_repo;
             this.correlator = correlator;
             this.lease_mgr = lease_mgr;
+            this.local_renderer = local_renderer;
 
             build_ui ();
             connect_signals ();
@@ -175,11 +180,9 @@ namespace Mu {
             spacer.height_request = 24;
             metadata_box.append (spacer);
 
-            /* Visualizer placeholder (filled in Task 13) */
-            var viz_placeholder = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 0);
-            viz_placeholder.add_css_class ("visualizer");
-            viz_placeholder.height_request = 48;
-            metadata_box.append (viz_placeholder);
+            /* Audio visualizer (28-bar FFT display) */
+            visualizer = new AudioVisualizer ();
+            metadata_box.append (visualizer);
 
             /* Seek bar */
             seek_bar = new SeekBar ();
@@ -215,6 +218,16 @@ namespace Mu {
             active_changed_id = active_repo.active_renderer_changed.connect ((node_id) => {
                 refresh_from_state ();
             });
+
+            /* Wire spectrum data from local renderer to visualizer */
+            if (local_renderer != null) {
+                spectrum_handler_id = local_renderer.spectrum_data.connect ((mags) => {
+                    /* Only feed visualizer when the active renderer IS the local renderer */
+                    if (active_repo.active_renderer_id == local_renderer.node_id) {
+                        visualizer.update_magnitudes (mags);
+                    }
+                });
+            }
         }
 
         /* ---- State application ---- */
@@ -238,6 +251,7 @@ namespace Mu {
         private void show_placeholder () {
             placeholder_box.visible = true;
             metadata_box.visible = false;
+            visualizer.clear ();
         }
 
         private void apply_state (RendererState state) {
@@ -283,6 +297,13 @@ namespace Mu {
                 transport.is_playing = playing;
                 transport.volume = pb.volume;
                 transport.muted = pb.mute;
+
+                /* Clear visualizer when not playing or when on a remote renderer */
+                bool is_local = local_renderer != null &&
+                    active_repo.active_renderer_id == local_renderer.node_id;
+                if (!playing || !is_local) {
+                    visualizer.clear ();
+                }
             }
 
             /* Queue state */

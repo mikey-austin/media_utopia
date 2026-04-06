@@ -17,6 +17,7 @@ namespace Mu {
         private ActiveRendererRepository active_renderer_repo;
         private LibraryRepository library_repo;
         private PlaylistRepository playlist_repo;
+        private LocalRenderer local_renderer;
 
         /* ---- Connection status ---- */
         private Gtk.Label connection_label;
@@ -44,7 +45,8 @@ namespace Mu {
                         RendererStateRepository state_repo,
                         ActiveRendererRepository active_renderer_repo,
                         LibraryRepository library_repo,
-                        PlaylistRepository playlist_repo) {
+                        PlaylistRepository playlist_repo,
+                        LocalRenderer local_renderer) {
             Object (
                 application: app,
                 title: "Media Utopia"
@@ -58,6 +60,7 @@ namespace Mu {
             this.active_renderer_repo = active_renderer_repo;
             this.library_repo = library_repo;
             this.playlist_repo = playlist_repo;
+            this.local_renderer = local_renderer;
 
             /* Wire connection status updates */
             update_connection_label (mqtt.connection_state);
@@ -240,7 +243,7 @@ namespace Mu {
             /* Add view stubs */
             content_stack.add_named (
                 new Mu.NowPlayingView (state_repo, active_renderer_repo,
-                    correlator, lease_mgr),
+                    correlator, lease_mgr, local_renderer),
                 "now-playing");
             content_stack.add_named (
                 new Mu.QueueView (state_repo, active_renderer_repo,

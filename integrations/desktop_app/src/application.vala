@@ -47,7 +47,8 @@ namespace Mu {
                     state_repo,
                     active_renderer_repo,
                     library_repo,
-                    playlist_repo
+                    playlist_repo,
+                    local_renderer
                 );
             }
             window.present ();
