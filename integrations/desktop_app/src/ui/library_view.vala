@@ -1326,102 +1326,62 @@ namespace Mu {
                 child = next;
             }
 
-            playlist_repo.get_playlist.begin (server_id, playlist_id, (obj, res) => {
-                var entries = playlist_repo.get_playlist.end (res);
-                playlist_spinner.visible = false;
-                playlist_spinner.spinning = false;
-
-                if (entries == null || entries.get_length () == 0) {
-                    warning ("LibraryView: playlist.get returned null or empty");
-                    return;
-                }
-
-                message ("LibraryView: playlist.get returned %u entries", entries.get_length ());
-
-                /* Debug: dump first entry to see structure */
-                if (entries.get_length () > 0) {
-                    var first = entries.get_object_element (0);
-                    var members = first.get_members ();
-                    var sb = new StringBuilder ("entry[0] keys: ");
-                    foreach (unowned string m in members) {
-                        sb.append (m);
-                        sb.append (" ");
-                    }
-                    message ("LibraryView: %s", sb.str);
-                    var first_id = get_playlist_entry_item_id (first);
-                    message ("LibraryView: entry[0] itemId = '%s'", first_id);
-                }
-
-                /* Group items by library for resolution.
-                 * lib: refs embed the library ID: lib:mu:library:{prov}:{ns}:{res}:{item_id}
-                 * We must resolve each item against its OWN library with the RAW item ID. */
-                var lib_to_items = new HashTable<string, GenericArray<string>> (str_hash, str_equal);
-                var full_to_raw = new HashTable<string, string> (str_hash, str_equal);
-
-                for (uint i = 0; i < entries.get_length (); i++) {
-                    var entry = entries.get_object_element (i);
-                    if (entry.has_member ("metadata") && !entry.get_null_member ("metadata")) continue;
-
-                    var full_id = get_playlist_entry_item_id (entry);
-                    if (full_id.length == 0) continue;
-
-                    string lib_id, raw_id;
-                    if (split_lib_ref (full_id, out lib_id, out raw_id)) {
-                        var items = lib_to_items.lookup (lib_id);
-                        if (items == null) {
-                            items = new GenericArray<string> ();
-                            lib_to_items.insert (lib_id, items);
-                        }
-                        items.add (raw_id);
-                        full_to_raw.insert (full_id, raw_id);
-                    }
-                }
-
-                var libs_to_resolve = new GenericArray<string> ();
-                lib_to_items.foreach ((lib_id, items) => {
-                    libs_to_resolve.add (lib_id);
-                });
-
-                if (libs_to_resolve.length == 0) {
-                    populate_playlist_track_rows (entries, full_to_raw);
-                    return;
-                }
-
-                /* Resolve each library's items in sequence */
-                resolve_playlist_libraries.begin (
-                    libs_to_resolve, lib_to_items, 0,
-                    (obj2, res2) => {
-                        resolve_playlist_libraries.end (res2);
-                        populate_playlist_track_rows (entries, full_to_raw);
-                    }
-                );
-            });
+            do_view_playlist.begin (server_id, playlist_id);
         }
 
         /**
-         * Resolve items for each library sequentially to avoid flooding MQTT.
+         * Async playlist content loading: fetch entries, resolve metadata, display.
          */
-        private async void resolve_playlist_libraries (
-            GenericArray<string> lib_ids,
-            HashTable<string, GenericArray<string>> lib_to_items,
-            uint index
-        ) {
-            if (index >= lib_ids.length) return;
+        private async void do_view_playlist (string server_id, string playlist_id) {
+            var entries = yield playlist_repo.get_playlist (server_id, playlist_id);
 
-            var lib_id = lib_ids[index];
-            var items = lib_to_items.lookup (lib_id);
-            if (items != null && items.length > 0) {
-                var id_array = new string[items.length];
-                for (uint k = 0; k < items.length; k++) {
-                    id_array[k] = items[k];
+            playlist_spinner.visible = false;
+            playlist_spinner.spinning = false;
+
+            if (entries == null || entries.get_length () == 0) return;
+
+            /* Parse lib: refs to extract library ID and raw item ID */
+            var full_to_raw = new HashTable<string, string> (str_hash, str_equal);
+            var lib_to_raw_ids = new HashTable<string, GenericArray<string>> (str_hash, str_equal);
+
+            for (uint i = 0; i < entries.get_length (); i++) {
+                var entry = entries.get_object_element (i);
+                if (entry.has_member ("metadata") && !entry.get_null_member ("metadata")) continue;
+
+                var full_id = get_playlist_entry_item_id (entry);
+                if (full_id.length == 0) continue;
+
+                string lib_id, raw_id;
+                if (split_lib_ref (full_id, out lib_id, out raw_id)) {
+                    full_to_raw.insert (full_id, raw_id);
+
+                    var items = lib_to_raw_ids.lookup (lib_id);
+                    if (items == null) {
+                        items = new GenericArray<string> ();
+                        lib_to_raw_ids.insert (lib_id, items);
+                    }
+                    items.add (raw_id);
+                }
+            }
+
+            /* Resolve metadata per library */
+            var lib_keys = new GenericArray<string> ();
+            lib_to_raw_ids.foreach ((k, v) => { lib_keys.add (k); });
+
+            for (uint li = 0; li < lib_keys.length; li++) {
+                var lib_id = lib_keys[li];
+                var raw_ids = lib_to_raw_ids.lookup (lib_id);
+                if (raw_ids == null || raw_ids.length == 0) continue;
+
+                var id_array = new string[raw_ids.length];
+                for (uint k = 0; k < raw_ids.length; k++) {
+                    id_array[k] = raw_ids[k];
                 }
                 yield library_repo.resolve_batch (lib_id, id_array, true);
             }
 
-            /* Recurse to next library */
-            if (index + 1 < lib_ids.length) {
-                yield resolve_playlist_libraries (lib_ids, lib_to_items, index + 1);
-            }
+            /* Build track rows with resolved metadata */
+            populate_playlist_track_rows (entries, full_to_raw);
         }
 
         private void populate_playlist_track_rows (Json.Array entries, HashTable<string, string>? full_to_raw = null) {
