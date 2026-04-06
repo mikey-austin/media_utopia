@@ -58,6 +58,7 @@ sources = files(
     'src/application.vala',
     'src/window.vala',
     'src/ui/now_playing_view.vala',
+    'src/ui/queue_view.vala',
     'src/ui/settings_view.vala',
     'src/ui/renderers_view.vala',
     'src/ui/widgets/hires_badge.vala',
