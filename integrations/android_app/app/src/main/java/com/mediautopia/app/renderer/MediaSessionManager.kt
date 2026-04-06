@@ -43,11 +43,15 @@ class MediaSessionManager(
     private var hasLease = false
 
     fun create(): MediaSession {
+        // Release any previous session to avoid "Session ID must be unique" crash.
+        mediaSession?.release()
+        mediaSession = null
+
         val fwd = MuForwardingPlayer(exoPlayer, onTransportCommand, hasLease = false)
         forwardingPlayer = fwd
 
         val session = MediaSession.Builder(context, fwd)
-            .setId("mu-local-renderer")
+            .setId("mu-local-renderer-${android.os.Process.myPid()}")
             .build()
         mediaSession = session
         Log.i(tag, "MediaSession created")

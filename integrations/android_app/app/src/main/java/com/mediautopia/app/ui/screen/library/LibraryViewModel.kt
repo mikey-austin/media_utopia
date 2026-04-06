@@ -75,6 +75,7 @@ class LibraryViewModel @Inject constructor(
     // Debounced search input.
     private val searchInput = MutableSharedFlow<String>(extraBufferCapacity = 1)
 
+    private var browseJob: Job? = null
     private var loadMoreJob: Job? = null
 
     // Which library we're currently browsing (null = show library selector).
@@ -560,8 +561,9 @@ class LibraryViewModel @Inject constructor(
     // -------------------------------------------------------------------------
 
     private fun browseContainerOnLibrary(libraryNodeId: String, containerId: String) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
+        browseJob?.cancel()
+        browseJob = viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, items = emptyList(), error = null) }
             try {
                 val result = libraryRepository.browse(
                     containerId = containerId,
@@ -590,8 +592,9 @@ class LibraryViewModel @Inject constructor(
             browseContainerOnLibrary(libId, containerId)
             return
         }
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
+        browseJob?.cancel()
+        browseJob = viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, items = emptyList(), error = null) }
 
             try {
                 val result = libraryRepository.browse(
