@@ -100,8 +100,8 @@ private fun NowPlayingContent(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
+                        PrimaryContainer.copy(alpha = 0.7f),
                         Surface,
-                        PrimaryContainer.copy(alpha = 0.5f),
                     ),
                 )
             )

@@ -7,7 +7,7 @@
     <!-- Bar widths: 16px, gaps: ~25px spacing, rounded tops/bottoms -->
     <!-- Heights vary asymmetrically: short-med-tall-med-TALL-short-TALL-med-tall-short-tiny -->
     <path
-        android:fillColor="#E2E3DE"
+        android:fillColor="#CCFF00"
         android:pathData="
             M20,140 Q20,120 24,120 L36,120 Q40,120 40,140 L40,180 Q40,200 36,200 L24,200 Q20,200 20,180 Z
             M60,115 Q60,80 64,80 L76,80 Q80,80 80,115 L80,205 Q80,240 76,240 L64,240 Q60,240 60,205 Z

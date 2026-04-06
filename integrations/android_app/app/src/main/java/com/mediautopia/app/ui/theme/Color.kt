@@ -3,20 +3,20 @@ package com.mediautopia.app.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // Media Utopia — dark-mode only palette
-// Dark green primary, lime accent, near-black neutral surfaces.
+// Lime/chartreuse accent, dark green surfaces.
 
-val Primary = Color(0xFF7BC47F)              // light green for text/icons on dark bg
-val OnPrimary = Color(0xFF003910)
+val Primary = Color(0xFFCCFF00)              // lime — sliders, nav highlights, controls
+val OnPrimary = Color(0xFF1A1C1A)            // dark text on lime
 val PrimaryContainer = Color(0xFF123724)     // dark green container
 val OnPrimaryContainer = Color(0xFFA5F0A8)
 
-val Secondary = Color(0xFFCCFF00)            // lime/chartreuse accent — active states
+val Secondary = Color(0xFFCCFF00)            // lime — same as primary for consistency
 val OnSecondary = Color(0xFF1A1C1A)
 val SecondaryContainer = Color(0xFF2A3A1A)
 val OnSecondaryContainer = Color(0xFFD6FF66)
 
-val Tertiary = Color(0xFFCCFF00)             // same lime for emphasis
-val OnTertiary = Color(0xFF1A1C1A)
+val Tertiary = Color(0xFF7BC47F)             // soft green for subtle accents
+val OnTertiary = Color(0xFF003910)
 
 val Surface = Color(0xFF121412)              // near-black with green tint
 val SurfaceContainerLowest = Color(0xFF0E100E)
