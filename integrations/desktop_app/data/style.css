@@ -438,3 +438,25 @@ switch:checked slider {
     font-size: 14px;
     color: @mu_outline;
 }
+
+/* === Connection Status === */
+.connection-status {
+    padding: 4px 8px;
+}
+
+.connection-icon {
+    color: @mu_on_surface_variant;
+}
+
+.connection-connected {
+    color: @mu_tertiary;
+}
+
+.connection-connecting,
+.connection-reconnecting {
+    color: @mu_on_surface_variant;
+}
+
+.connection-disconnected {
+    color: @mu_error;
+}

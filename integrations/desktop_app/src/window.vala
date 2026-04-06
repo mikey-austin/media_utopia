@@ -8,6 +8,19 @@ namespace Mu {
         private Gtk.Stack content_stack;
         private GLib.Settings settings;
 
+        /* ---- Service references ---- */
+        private MqttClient mqtt;
+        private CommandCorrelator correlator;
+        private LeaseManager lease_mgr;
+        private NodeRepository node_repo;
+        private RendererStateRepository state_repo;
+        private ActiveRendererRepository active_renderer_repo;
+        private LibraryRepository library_repo;
+        private PlaylistRepository playlist_repo;
+
+        /* ---- Connection status ---- */
+        private Gtk.Label connection_label;
+
         /* Navigation items: name, icon, stack-child-name */
         private struct NavItem {
             string label;
@@ -23,11 +36,32 @@ namespace Mu {
             { "Zones", "network-workgroup-symbolic", "zones" }
         };
 
-        public Window (Mu.Application app) {
+        public Window (Mu.Application app,
+                        MqttClient mqtt,
+                        CommandCorrelator correlator,
+                        LeaseManager lease_mgr,
+                        NodeRepository node_repo,
+                        RendererStateRepository state_repo,
+                        ActiveRendererRepository active_renderer_repo,
+                        LibraryRepository library_repo,
+                        PlaylistRepository playlist_repo) {
             Object (
                 application: app,
                 title: "Media Utopia"
             );
+
+            this.mqtt = mqtt;
+            this.correlator = correlator;
+            this.lease_mgr = lease_mgr;
+            this.node_repo = node_repo;
+            this.state_repo = state_repo;
+            this.active_renderer_repo = active_renderer_repo;
+            this.library_repo = library_repo;
+            this.playlist_repo = playlist_repo;
+
+            /* Wire connection status updates */
+            update_connection_label (mqtt.connection_state);
+            mqtt.connection_changed.connect (update_connection_label);
         }
 
         construct {
@@ -64,6 +98,41 @@ namespace Mu {
                 settings.set_int ("window-width", default_width);
                 settings.set_int ("window-height", default_height);
             }
+        }
+
+        private void update_connection_label (ConnectionState state) {
+            if (connection_label == null) return;
+
+            string text;
+            string css_class;
+
+            switch (state) {
+                case ConnectionState.CONNECTED:
+                    text = "Connected";
+                    css_class = "connection-connected";
+                    break;
+                case ConnectionState.CONNECTING:
+                    text = "Connecting...";
+                    css_class = "connection-connecting";
+                    break;
+                case ConnectionState.RECONNECTING:
+                    text = "Reconnecting...";
+                    css_class = "connection-reconnecting";
+                    break;
+                default:
+                    text = "Disconnected";
+                    css_class = "connection-disconnected";
+                    break;
+            }
+
+            connection_label.label = text;
+
+            /* Remove all connection CSS classes and apply the current one */
+            connection_label.remove_css_class ("connection-connected");
+            connection_label.remove_css_class ("connection-connecting");
+            connection_label.remove_css_class ("connection-reconnecting");
+            connection_label.remove_css_class ("connection-disconnected");
+            connection_label.add_css_class (css_class);
         }
 
         private void build_ui () {
@@ -110,6 +179,32 @@ namespace Mu {
             }
 
             sidebar.append (nav_list);
+
+            /* Connection status at bottom of sidebar */
+            var conn_sep = new Gtk.Separator (Gtk.Orientation.HORIZONTAL);
+            conn_sep.margin_start = 12;
+            conn_sep.margin_end = 12;
+            sidebar.append (conn_sep);
+
+            var conn_box = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 6);
+            conn_box.add_css_class ("connection-status");
+            conn_box.margin_start = 16;
+            conn_box.margin_end = 16;
+            conn_box.margin_top = 8;
+            conn_box.margin_bottom = 4;
+
+            var conn_icon = new Gtk.Image.from_icon_name ("network-wireless-symbolic");
+            conn_icon.pixel_size = 14;
+            conn_icon.add_css_class ("connection-icon");
+            conn_box.append (conn_icon);
+
+            connection_label = new Gtk.Label ("Disconnected");
+            connection_label.add_css_class ("caption");
+            connection_label.add_css_class ("connection-disconnected");
+            connection_label.halign = Gtk.Align.START;
+            conn_box.append (connection_label);
+
+            sidebar.append (conn_box);
 
             /* Settings pinned at bottom */
             var settings_sep = new Gtk.Separator (Gtk.Orientation.HORIZONTAL);
