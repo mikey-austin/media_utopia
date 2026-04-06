@@ -61,9 +61,20 @@ class MqttForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private var isStarted = false
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (isStarted) return START_STICKY
+
         createNotificationChannels()
-        startForeground(NOTIFICATION_ID, buildServiceNotification("Connecting..."))
+        try {
+            startForeground(NOTIFICATION_ID, buildServiceNotification("Connecting..."))
+        } catch (e: Exception) {
+            Log.e(tag, "startForeground failed: ${e.message}")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        isStarted = true
 
         serviceScope.launch {
             try {

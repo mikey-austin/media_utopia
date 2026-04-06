@@ -1,6 +1,8 @@
 package com.mediautopia.app.renderer
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
@@ -8,6 +10,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
+import android.graphics.BitmapFactory
 import com.mediautopia.app.data.protocol.RendererState
 import com.mediautopia.app.data.protocol.artistString
 import com.mediautopia.app.data.protocol.artworkUrl
@@ -16,9 +19,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.longOrNull
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.net.URL
 
 /**
  * Bridges the local MU renderer to Android's MediaSession system.
@@ -41,6 +44,9 @@ class MediaSessionManager(
     private var mediaSession: MediaSession? = null
     private var forwardingPlayer: MuForwardingPlayer? = null
     private var hasLease = false
+    private var artworkJob: Job? = null
+    private var cachedArtworkUrl: String? = null
+    private var cachedArtworkBytes: ByteArray? = null
 
     fun create(): MediaSession {
         // Release any previous session to avoid "Session ID must be unique" crash.
@@ -50,8 +56,17 @@ class MediaSessionManager(
         val fwd = MuForwardingPlayer(exoPlayer, onTransportCommand, hasLease = false)
         forwardingPlayer = fwd
 
+        // PendingIntent that opens the app when user taps the system media panel.
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            ?: Intent()
+        val sessionActivity = PendingIntent.getActivity(
+            context, 0, launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         val session = MediaSession.Builder(context, fwd)
             .setId("mu-local-renderer-${android.os.Process.myPid()}")
+            .setSessionActivity(sessionActivity)
             .build()
         mediaSession = session
         Log.i(tag, "MediaSession created")
@@ -74,29 +89,59 @@ class MediaSessionManager(
             }
         }
 
-        // Update media metadata on the ExoPlayer's current MediaItem so
-        // the system media controls show track info. We do this by setting
-        // a MediaItem with metadata on the forwarding player which is
-        // reflected via the session.
         val meta = currentEntry?.metadata
         if (meta != null && meta.isNotEmpty()) {
             val title = meta.title() ?: ""
             val artist = meta.artistString() ?: ""
             val artUrl = meta.artworkUrl()
 
-            val metadata = MediaMetadata.Builder()
-                .setTitle(title.ifEmpty { null })
-                .setArtist(artist.ifEmpty { null })
-                .setArtworkUri(artUrl?.let { android.net.Uri.parse(it) })
-                .build()
+            // Download artwork if URL changed.
+            if (artUrl != null && artUrl != cachedArtworkUrl) {
+                cachedArtworkUrl = artUrl
+                cachedArtworkBytes = null
+                artworkJob?.cancel()
+                artworkJob = scope.launch {
+                    try {
+                        val bytes = withContext(Dispatchers.IO) {
+                            val bitmap = BitmapFactory.decodeStream(URL(artUrl).openStream())
+                                ?: return@withContext null
+                            val out = ByteArrayOutputStream()
+                            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, out)
+                            out.toByteArray()
+                        }
+                        if (bytes != null) {
+                            cachedArtworkBytes = bytes
+                            // Re-push metadata with artwork.
+                            val updated = buildMetadata(title, artist, bytes)
+                            forwardingPlayer?.currentMetadata = updated
+                        }
+                    } catch (e: Exception) {
+                        Log.w(tag, "Failed to load artwork: ${e.message}")
+                    }
+                }
+            }
 
+            val metadata = buildMetadata(title, artist, cachedArtworkBytes)
             forwardingPlayer?.currentMetadata = metadata
-        } else {
+        } else if (state.playback?.status == "stopped") {
             forwardingPlayer?.currentMetadata = null
+            cachedArtworkUrl = null
+            cachedArtworkBytes = null
         }
     }
 
+    private fun buildMetadata(title: String, artist: String, artworkBytes: ByteArray?): MediaMetadata {
+        val builder = MediaMetadata.Builder()
+            .setTitle(title.ifEmpty { null })
+            .setArtist(artist.ifEmpty { null })
+        if (artworkBytes != null) {
+            builder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+        }
+        return builder.build()
+    }
+
     fun release() {
+        artworkJob?.cancel()
         mediaSession?.release()
         mediaSession = null
         forwardingPlayer = null
