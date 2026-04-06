@@ -53,7 +53,7 @@ class MediaSessionManager(
         mediaSession?.release()
         mediaSession = null
 
-        val fwd = MuForwardingPlayer(exoPlayer, onTransportCommand, hasLease = false)
+        val fwd = MuForwardingPlayer(exoPlayer, onTransportCommand, initialHasLease = false)
         forwardingPlayer = fwd
 
         // PendingIntent that opens the app when user taps the system media panel.
@@ -82,11 +82,9 @@ class MediaSessionManager(
         val newHasLease = state.session != null
         if (newHasLease != hasLease) {
             hasLease = newHasLease
+            // The hasLease setter notifies MediaSession listeners that
+            // available commands changed (play/pause/seek/etc).
             forwardingPlayer?.hasLease = newHasLease
-            // Notify listeners that available commands changed.
-            mediaSession?.player?.let { player ->
-                // The ForwardingPlayer delegates this automatically.
-            }
         }
 
         val meta = currentEntry?.metadata
@@ -160,10 +158,36 @@ class MediaSessionManager(
 class MuForwardingPlayer(
     player: ExoPlayer,
     private val onTransportCommand: (String) -> Unit,
-    var hasLease: Boolean,
+    initialHasLease: Boolean,
 ) : ForwardingPlayer(player) {
 
     var currentMetadata: MediaMetadata? = null
+
+    // Track listeners so we can notify when available commands change
+    // (e.g. when hasLease flips). ForwardingPlayer's listener list is
+    // private, so we maintain our own parallel list.
+    private val commandListeners = mutableListOf<Player.Listener>()
+
+    var hasLease: Boolean = initialHasLease
+        set(value) {
+            if (field != value) {
+                field = value
+                val commands = getAvailableCommands()
+                commandListeners.toList().forEach {
+                    it.onAvailableCommandsChanged(commands)
+                }
+            }
+        }
+
+    override fun addListener(listener: Player.Listener) {
+        super.addListener(listener)
+        commandListeners.add(listener)
+    }
+
+    override fun removeListener(listener: Player.Listener) {
+        super.removeListener(listener)
+        commandListeners.remove(listener)
+    }
 
     override fun getAvailableCommands(): Player.Commands {
         val builder = Player.Commands.Builder()
@@ -176,6 +200,8 @@ class MuForwardingPlayer(
                 Player.COMMAND_PLAY_PAUSE,
                 Player.COMMAND_STOP,
                 Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
+                Player.COMMAND_SEEK_BACK,
+                Player.COMMAND_SEEK_FORWARD,
                 Player.COMMAND_SEEK_TO_NEXT,
                 Player.COMMAND_SEEK_TO_PREVIOUS,
             )
@@ -194,6 +220,19 @@ class MuForwardingPlayer(
     override fun stop() { onTransportCommand("playback.stop") }
     override fun seekToNext() { onTransportCommand("playback.next") }
     override fun seekToPrevious() { onTransportCommand("playback.prev") }
+
+    override fun seekBack() {
+        val targetMs = maxOf(0L, currentPosition - seekBackIncrement)
+        onTransportCommand("playback.seek:$targetMs")
+    }
+
+    override fun seekForward() {
+        val targetMs = currentPosition + seekForwardIncrement
+        onTransportCommand("playback.seek:$targetMs")
+    }
+
+    override fun getSeekBackIncrement(): Long = 10_000L
+    override fun getSeekForwardIncrement(): Long = 10_000L
 
     override fun seekTo(positionMs: Long) {
         onTransportCommand("playback.seek:$positionMs")
