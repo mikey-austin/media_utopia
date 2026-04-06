@@ -341,7 +341,7 @@ namespace Mu {
                 builder.add ("{sv}", k, v);
             });
 
-            var invalidated = new Variant.strv ({});
+            var invalidated_builder = new VariantBuilder (new VariantType ("as"));
 
             try {
                 conn.emit_signal (
@@ -353,7 +353,7 @@ namespace Mu {
                         "(sa{sv}as)",
                         "org.mpris.MediaPlayer2.Player",
                         builder,
-                        invalidated
+                        invalidated_builder
                     )
                 );
             } catch (GLib.Error e) {

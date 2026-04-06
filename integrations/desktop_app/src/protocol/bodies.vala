@@ -205,14 +205,19 @@ namespace Mu {
                                    bool byte_range, Json.Object? metadata) {
             var entry = new Json.Object ();
 
-            if (ref_id != null) {
-                entry.set_string_member ("ref", ref_id);
+            if (ref_id != null && ref_id.length > 0) {
+                var ref_obj = new Json.Object ();
+                ref_obj.set_string_member ("id", ref_id);
+                entry.set_object_member ("ref", ref_obj);
             }
 
-            if (url != null) {
+            if (url != null && url.length > 0) {
                 var resolved = new Json.Object ();
+                if (ref_id != null && ref_id.length > 0) {
+                    resolved.set_string_member ("itemId", ref_id);
+                }
                 resolved.set_string_member ("url", url);
-                if (mime != null) {
+                if (mime != null && mime.length > 0) {
                     resolved.set_string_member ("mime", mime);
                 }
                 resolved.set_boolean_member ("byteRange", byte_range);
