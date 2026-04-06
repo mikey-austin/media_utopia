@@ -14,11 +14,13 @@ namespace Mu {
         private ActiveRendererRepository active_renderer_repo;
         private LibraryRepository library_repo;
         private PlaylistRepository playlist_repo;
+        private LocalRenderer local_renderer;
 
         /* ---- Identity ---- */
         private string controller_id;
         private string local_renderer_id;
         private string identity;
+        private bool local_renderer_started = false;
 
         public Application () {
             Object (
@@ -53,6 +55,7 @@ namespace Mu {
 
         protected override void shutdown () {
             /* Clean up services */
+            local_renderer.stop ();
             lease_mgr.release_all ();
             correlator.cleanup ();
             node_repo.stop ();
@@ -102,13 +105,39 @@ namespace Mu {
             /* 9. Playlist repository */
             playlist_repo = new PlaylistRepository (correlator, lease_mgr);
 
+            /* 10. Local GStreamer renderer */
+            local_renderer = new LocalRenderer (mqtt, local_renderer_id, identity);
+            state_repo.register_local_source (local_renderer_id);
+            local_renderer.state_updated.connect ((state) => {
+                state_repo.update_local_state (state);
+            });
+
             /* Temporary logging for MQTT discovery verification */
             node_repo.node_added.connect ((presence) => {
                 message ("NODE DISCOVERED: %s (kind=%s, name=%s)",
                          presence.node_id, presence.kind, presence.name);
             });
-            mqtt.connection_changed.connect ((state) => {
-                message ("MQTT connection state: %s", state.to_string ());
+            mqtt.connection_changed.connect ((conn_state) => {
+                message ("MQTT connection state: %s", conn_state.to_string ());
+                if (conn_state == ConnectionState.CONNECTED && !local_renderer_started) {
+                    local_renderer_started = true;
+
+                    /* Start local renderer and register presence on first connect */
+                    local_renderer.start ();
+
+                    /* Register local renderer presence with node repo (bypasses MQTT) */
+                    var local_presence = new Presence ();
+                    local_presence.node_id = local_renderer_id;
+                    local_presence.kind = "renderer";
+                    local_presence.name = identity;
+                    local_presence.source = "desktop_app";
+                    var caps = new Json.Object ();
+                    caps.set_boolean_member ("seek", true);
+                    caps.set_boolean_member ("volume", true);
+                    local_presence.caps = caps;
+                    local_presence.ts = GLib.get_real_time () / 1000;
+                    node_repo.register_local (local_presence);
+                }
             });
 
             /* Connect to MQTT broker */

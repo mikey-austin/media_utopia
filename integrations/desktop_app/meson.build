@@ -79,6 +79,9 @@ sources = files(
     'src/repositories/active_renderer_repo.vala',
     'src/repositories/library_repository.vala',
     'src/repositories/playlist_repository.vala',
+    'src/renderer/gst_driver.vala',
+    'src/renderer/local_queue.vala',
+    'src/renderer/local_renderer.vala',
 )
 
 # Build
