@@ -60,6 +60,10 @@ sources = files(
     'src/ui/now_playing_view.vala',
     'src/mqtt/topics.vala',
     'src/mqtt/mqtt_client.vala',
+    'src/protocol/envelope.vala',
+    'src/protocol/state.vala',
+    'src/protocol/presence.vala',
+    'src/protocol/bodies.vala',
 )
 
 # Build
