@@ -458,31 +458,52 @@ private fun VolumeSection(
     volume: Float,
     onSetVolume: (Float) -> Unit,
 ) {
+    var expanded by remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            imageVector = @Suppress("DEPRECATION") Icons.Filled.VolumeUp,
-            contentDescription = "Volume",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
+        IconButton(
+            onClick = { expanded = !expanded },
+            modifier = Modifier.size(36.dp),
+        ) {
+            Icon(
+                imageVector = @Suppress("DEPRECATION") Icons.Filled.VolumeUp,
+                contentDescription = if (expanded) "Hide volume" else "Show volume",
+                tint = if (expanded) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
 
-        Spacer(modifier = Modifier.width(12.dp))
+        androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f),
+            ) {
+                Slider(
+                    value = volume,
+                    onValueChange = onSetVolume,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Primary,
+                        activeTrackColor = Primary,
+                        inactiveTrackColor = SurfaceContainerHighest,
+                    ),
+                    modifier = Modifier.weight(1f),
+                )
 
-        Slider(
-            value = volume,
-            onValueChange = onSetVolume,
-            colors = SliderDefaults.colors(
-                thumbColor = Primary,
-                activeTrackColor = Primary,
-                inactiveTrackColor = SurfaceContainerHighest,
-            ),
-            modifier = Modifier.weight(1f),
-        )
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Text(
+                    text = "${(volume * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
