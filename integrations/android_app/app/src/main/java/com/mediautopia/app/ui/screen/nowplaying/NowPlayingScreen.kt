@@ -385,7 +385,7 @@ private fun TransportControls(
             Icon(
                 imageVector = if (repeatMode == "one") Icons.Filled.RepeatOne else Icons.Filled.Repeat,
                 contentDescription = "Repeat",
-                tint = if (repeatMode.isNotEmpty()) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (repeatMode == "all" || repeatMode == "one") Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(24.dp),
             )
         }

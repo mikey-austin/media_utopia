@@ -182,7 +182,7 @@ private fun QueueHeader(
                         modifier = Modifier.size(size),
                     )
                 },
-                isActive = repeatMode.isNotEmpty(),
+                isActive = repeatMode == "all" || repeatMode == "one",
                 onClick = onToggleRepeat,
             )
 

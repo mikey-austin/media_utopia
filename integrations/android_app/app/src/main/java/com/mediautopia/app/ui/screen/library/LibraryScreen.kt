@@ -168,7 +168,7 @@ private fun LibraryContent(
                         if (item.isContainer) {
                             onNavigateTo(item.id, item.title)
                         } else {
-                            onPlayItem(item.id)
+                            onEnqueueAndPlay(item.id)
                         }
                     },
                     onAddToQueue = onAddToQueue,
@@ -663,7 +663,7 @@ private fun TrackRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onPlay)
+            .clickable(onClick = onEnqueueAndPlay)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -743,15 +743,11 @@ private fun TrackRow(
                 onDismissRequest = { showMenu = false },
             ) {
                 DropdownMenuItem(
-                    text = { Text("Play now") },
-                    onClick = { showMenu = false; onPlay() },
-                )
-                DropdownMenuItem(
                     text = { Text("Enqueue and play") },
                     onClick = { showMenu = false; onEnqueueAndPlay() },
                 )
                 DropdownMenuItem(
-                    text = { Text("Enqueue") },
+                    text = { Text("Add to queue") },
                     onClick = { showMenu = false; onAddToQueue() },
                 )
             }
