@@ -246,7 +246,10 @@ namespace Mu {
                 new Mu.QueueView (state_repo, active_renderer_repo,
                     correlator, lease_mgr),
                 "queue");
-            content_stack.add_named (make_placeholder ("Library"), "library");
+            content_stack.add_named (
+                new Mu.LibraryView (node_repo, library_repo, playlist_repo,
+                    active_renderer_repo, correlator, lease_mgr),
+                "library");
             content_stack.add_named (
                 new Mu.RenderersView (node_repo, state_repo,
                     active_renderer_repo, lease_mgr, mqtt),

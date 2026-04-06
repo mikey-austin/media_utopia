@@ -666,3 +666,49 @@ row > box > box > label.subtitle {
 .queue-toggle-active:hover {
     background-color: shade(@mu_primary_container, 1.1);
 }
+
+/* === Library View === */
+.library-content-list {
+    background-color: transparent;
+}
+
+.library-row {
+    padding: 10px 14px;
+}
+
+.library-breadcrumb {
+    padding: 4px 0;
+}
+
+.library-breadcrumb-link {
+    padding: 2px 6px;
+    min-height: 0;
+    color: @mu_primary;
+    font-size: 13px;
+}
+
+.library-breadcrumb-link:hover {
+    color: shade(@mu_primary, 1.2);
+    background-color: alpha(@mu_primary, 0.08);
+}
+
+.library-action-button {
+    background-color: transparent;
+    color: @mu_on_surface_variant;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px;
+    border-radius: 6px;
+    opacity: 0.4;
+    transition: opacity 150ms ease, background-color 150ms ease;
+}
+
+.library-row:hover .library-action-button {
+    opacity: 1.0;
+}
+
+.library-action-button:hover {
+    background-color: alpha(@mu_primary, 0.15);
+    color: @mu_primary;
+    opacity: 1.0;
+}
