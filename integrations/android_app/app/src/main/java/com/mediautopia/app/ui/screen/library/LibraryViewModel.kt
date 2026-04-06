@@ -220,6 +220,15 @@ class LibraryViewModel @Inject constructor(
                 searchQuery = "",
             )
         }
+
+        // Index 1 is the library root — browse with empty containerId.
+        if (index == 1 && target.containerId.startsWith("__lib__:")) {
+            val libId = selectedLibraryNodeId
+            if (libId != null) {
+                browseContainerOnLibrary(libId, "")
+                return
+            }
+        }
         browseContainer(target.containerId)
     }
 
@@ -398,20 +407,28 @@ class LibraryViewModel @Inject constructor(
                 val entry = buildQueueEntry(itemId)
                 val lease = leaseManager.ensureLease(rendererId)
 
+                // Add as next item in queue, then skip to it.
                 correlator.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
                         QueueAddBody(
-                            position = "end",
+                            position = "next",
                             entries = listOf(entry),
                         )
                     ),
                     lease = lease,
                 )
-                snackbarManager.show("Added to queue")
+
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "playback.next",
+                    body = json.encodeToJsonElement(mapOf<String, String>()),
+                    lease = lease,
+                )
+                snackbarManager.show("Playing")
             } catch (e: Exception) {
-                Log.e(tag, "enqueueAndPlay failed: ${e.message}")
+                Log.e(tag, "enqueueAndPlay failed: ${e.message}", e)
             }
         }
     }
