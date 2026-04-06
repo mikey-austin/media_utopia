@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
@@ -125,6 +126,7 @@ fun LibraryScreen(
                 state = uiState,
                 onSelectServer = viewModel::selectPlaylistServer,
                 onSelectPlaylist = viewModel::selectPlaylist,
+                onBack = viewModel::playlistBack,
                 onPlayAll = { uiState.selectedPlaylist?.let { viewModel.loadPlaylist(it.playlistId, "replace") } },
                 onQueueAll = { uiState.selectedPlaylist?.let { viewModel.loadPlaylist(it.playlistId, "append") } },
                 onPlayEntry = viewModel::playPlaylistEntry,
@@ -167,6 +169,7 @@ private fun PlaylistContent(
     state: LibraryUiState,
     onSelectServer: (String) -> Unit,
     onSelectPlaylist: (PlaylistInfo) -> Unit,
+    onBack: () -> Unit,
     onPlayAll: () -> Unit,
     onQueueAll: () -> Unit,
     onPlayEntry: (PlaylistEntryInfo) -> Unit,
@@ -211,6 +214,7 @@ private fun PlaylistContent(
             PlaylistEntryList(
                 playlist = state.selectedPlaylist,
                 entries = state.playlistEntries,
+                onBack = onBack,
                 onPlayAll = onPlayAll,
                 onQueueAll = onQueueAll,
                 onPlayEntry = onPlayEntry,
@@ -263,19 +267,29 @@ private fun PlaylistContent(
 private fun PlaylistEntryList(
     playlist: PlaylistInfo,
     entries: List<PlaylistEntryInfo>,
+    onBack: () -> Unit,
     onPlayAll: () -> Unit,
     onQueueAll: () -> Unit,
     onPlayEntry: (PlaylistEntryInfo) -> Unit,
     onQueueEntry: (PlaylistEntryInfo) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // Playlist header.
+        // Playlist header with back button.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(start = 4.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = OnSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = playlist.name.uppercase(),
                 style = MaterialTheme.typography.labelMedium,

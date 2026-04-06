@@ -7,7 +7,7 @@ import com.mediautopia.app.data.protocol.ItemRef
 import com.mediautopia.app.data.protocol.PlaybackPlayBody
 import com.mediautopia.app.data.protocol.QueueAddBody
 import com.mediautopia.app.data.protocol.QueueEntry
-import com.mediautopia.app.data.protocol.QueueLoadPlaylistBody
+import com.mediautopia.app.data.protocol.QueueSetBody
 import com.mediautopia.app.data.protocol.ResolvedSource
 import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.BrowseItem
@@ -778,29 +778,55 @@ class LibraryViewModel @Inject constructor(
     }
 
     /**
-     * Load entire playlist into the queue via queue.loadPlaylist.
+     * Load entire playlist: resolve all entries and add to queue.
      */
     fun loadPlaylist(playlistId: String, mode: String = "replace") {
         viewModelScope.launch {
             val rendererId = activeRendererId.value
-            val serverNodeId = _uiState.value.selectedPlaylistServer ?: return@launch
+            val entries = _uiState.value.playlistEntries
+            if (entries.isEmpty()) return@launch
+
             try {
+                val queueEntries = resolvePlaylistEntries(entries)
+                if (queueEntries.isEmpty()) {
+                    snackbarManager.show("No playable items")
+                    return@launch
+                }
+
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
-                    nodeId = rendererId,
-                    cmdType = "queue.loadPlaylist",
-                    body = json.encodeToJsonElement(
-                        QueueLoadPlaylistBody(
-                            playlistServerId = serverNodeId,
-                            playlistId = playlistId,
-                            mode = mode,
-                            resolve = "auto",
-                        )
-                    ),
-                    lease = lease,
-                )
-                val action = if (mode == "replace") "Playing" else "Added to queue"
-                snackbarManager.show(action)
+
+                if (mode == "replace") {
+                    // Clear queue, set entries, then play from the start.
+                    correlator.send(
+                        nodeId = rendererId,
+                        cmdType = "queue.set",
+                        body = json.encodeToJsonElement(
+                            QueueSetBody(
+                                startIndex = 0,
+                                entries = queueEntries,
+                            )
+                        ),
+                        lease = lease,
+                    )
+                    correlator.send(
+                        nodeId = rendererId,
+                        cmdType = "playback.play",
+                        body = json.encodeToJsonElement(PlaybackPlayBody(index = 0)),
+                        lease = lease,
+                    )
+                    snackbarManager.show("Playing ${queueEntries.size} items")
+                } else {
+                    // Append to existing queue.
+                    correlator.send(
+                        nodeId = rendererId,
+                        cmdType = "queue.add",
+                        body = json.encodeToJsonElement(
+                            QueueAddBody(position = "end", entries = queueEntries)
+                        ),
+                        lease = lease,
+                    )
+                    snackbarManager.show("${queueEntries.size} items added to queue")
+                }
             } catch (e: Exception) {
                 Log.e(tag, "loadPlaylist failed: ${e.message}", e)
                 snackbarManager.show("Failed: ${e.message}")
@@ -815,21 +841,10 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             try {
-                val queueEntry = QueueEntry(
-                    ref = if (entry.itemId.isNotEmpty()) ItemRef(id = entry.itemId) else null,
-                    resolved = if (entry.url.isNotEmpty()) ResolvedSource(
-                        itemId = entry.itemId,
-                        url = entry.url,
-                        mime = entry.mime,
-                    ) else null,
-                    metadata = buildJsonObject {
-                        if (entry.title.isNotEmpty()) put("title", entry.title)
-                        if (entry.artist.isNotEmpty()) put("artist", entry.artist)
-                        if (entry.album.isNotEmpty()) put("album", entry.album)
-                        if (entry.artworkUrl != null) put("artworkUrl", entry.artworkUrl!!)
-                        if (entry.durationMs > 0) put("durationMs", entry.durationMs)
-                    },
-                )
+                val queueEntry = resolvePlaylistEntry(entry) ?: run {
+                    snackbarManager.show("Could not resolve item")
+                    return@launch
+                }
 
                 val lease = leaseManager.ensureLease(rendererId)
                 correlator.send(
@@ -858,21 +873,10 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             try {
-                val queueEntry = QueueEntry(
-                    ref = if (entry.itemId.isNotEmpty()) ItemRef(id = entry.itemId) else null,
-                    resolved = if (entry.url.isNotEmpty()) ResolvedSource(
-                        itemId = entry.itemId,
-                        url = entry.url,
-                        mime = entry.mime,
-                    ) else null,
-                    metadata = buildJsonObject {
-                        if (entry.title.isNotEmpty()) put("title", entry.title)
-                        if (entry.artist.isNotEmpty()) put("artist", entry.artist)
-                        if (entry.album.isNotEmpty()) put("album", entry.album)
-                        if (entry.artworkUrl != null) put("artworkUrl", entry.artworkUrl!!)
-                        if (entry.durationMs > 0) put("durationMs", entry.durationMs)
-                    },
-                )
+                val queueEntry = resolvePlaylistEntry(entry) ?: run {
+                    snackbarManager.show("Could not resolve item")
+                    return@launch
+                }
 
                 val lease = leaseManager.ensureLease(rendererId)
                 correlator.send(
@@ -886,5 +890,79 @@ class LibraryViewModel @Inject constructor(
                 Log.e(tag, "queuePlaylistEntry failed: ${e.message}", e)
             }
         }
+    }
+
+    private fun buildPlaylistEntryMetadata(entry: PlaylistEntryInfo) = buildJsonObject {
+        if (entry.title.isNotEmpty()) put("title", entry.title)
+        if (entry.artist.isNotEmpty()) put("artist", entry.artist)
+        if (entry.album.isNotEmpty()) put("album", entry.album)
+        if (entry.artworkUrl != null) put("artworkUrl", entry.artworkUrl!!)
+        if (entry.durationMs > 0) put("durationMs", entry.durationMs)
+    }
+
+    /**
+     * Resolve a single playlist entry to a playable QueueEntry with URL.
+     */
+    private suspend fun resolvePlaylistEntry(entry: PlaylistEntryInfo): QueueEntry? {
+        val meta = buildPlaylistEntryMetadata(entry)
+
+        // If already resolved with a URL, use it directly.
+        if (entry.url.isNotEmpty()) {
+            return QueueEntry(
+                ref = if (entry.itemId.isNotEmpty()) ItemRef(id = entry.itemId) else null,
+                resolved = ResolvedSource(itemId = entry.itemId, url = entry.url, mime = entry.mime),
+                metadata = meta,
+            )
+        }
+
+        // Resolve from library.
+        if (entry.itemId.isNotEmpty()) {
+            val source = libraryRepository.resolveForPlayback(entry.itemId)
+            if (source != null) {
+                return QueueEntry(
+                    ref = ItemRef(id = entry.itemId),
+                    resolved = ResolvedSource(itemId = entry.itemId, url = source.url, mime = source.mime),
+                    metadata = meta,
+                )
+            }
+        }
+        return null
+    }
+
+    /**
+     * Resolve a batch of playlist entries to playable QueueEntries.
+     */
+    private suspend fun resolvePlaylistEntries(entries: List<PlaylistEntryInfo>): List<QueueEntry> {
+        // Separate already-resolved from needs-resolution.
+        val result = mutableListOf<QueueEntry>()
+        val needsResolve = mutableListOf<PlaylistEntryInfo>()
+
+        for (entry in entries) {
+            if (entry.url.isNotEmpty()) {
+                result.add(QueueEntry(
+                    ref = if (entry.itemId.isNotEmpty()) ItemRef(id = entry.itemId) else null,
+                    resolved = ResolvedSource(itemId = entry.itemId, url = entry.url, mime = entry.mime),
+                    metadata = buildPlaylistEntryMetadata(entry),
+                ))
+            } else if (entry.itemId.isNotEmpty()) {
+                needsResolve.add(entry)
+            }
+        }
+
+        if (needsResolve.isNotEmpty()) {
+            val sources = libraryRepository.resolveForPlaybackBatch(needsResolve.map { it.itemId })
+            for (entry in needsResolve) {
+                val source = sources[entry.itemId]
+                if (source != null) {
+                    result.add(QueueEntry(
+                        ref = ItemRef(id = entry.itemId),
+                        resolved = ResolvedSource(itemId = entry.itemId, url = source.url, mime = source.mime),
+                        metadata = buildPlaylistEntryMetadata(entry),
+                    ))
+                }
+            }
+        }
+
+        return result
     }
 }
