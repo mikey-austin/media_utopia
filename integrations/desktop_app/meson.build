@@ -67,6 +67,11 @@ sources = files(
     'src/services/command_dedup.vala',
     'src/services/command_correlator.vala',
     'src/services/lease_manager.vala',
+    'src/repositories/node_repository.vala',
+    'src/repositories/renderer_state_repo.vala',
+    'src/repositories/active_renderer_repo.vala',
+    'src/repositories/library_repository.vala',
+    'src/repositories/playlist_repository.vala',
 )
 
 # Build
