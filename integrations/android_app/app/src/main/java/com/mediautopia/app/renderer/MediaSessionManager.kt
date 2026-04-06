@@ -202,8 +202,6 @@ class MuForwardingPlayer(
                 Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
                 Player.COMMAND_SEEK_BACK,
                 Player.COMMAND_SEEK_FORWARD,
-                Player.COMMAND_SEEK_TO_NEXT,
-                Player.COMMAND_SEEK_TO_PREVIOUS,
             )
         }
         return builder.build()
@@ -218,8 +216,15 @@ class MuForwardingPlayer(
     override fun play() { onTransportCommand("playback.play") }
     override fun pause() { onTransportCommand("playback.pause") }
     override fun stop() { onTransportCommand("playback.stop") }
-    override fun seekToNext() { onTransportCommand("playback.next") }
-    override fun seekToPrevious() { onTransportCommand("playback.prev") }
+    override fun seekToNext() {
+        val targetMs = currentPosition + seekForwardIncrement
+        onTransportCommand("playback.seek:$targetMs")
+    }
+
+    override fun seekToPrevious() {
+        val targetMs = maxOf(0L, currentPosition - seekBackIncrement)
+        onTransportCommand("playback.seek:$targetMs")
+    }
 
     override fun seekBack() {
         val targetMs = maxOf(0L, currentPosition - seekBackIncrement)
