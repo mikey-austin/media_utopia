@@ -67,6 +67,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.mediautopia.app.data.repository.BrowseItem
+import com.mediautopia.app.data.repository.PlaylistEntryInfo
+import com.mediautopia.app.data.repository.PlaylistInfo
 import com.mediautopia.app.ui.theme.OnSurface
 import com.mediautopia.app.ui.theme.OnSurfaceVariant
 import com.mediautopia.app.ui.theme.OutlineVariant
@@ -85,29 +87,228 @@ fun LibraryScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    // Handle system back: navigate up the breadcrumb stack before leaving the screen.
-    BackHandler(enabled = uiState.breadcrumbs.size > 1 || uiState.isSearching) {
-        if (uiState.isSearching) {
+    // Handle system back.
+    BackHandler(
+        enabled = uiState.activeTab == LibraryTab.LIBRARIES && (uiState.breadcrumbs.size > 1 || uiState.isSearching)
+            || uiState.activeTab == LibraryTab.PLAYLISTS && (uiState.selectedPlaylist != null || (uiState.selectedPlaylistServer != null && uiState.playlistServers.size > 1))
+    ) {
+        if (uiState.activeTab == LibraryTab.PLAYLISTS) {
+            viewModel.playlistBack()
+        } else if (uiState.isSearching) {
             viewModel.clearSearch()
         } else {
             viewModel.navigateBack()
         }
     }
 
-    LibraryContent(
-        state = uiState,
-        onNavigateTo = viewModel::navigateTo,
-        onNavigateToBreadcrumb = viewModel::navigateToBreadcrumb,
-        onSearch = viewModel::search,
-        onClearSearch = viewModel::clearSearch,
-        onLoadMore = viewModel::loadMore,
-        onPlayItem = viewModel::playItem,
-        onAddToQueue = viewModel::addToQueue,
-        onEnqueueAndPlay = viewModel::enqueueAndPlay,
-        onPlayContainer = viewModel::playContainer,
-        onPlayAll = viewModel::playAllVisible,
-        onQueueAll = viewModel::queueAllVisible,
-    )
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Tab bar.
+        TabRow(uiState.activeTab, onTabChange = viewModel::switchTab)
+
+        when (uiState.activeTab) {
+            LibraryTab.LIBRARIES -> LibraryContent(
+                state = uiState,
+                onNavigateTo = viewModel::navigateTo,
+                onNavigateToBreadcrumb = viewModel::navigateToBreadcrumb,
+                onSearch = viewModel::search,
+                onClearSearch = viewModel::clearSearch,
+                onLoadMore = viewModel::loadMore,
+                onPlayItem = viewModel::playItem,
+                onAddToQueue = viewModel::addToQueue,
+                onEnqueueAndPlay = viewModel::enqueueAndPlay,
+                onPlayContainer = viewModel::playContainer,
+                onPlayAll = viewModel::playAllVisible,
+                onQueueAll = viewModel::queueAllVisible,
+            )
+
+            LibraryTab.PLAYLISTS -> PlaylistContent(
+                state = uiState,
+                onSelectServer = viewModel::selectPlaylistServer,
+                onSelectPlaylist = viewModel::selectPlaylist,
+                onPlayAll = { uiState.selectedPlaylist?.let { viewModel.loadPlaylist(it.playlistId, "replace") } },
+                onQueueAll = { uiState.selectedPlaylist?.let { viewModel.loadPlaylist(it.playlistId, "append") } },
+                onPlayEntry = viewModel::playPlaylistEntry,
+                onQueueEntry = viewModel::queuePlaylistEntry,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TabRow(activeTab: LibraryTab, onTabChange: (LibraryTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        LibraryTab.entries.forEach { tab ->
+            val isActive = tab == activeTab
+            Text(
+                text = tab.name,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (isActive) Secondary else OnSurfaceVariant,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (isActive) Secondary.copy(alpha = 0.12f) else SurfaceContainerLow)
+                    .clickable { onTabChange(tab) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            )
+        }
+    }
+}
+
+// =============================================================================
+// Playlist content
+// =============================================================================
+
+@Composable
+private fun PlaylistContent(
+    state: LibraryUiState,
+    onSelectServer: (String) -> Unit,
+    onSelectPlaylist: (PlaylistInfo) -> Unit,
+    onPlayAll: () -> Unit,
+    onQueueAll: () -> Unit,
+    onPlayEntry: (PlaylistEntryInfo) -> Unit,
+    onQueueEntry: (PlaylistEntryInfo) -> Unit,
+) {
+    when {
+        state.isPlaylistLoading -> LoadingIndicator()
+
+        // Show server picker if multiple servers and none selected.
+        state.selectedPlaylistServer == null && state.playlistServers.size > 1 -> {
+            LazyColumn(
+                contentPadding = PaddingValues(vertical = 4.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                items(state.playlistServers, key = { it.first }) { (nodeId, name) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectServer(nodeId) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                            contentDescription = null,
+                            tint = Secondary,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = OnSurface,
+                        )
+                    }
+                }
+            }
+        }
+
+        // Show playlist entries if a playlist is selected.
+        state.selectedPlaylist != null -> {
+            PlaylistEntryList(
+                playlist = state.selectedPlaylist,
+                entries = state.playlistEntries,
+                onPlayAll = onPlayAll,
+                onQueueAll = onQueueAll,
+                onPlayEntry = onPlayEntry,
+                onQueueEntry = onQueueEntry,
+            )
+        }
+
+        // Show playlist list.
+        state.playlists.isEmpty() -> {
+            EmptyState(message = "NO PLAYLISTS")
+        }
+
+        else -> {
+            LazyColumn(
+                contentPadding = PaddingValues(vertical = 4.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                items(state.playlists, key = { it.playlistId }) { playlist ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectPlaylist(playlist) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                            contentDescription = null,
+                            tint = OnSurfaceVariant,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = playlist.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = OnSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistEntryList(
+    playlist: PlaylistInfo,
+    entries: List<PlaylistEntryInfo>,
+    onPlayAll: () -> Unit,
+    onQueueAll: () -> Unit,
+    onPlayEntry: (PlaylistEntryInfo) -> Unit,
+    onQueueEntry: (PlaylistEntryInfo) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Playlist header.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = playlist.name.uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = Primary,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "${entries.size} TRACKS",
+                style = MaterialTheme.typography.labelSmall,
+                color = OnSurfaceVariant,
+            )
+        }
+
+        BulkActionBar(
+            trackCount = entries.size,
+            onPlayAll = onPlayAll,
+            onQueueAll = onQueueAll,
+        )
+
+        LazyColumn(
+            contentPadding = PaddingValues(vertical = 4.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            items(entries, key = { it.entryId }) { entry ->
+                PlaylistEntryRow(
+                    entry = entry,
+                    trackNumber = entries.indexOf(entry) + 1,
+                    onPlay = { onPlayEntry(entry) },
+                    onQueue = { onQueueEntry(entry) },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -1127,6 +1328,105 @@ private fun AlphabetScrollBar(
                     )
                     .padding(horizontal = 10.dp, vertical = 2.dp),
             )
+        }
+    }
+}
+
+// =============================================================================
+// Playlist entry row
+// =============================================================================
+
+@Composable
+private fun PlaylistEntryRow(
+    entry: PlaylistEntryInfo,
+    trackNumber: Int,
+    onPlay: () -> Unit,
+    onQueue: () -> Unit,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onPlay)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = trackNumber.toString(),
+            style = MaterialTheme.typography.labelMedium,
+            color = OnSurfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.width(28.dp),
+            textAlign = TextAlign.End,
+        )
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        if (entry.artworkUrl != null) {
+            AsyncImage(
+                model = entry.artworkUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(ThumbnailShape),
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+        }
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = entry.title.ifEmpty { entry.itemId.takeLast(12) },
+                style = MaterialTheme.typography.bodyMedium,
+                color = OnSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (entry.artist.isNotEmpty()) {
+                Text(
+                    text = entry.artist.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = OnSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        if (entry.durationMs > 0) {
+            Text(
+                text = formatDuration(entry.durationMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = OnSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+        }
+
+        Box {
+            IconButton(
+                onClick = { showMenu = true },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "Options",
+                    tint = OnSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Enqueue and play") },
+                    onClick = { showMenu = false; onPlay() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Add to queue") },
+                    onClick = { showMenu = false; onQueue() },
+                )
+            }
         }
     }
 }

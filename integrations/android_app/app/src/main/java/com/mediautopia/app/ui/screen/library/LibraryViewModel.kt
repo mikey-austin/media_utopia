@@ -7,11 +7,15 @@ import com.mediautopia.app.data.protocol.ItemRef
 import com.mediautopia.app.data.protocol.PlaybackPlayBody
 import com.mediautopia.app.data.protocol.QueueAddBody
 import com.mediautopia.app.data.protocol.QueueEntry
+import com.mediautopia.app.data.protocol.QueueLoadPlaylistBody
 import com.mediautopia.app.data.protocol.ResolvedSource
 import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.BrowseItem
 import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
+import com.mediautopia.app.data.repository.PlaylistEntryInfo
+import com.mediautopia.app.data.repository.PlaylistInfo
+import com.mediautopia.app.data.repository.PlaylistRepository
 import com.mediautopia.app.domain.usecase.CommandCorrelator
 import com.mediautopia.app.domain.usecase.LeaseManager
 import com.mediautopia.app.ui.SnackbarManager
@@ -37,7 +41,10 @@ import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
 import javax.inject.Inject
 
+enum class LibraryTab { LIBRARIES, PLAYLISTS }
+
 data class LibraryUiState(
+    val activeTab: LibraryTab = LibraryTab.LIBRARIES,
     val breadcrumbs: List<BreadcrumbItem> = listOf(BreadcrumbItem("", "Library")),
     val items: List<BrowseItem> = emptyList(),
     val searchQuery: String = "",
@@ -45,6 +52,13 @@ data class LibraryUiState(
     val isLoading: Boolean = true,
     val hasMore: Boolean = false,
     val error: String? = null,
+    // Playlist tab state.
+    val playlists: List<PlaylistInfo> = emptyList(),
+    val playlistEntries: List<PlaylistEntryInfo> = emptyList(),
+    val selectedPlaylist: PlaylistInfo? = null,
+    val selectedPlaylistServer: String? = null,
+    val playlistServers: List<Pair<String, String>> = emptyList(), // nodeId to name
+    val isPlaylistLoading: Boolean = false,
 )
 
 data class BreadcrumbItem(
@@ -56,6 +70,7 @@ data class BreadcrumbItem(
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
+    private val playlistRepository: PlaylistRepository,
     private val nodeRepository: NodeRepository,
     private val leaseManager: LeaseManager,
     private val correlator: CommandCorrelator,
@@ -666,6 +681,209 @@ class LibraryViewModel @Inject constructor(
                     isLoading = false,
                     error = "Search failed",
                 )
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Tab switching
+    // -------------------------------------------------------------------------
+
+    fun switchTab(tab: LibraryTab) {
+        _uiState.update { it.copy(activeTab = tab) }
+        if (tab == LibraryTab.PLAYLISTS) {
+            loadPlaylistServers()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Playlists
+    // -------------------------------------------------------------------------
+
+    private var playlistJob: Job? = null
+
+    private fun loadPlaylistServers() {
+        playlistJob?.cancel()
+        playlistJob = viewModelScope.launch {
+            _uiState.update { it.copy(isPlaylistLoading = true) }
+            val servers = nodeRepository.playlistServers.first()
+            val serverPairs = servers.map { it.nodeId to it.name }
+
+            if (servers.size == 1) {
+                // Single server — load its playlists directly.
+                _uiState.update { it.copy(
+                    playlistServers = serverPairs,
+                    selectedPlaylistServer = servers.first().nodeId,
+                ) }
+                loadPlaylists(servers.first().nodeId)
+            } else {
+                // Multiple or zero — show server picker.
+                _uiState.update { it.copy(
+                    playlistServers = serverPairs,
+                    selectedPlaylistServer = null,
+                    playlists = emptyList(),
+                    playlistEntries = emptyList(),
+                    selectedPlaylist = null,
+                    isPlaylistLoading = false,
+                ) }
+            }
+        }
+    }
+
+    fun selectPlaylistServer(serverNodeId: String) {
+        _uiState.update { it.copy(selectedPlaylistServer = serverNodeId, selectedPlaylist = null, playlistEntries = emptyList()) }
+        loadPlaylists(serverNodeId)
+    }
+
+    private fun loadPlaylists(serverNodeId: String) {
+        playlistJob?.cancel()
+        playlistJob = viewModelScope.launch {
+            _uiState.update { it.copy(isPlaylistLoading = true, playlists = emptyList()) }
+            try {
+                val playlists = playlistRepository.listPlaylists(serverNodeId)
+                _uiState.update { it.copy(playlists = playlists, isPlaylistLoading = false) }
+            } catch (e: Exception) {
+                Log.e(tag, "loadPlaylists failed: ${e.message}")
+                _uiState.update { it.copy(isPlaylistLoading = false) }
+            }
+        }
+    }
+
+    fun selectPlaylist(playlist: PlaylistInfo) {
+        _uiState.update { it.copy(selectedPlaylist = playlist, playlistEntries = emptyList()) }
+        playlistJob?.cancel()
+        playlistJob = viewModelScope.launch {
+            _uiState.update { it.copy(isPlaylistLoading = true) }
+            val serverNodeId = _uiState.value.selectedPlaylistServer ?: return@launch
+            try {
+                val entries = playlistRepository.getPlaylist(serverNodeId, playlist.playlistId)
+                _uiState.update { it.copy(playlistEntries = entries, isPlaylistLoading = false) }
+            } catch (e: Exception) {
+                Log.e(tag, "selectPlaylist failed: ${e.message}")
+                _uiState.update { it.copy(isPlaylistLoading = false) }
+            }
+        }
+    }
+
+    fun playlistBack() {
+        val state = _uiState.value
+        when {
+            state.selectedPlaylist != null -> {
+                _uiState.update { it.copy(selectedPlaylist = null, playlistEntries = emptyList()) }
+            }
+            state.selectedPlaylistServer != null && state.playlistServers.size > 1 -> {
+                _uiState.update { it.copy(selectedPlaylistServer = null, playlists = emptyList()) }
+            }
+        }
+    }
+
+    /**
+     * Load entire playlist into the queue via queue.loadPlaylist.
+     */
+    fun loadPlaylist(playlistId: String, mode: String = "replace") {
+        viewModelScope.launch {
+            val rendererId = activeRendererId.value
+            val serverNodeId = _uiState.value.selectedPlaylistServer ?: return@launch
+            try {
+                val lease = leaseManager.ensureLease(rendererId)
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "queue.loadPlaylist",
+                    body = json.encodeToJsonElement(
+                        QueueLoadPlaylistBody(
+                            playlistServerId = serverNodeId,
+                            playlistId = playlistId,
+                            mode = mode,
+                            resolve = "auto",
+                        )
+                    ),
+                    lease = lease,
+                )
+                val action = if (mode == "replace") "Playing" else "Added to queue"
+                snackbarManager.show(action)
+            } catch (e: Exception) {
+                Log.e(tag, "loadPlaylist failed: ${e.message}", e)
+                snackbarManager.show("Failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Enqueue and play a single playlist entry.
+     */
+    fun playPlaylistEntry(entry: PlaylistEntryInfo) {
+        viewModelScope.launch {
+            val rendererId = activeRendererId.value
+            try {
+                val queueEntry = QueueEntry(
+                    ref = if (entry.itemId.isNotEmpty()) ItemRef(id = entry.itemId) else null,
+                    resolved = if (entry.url.isNotEmpty()) ResolvedSource(
+                        itemId = entry.itemId,
+                        url = entry.url,
+                        mime = entry.mime,
+                    ) else null,
+                    metadata = buildJsonObject {
+                        if (entry.title.isNotEmpty()) put("title", entry.title)
+                        if (entry.artist.isNotEmpty()) put("artist", entry.artist)
+                        if (entry.album.isNotEmpty()) put("album", entry.album)
+                        if (entry.artworkUrl != null) put("artworkUrl", entry.artworkUrl!!)
+                        if (entry.durationMs > 0) put("durationMs", entry.durationMs)
+                    },
+                )
+
+                val lease = leaseManager.ensureLease(rendererId)
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "queue.add",
+                    body = json.encodeToJsonElement(QueueAddBody(position = "end", entries = listOf(queueEntry))),
+                    lease = lease,
+                )
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "playback.play",
+                    body = json.encodeToJsonElement(PlaybackPlayBody(index = -1)),
+                    lease = lease,
+                )
+                snackbarManager.show("Playing")
+            } catch (e: Exception) {
+                Log.e(tag, "playPlaylistEntry failed: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * Add a single playlist entry to the queue.
+     */
+    fun queuePlaylistEntry(entry: PlaylistEntryInfo) {
+        viewModelScope.launch {
+            val rendererId = activeRendererId.value
+            try {
+                val queueEntry = QueueEntry(
+                    ref = if (entry.itemId.isNotEmpty()) ItemRef(id = entry.itemId) else null,
+                    resolved = if (entry.url.isNotEmpty()) ResolvedSource(
+                        itemId = entry.itemId,
+                        url = entry.url,
+                        mime = entry.mime,
+                    ) else null,
+                    metadata = buildJsonObject {
+                        if (entry.title.isNotEmpty()) put("title", entry.title)
+                        if (entry.artist.isNotEmpty()) put("artist", entry.artist)
+                        if (entry.album.isNotEmpty()) put("album", entry.album)
+                        if (entry.artworkUrl != null) put("artworkUrl", entry.artworkUrl!!)
+                        if (entry.durationMs > 0) put("durationMs", entry.durationMs)
+                    },
+                )
+
+                val lease = leaseManager.ensureLease(rendererId)
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "queue.add",
+                    body = json.encodeToJsonElement(QueueAddBody(position = "end", entries = listOf(queueEntry))),
+                    lease = lease,
+                )
+                snackbarManager.show("Added to queue")
+            } catch (e: Exception) {
+                Log.e(tag, "queuePlaylistEntry failed: ${e.message}", e)
             }
         }
     }
