@@ -243,7 +243,8 @@ namespace Mu {
             content_stack.add_named (make_placeholder ("Library"), "library");
             content_stack.add_named (make_placeholder ("Renderers"), "renderers");
             content_stack.add_named (make_placeholder ("Zones"), "zones");
-            content_stack.add_named (make_placeholder ("Settings"), "settings");
+            content_stack.add_named (
+                new Mu.SettingsView (settings, mqtt), "settings");
 
             content_stack.visible_child_name = "now-playing";
 

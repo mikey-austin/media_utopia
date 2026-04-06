@@ -460,3 +460,37 @@ switch:checked slider {
 .connection-disconnected {
     color: @mu_error;
 }
+
+/* === Settings / Preferences Page === */
+preferencespage {
+    background-color: @mu_surface;
+}
+
+preferencesgroup {
+    background-color: @mu_surface_container_low;
+    border-radius: 12px;
+    border: 1px solid alpha(@mu_outline, 0.1);
+}
+
+preferencesgroup > box > box > label {
+    color: @mu_primary;
+}
+
+row.entry {
+    background-color: @mu_surface_container;
+    color: @mu_on_surface;
+}
+
+row.entry:focus-within {
+    outline-color: @mu_primary;
+}
+
+row.property > box > box > label.title,
+row > box > box > label.title {
+    color: @mu_on_surface;
+}
+
+row.property > box > box > label.subtitle,
+row > box > box > label.subtitle {
+    color: @mu_on_surface_variant;
+}
