@@ -1,6 +1,7 @@
 package com.mediautopia.app.ui.screen.zones
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,6 +31,9 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -38,8 +44,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.mediautopia.app.data.repository.ZoneSource
 import com.mediautopia.app.ui.theme.Primary
 import com.mediautopia.app.ui.theme.Secondary
+import com.mediautopia.app.ui.theme.SurfaceContainerHigh
 import com.mediautopia.app.ui.theme.SurfaceContainerHighest
 import com.mediautopia.app.ui.theme.SurfaceContainerLow
 
@@ -53,18 +61,20 @@ fun ZonesScreen(
 
     ZonesContent(
         state = uiState,
-        onMasterVolumeChange = viewModel::setMasterVolume,
+        onLocalVolumeChange = viewModel::setLocalVolume,
         onZoneVolumeChange = viewModel::setZoneVolume,
         onToggleMute = viewModel::toggleZoneMute,
+        onSelectSource = viewModel::selectSource,
     )
 }
 
 @Composable
 private fun ZonesContent(
     state: ZonesUiState,
-    onMasterVolumeChange: (Float) -> Unit,
+    onLocalVolumeChange: (Float) -> Unit,
     onZoneVolumeChange: (String, Float) -> Unit,
     onToggleMute: (String) -> Unit,
+    onSelectSource: (String, String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier
@@ -72,12 +82,12 @@ private fun ZonesContent(
             .padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        // Master Volume header area.
+        // Local volume header.
         item {
             Spacer(modifier = Modifier.height(24.dp))
-            MasterVolumeHeader(
-                volume = state.masterVolume,
-                onVolumeChange = onMasterVolumeChange,
+            LocalVolumeHeader(
+                volume = state.localVolume,
+                onVolumeChange = onLocalVolumeChange,
             )
             Spacer(modifier = Modifier.height(32.dp))
         }
@@ -132,8 +142,10 @@ private fun ZonesContent(
         ) { zone ->
             ZoneCard(
                 zone = zone,
+                availableSources = state.availableSources,
                 onVolumeChange = { volume -> onZoneVolumeChange(zone.nodeId, volume) },
                 onToggleMute = { onToggleMute(zone.nodeId) },
+                onSelectSource = { sourceId -> onSelectSource(zone.nodeId, sourceId) },
             )
             Spacer(modifier = Modifier.height(12.dp))
         }
@@ -146,18 +158,18 @@ private fun ZonesContent(
 }
 
 // ---------------------------------------------------------------------------
-// Master Volume
+// Local Volume (replaces Master Volume)
 // ---------------------------------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MasterVolumeHeader(
+private fun LocalVolumeHeader(
     volume: Float,
     onVolumeChange: (Float) -> Unit,
 ) {
     Column {
         Text(
-            text = "SYSTEM WIDE",
+            text = "ACTIVE RENDERER",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -168,7 +180,7 @@ private fun MasterVolumeHeader(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Master Volume",
+                text = "Volume",
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
@@ -200,18 +212,6 @@ private fun MasterVolumeHeader(
                 inactiveTrackColor = SurfaceContainerHighest,
             ),
         )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = "ACTIVE GAIN",
-            style = MaterialTheme.typography.labelSmall,
-            color = Secondary,
-            modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(Secondary.copy(alpha = 0.12f))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-        )
     }
 }
 
@@ -223,8 +223,10 @@ private fun MasterVolumeHeader(
 @Composable
 private fun ZoneCard(
     zone: ZoneUiItem,
+    availableSources: List<ZoneSource>,
     onVolumeChange: (Float) -> Unit,
     onToggleMute: () -> Unit,
+    onSelectSource: (String) -> Unit,
 ) {
     val isOffline = !zone.isOnline
     val cardAlpha = if (isOffline) 0.4f else 1f
@@ -234,7 +236,7 @@ private fun ZoneCard(
             .fillMaxWidth()
             .alpha(cardAlpha)
             .clip(CardShape)
-            .background(if (isOffline) SurfaceContainerLow else SurfaceContainerLow)
+            .background(SurfaceContainerLow)
             .padding(16.dp),
     ) {
         // Top row: zone name + status indicator.
@@ -247,7 +249,6 @@ private fun ZoneCard(
                     modifier = Modifier
                         .size(8.dp)
                         .drawBehind {
-                            // Glow layer.
                             drawCircle(
                                 color = Primary.copy(alpha = 0.35f),
                                 radius = size.minDimension / 2 + 3.dp.toPx(),
@@ -278,8 +279,16 @@ private fun ZoneCard(
             }
         }
 
-        // Source label.
-        if (zone.source.isNotEmpty()) {
+        // Source selector.
+        if (availableSources.isNotEmpty() && !isOffline) {
+            Spacer(modifier = Modifier.height(8.dp))
+            SourceSelector(
+                currentSourceId = zone.sourceId,
+                currentSourceName = zone.source,
+                availableSources = availableSources,
+                onSelectSource = onSelectSource,
+            )
+        } else if (zone.source.isNotEmpty()) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "SOURCE: ${zone.source.uppercase()}",
@@ -338,6 +347,73 @@ private fun ZoneCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.width(36.dp),
             )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source Selector
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SourceSelector(
+    currentSourceId: String,
+    currentSourceName: String,
+    availableSources: List<ZoneSource>,
+    onSelectSource: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    val displayName = if (currentSourceId.isNotEmpty()) {
+        availableSources.find { it.id == currentSourceId }?.name
+            ?: currentSourceName.ifEmpty { "No source" }
+    } else {
+        currentSourceName.ifEmpty { "No source" }
+    }
+
+    Box {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(SurfaceContainerHigh)
+                .clickable { expanded = true }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "SOURCE:",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = displayName.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                color = Secondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            availableSources.forEach { source ->
+                val isSelected = source.id == currentSourceId
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = source.name,
+                            color = if (isSelected) Secondary else MaterialTheme.colorScheme.onSurface,
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelectSource(source.id)
+                    },
+                )
+            }
         }
     }
 }

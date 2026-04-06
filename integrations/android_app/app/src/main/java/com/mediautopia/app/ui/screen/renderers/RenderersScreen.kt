@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -27,14 +26,21 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.Speaker
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,14 +59,20 @@ import com.mediautopia.app.ui.theme.SurfaceContainerLow
 private val CardShape = RoundedCornerShape(12.dp)
 
 @Composable
-fun RenderersScreen(
+fun RenderersSheet(
     viewModel: RenderersViewModel = hiltViewModel(),
+    onDismiss: () -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     RenderersContent(
         state = uiState,
-        onSelectRenderer = viewModel::selectRenderer,
+        onSelectRenderer = { nodeId ->
+            viewModel.selectRenderer(nodeId)
+            onDismiss()
+        },
+        onReleaseLease = viewModel::releaseLease,
+        onDismiss = onDismiss,
     )
 }
 
@@ -68,31 +80,49 @@ fun RenderersScreen(
 private fun RenderersContent(
     state: RenderersUiState,
     onSelectRenderer: (String) -> Unit,
+    onReleaseLease: (String) -> Unit,
+    onDismiss: () -> Unit,
 ) {
     val localRenderer = state.renderers.firstOrNull { it.isLocal }
     val networkRenderers = state.renderers.filter { !it.isLocal }
 
     LazyColumn(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        // Header.
+        // Header with close button.
         item {
-            Spacer(modifier = Modifier.height(24.dp))
-            Text(
-                text = "Renderers",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "SELECT AN OUTPUT DESTINATION",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(32.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(
+                        text = "Renderers",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "SELECT AN OUTPUT DESTINATION",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Close",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
         }
 
         // Priority output section.
@@ -101,12 +131,12 @@ private fun RenderersContent(
             Spacer(modifier = Modifier.height(12.dp))
         }
 
-        // "This Phone" card.
         if (localRenderer != null) {
             item {
                 LocalRendererCard(
                     item = localRenderer,
                     onClick = { onSelectRenderer(localRenderer.nodeId) },
+                    onReleaseLease = { onReleaseLease(localRenderer.nodeId) },
                 )
                 Spacer(modifier = Modifier.height(28.dp))
             }
@@ -114,9 +144,7 @@ private fun RenderersContent(
 
         // Network renderers section.
         item {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 SectionLabel(text = "DISCOVERED ON NETWORK")
                 if (state.isScanning) {
                     Spacer(modifier = Modifier.width(12.dp))
@@ -137,11 +165,7 @@ private fun RenderersContent(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = if (state.isScanning) {
-                            "Searching for renderers..."
-                        } else {
-                            "No renderers found"
-                        },
+                        text = if (state.isScanning) "Searching for renderers..." else "No renderers found",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -156,14 +180,12 @@ private fun RenderersContent(
             NetworkRendererCard(
                 item = renderer,
                 onClick = { onSelectRenderer(renderer.nodeId) },
+                onReleaseLease = { onReleaseLease(renderer.nodeId) },
             )
             Spacer(modifier = Modifier.height(10.dp))
         }
 
-        // Bottom padding.
-        item {
-            Spacer(modifier = Modifier.height(24.dp))
-        }
+        item { Spacer(modifier = Modifier.height(32.dp)) }
     }
 }
 
@@ -189,9 +211,7 @@ private fun ScanningIndicator() {
         label = "scanPulse",
     )
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
                 .size(6.dp)
@@ -211,12 +231,14 @@ private fun ScanningIndicator() {
 private fun LocalRendererCard(
     item: RendererItem,
     onClick: () -> Unit,
+    onReleaseLease: () -> Unit,
 ) {
     val accentColor = Secondary
     val backgroundColor by animateColorAsState(
         targetValue = if (item.isActive) SurfaceContainerHigh else SurfaceContainerLow,
         label = "localBg",
     )
+    var showMenu by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -225,19 +247,13 @@ private fun LocalRendererCard(
             .then(
                 if (item.isActive) {
                     Modifier.drawBehind {
-                        drawRect(
-                            color = accentColor,
-                            topLeft = Offset.Zero,
-                            size = Size(4.dp.toPx(), size.height),
-                        )
+                        drawRect(accentColor, Offset.Zero, Size(4.dp.toPx(), size.height))
                     }
-                } else {
-                    Modifier
-                }
+                } else Modifier
             )
             .background(backgroundColor)
             .clickable(onClick = onClick)
-            .padding(16.dp),
+            .padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -249,9 +265,7 @@ private fun LocalRendererCard(
 
         Spacer(modifier = Modifier.width(16.dp))
 
-        Column(
-            modifier = Modifier.weight(1f),
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = item.name,
                 style = MaterialTheme.typography.bodyLarge,
@@ -265,12 +279,21 @@ private fun LocalRendererCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (item.leaseOwner != null) {
+                Text(
+                    text = "LEASE: ${item.leaseOwner.uppercase()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
         if (item.isActive) {
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "CURRENT SOURCE",
+                text = "ACTIVE",
                 style = MaterialTheme.typography.labelSmall,
                 color = Secondary,
                 modifier = Modifier
@@ -280,14 +303,35 @@ private fun LocalRendererCard(
             )
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
-
-        Icon(
-            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-            contentDescription = "Select",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(24.dp),
-        )
+        Box {
+            IconButton(onClick = { showMenu = true }, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "Options",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Release lease") },
+                    onClick = {
+                        showMenu = false
+                        onReleaseLease()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Select") },
+                    onClick = {
+                        showMenu = false
+                        onClick()
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -296,11 +340,13 @@ private fun LocalRendererCard(
 private fun NetworkRendererCard(
     item: RendererItem,
     onClick: () -> Unit,
+    onReleaseLease: () -> Unit,
 ) {
     val backgroundColor by animateColorAsState(
         targetValue = if (item.isActive) SurfaceContainerHigh else SurfaceContainerLow,
         label = "networkBg",
     )
+    var showMenu by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -308,7 +354,7 @@ private fun NetworkRendererCard(
             .clip(CardShape)
             .background(backgroundColor)
             .clickable(onClick = onClick)
-            .padding(16.dp),
+            .padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -320,9 +366,7 @@ private fun NetworkRendererCard(
 
         Spacer(modifier = Modifier.width(16.dp))
 
-        Column(
-            modifier = Modifier.weight(1f),
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = item.name,
                 style = MaterialTheme.typography.bodyLarge,
@@ -332,7 +376,6 @@ private fun NetworkRendererCard(
             )
             Spacer(modifier = Modifier.height(2.dp))
 
-            // Use marquee scrolling for track info when playing/paused.
             val isAnimating = item.currentTrack != null
             Text(
                 text = item.status,
@@ -346,9 +389,7 @@ private fun NetworkRendererCard(
                         initialDelayMillis = 2000,
                         velocity = 50.dp,
                     )
-                } else {
-                    Modifier
-                },
+                } else Modifier,
             )
 
             if (item.leaseOwner != null) {
@@ -363,12 +404,12 @@ private fun NetworkRendererCard(
         }
 
         if (item.formatBadge != null) {
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             HiResBadge(text = item.formatBadge)
         }
 
         if (item.isActive) {
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = "ACTIVE",
                 style = MaterialTheme.typography.labelSmall,
@@ -378,6 +419,39 @@ private fun NetworkRendererCard(
                     .background(Secondary.copy(alpha = 0.12f))
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
+        }
+
+        // Hamburger menu.
+        Box {
+            IconButton(onClick = { showMenu = true }, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "Options",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+            ) {
+                if (item.leaseOwner != null) {
+                    DropdownMenuItem(
+                        text = { Text("Release lease") },
+                        onClick = {
+                            showMenu = false
+                            onReleaseLease()
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Select") },
+                    onClick = {
+                        showMenu = false
+                        onClick()
+                    },
+                )
+            }
         }
     }
 }

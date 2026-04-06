@@ -33,11 +33,14 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Podcasts
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,9 +48,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.derivedStateOf
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -96,6 +103,7 @@ fun LibraryScreen(
         onLoadMore = viewModel::loadMore,
         onPlayItem = viewModel::playItem,
         onAddToQueue = viewModel::addToQueue,
+        onEnqueueAndPlay = viewModel::enqueueAndPlay,
         onPlayContainer = viewModel::playContainer,
         onPlayAll = viewModel::playAllVisible,
         onQueueAll = viewModel::queueAllVisible,
@@ -112,6 +120,7 @@ private fun LibraryContent(
     onLoadMore: () -> Unit,
     onPlayItem: (String) -> Unit,
     onAddToQueue: (String) -> Unit,
+    onEnqueueAndPlay: (String) -> Unit,
     onPlayContainer: (String) -> Unit,
     onPlayAll: () -> Unit,
     onQueueAll: () -> Unit,
@@ -193,6 +202,7 @@ private fun LibraryContent(
                             onLoadMore = onLoadMore,
                             onPlayItem = onPlayItem,
                             onAddToQueue = onAddToQueue,
+                            onEnqueueAndPlay = onEnqueueAndPlay,
                         )
                     }
                 } else {
@@ -206,6 +216,7 @@ private fun LibraryContent(
                         onPlayContainer = onPlayContainer,
                         onPlayItem = onPlayItem,
                         onAddToQueue = onAddToQueue,
+                        onEnqueueAndPlay = onEnqueueAndPlay,
                         onPlayAll = onPlayAll,
                         onQueueAll = onQueueAll,
                     )
@@ -575,6 +586,7 @@ private fun TrackList(
     onLoadMore: () -> Unit,
     onPlayItem: (String) -> Unit,
     onAddToQueue: (String) -> Unit,
+    onEnqueueAndPlay: (String) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
 
@@ -590,39 +602,51 @@ private fun TrackList(
         if (shouldLoadMore) onLoadMore()
     }
 
-    LazyColumn(
-        state = listState,
-        contentPadding = PaddingValues(vertical = 4.dp),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        items(
-            items = tracks,
-            key = { it.id },
-        ) { track ->
-            TrackRow(
-                item = track,
-                trackNumber = tracks.indexOf(track) + 1,
-                onPlay = { onPlayItem(track.id) },
-                onAddToQueue = { onAddToQueue(track.id) },
-            )
-        }
+    val coroutineScope = rememberCoroutineScope()
 
-        if (hasMore) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(
-                        color = Primary,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(24.dp),
-                    )
+    Row(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(vertical = 4.dp),
+            modifier = Modifier.weight(1f),
+        ) {
+            items(
+                items = tracks,
+                key = { it.id },
+            ) { track ->
+                TrackRow(
+                    item = track,
+                    trackNumber = tracks.indexOf(track) + 1,
+                    onPlay = { onPlayItem(track.id) },
+                    onAddToQueue = { onAddToQueue(track.id) },
+                    onEnqueueAndPlay = { onEnqueueAndPlay(track.id) },
+                )
+            }
+
+            if (hasMore) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(
+                            color = Primary,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
             }
         }
+
+        AlphabetScrollBar(
+            items = tracks,
+            onLetterClick = { index ->
+                coroutineScope.launch { listState.animateScrollToItem(index) }
+            },
+        )
     }
 }
 
@@ -632,7 +656,10 @@ private fun TrackRow(
     trackNumber: Int,
     onPlay: () -> Unit,
     onAddToQueue: () -> Unit,
+    onEnqueueAndPlay: () -> Unit = {},
 ) {
+    var showMenu by remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -694,21 +721,40 @@ private fun TrackRow(
                 text = formatDuration(durationMs),
                 style = MaterialTheme.typography.labelSmall,
                 color = OnSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp),
+                modifier = Modifier.padding(horizontal = 4.dp),
             )
         }
 
-        // Add to queue.
-        IconButton(
-            onClick = onAddToQueue,
-            modifier = Modifier.size(32.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Add,
-                contentDescription = "Add to queue",
-                tint = OnSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
+        // Hamburger menu.
+        Box {
+            IconButton(
+                onClick = { showMenu = true },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "Options",
+                    tint = OnSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Play now") },
+                    onClick = { showMenu = false; onPlay() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Enqueue and play") },
+                    onClick = { showMenu = false; onEnqueueAndPlay() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Enqueue") },
+                    onClick = { showMenu = false; onAddToQueue() },
+                )
+            }
         }
     }
 }
@@ -727,6 +773,7 @@ private fun MixedContentList(
     onPlayContainer: (String) -> Unit,
     onPlayItem: (String) -> Unit,
     onAddToQueue: (String) -> Unit,
+    onEnqueueAndPlay: (String) -> Unit = {},
     onPlayAll: () -> Unit = {},
     onQueueAll: () -> Unit = {},
 ) {
@@ -782,6 +829,7 @@ private fun MixedContentList(
                 trackNumber = tracks.indexOf(track) + 1,
                 onPlay = { onPlayItem(track.id) },
                 onAddToQueue = { onAddToQueue(track.id) },
+                onEnqueueAndPlay = { onEnqueueAndPlay(track.id) },
             )
         }
 
@@ -1035,6 +1083,54 @@ private fun SearchResultRow(
                     modifier = Modifier.size(18.dp),
                 )
             }
+        }
+    }
+}
+
+// =============================================================================
+// Alphabetical fast scroll bar
+// =============================================================================
+
+@Composable
+private fun AlphabetScrollBar(
+    items: List<BrowseItem>,
+    onLetterClick: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (items.size <= 10) return
+
+    val letters = ('A'..'Z').toList()
+
+    // Pre-compute which letters have matching entries.
+    val activeLetters = remember(items) {
+        items.mapNotNull { it.title.firstOrNull()?.uppercaseChar() }.toSet()
+    }
+
+    Column(
+        modifier = modifier
+            .padding(end = 2.dp, top = 4.dp, bottom = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        letters.forEach { letter ->
+            val hasEntries = letter in activeLetters
+            Text(
+                text = letter.toString(),
+                style = MaterialTheme.typography.labelMedium,
+                color = if (hasEntries) Secondary else OnSurfaceVariant.copy(alpha = 0.2f),
+                modifier = Modifier
+                    .then(
+                        if (hasEntries) {
+                            Modifier.clickable {
+                                val index = items.indexOfFirst {
+                                    it.title.uppercase().startsWith(letter.toString())
+                                }
+                                if (index >= 0) onLetterClick(index)
+                            }
+                        } else Modifier
+                    )
+                    .padding(horizontal = 10.dp, vertical = 2.dp),
+            )
         }
     }
 }

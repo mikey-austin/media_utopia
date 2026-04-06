@@ -101,7 +101,6 @@ private fun QueueContent(
         // Header.
         QueueHeader(
             totalTracks = state.totalTracks,
-            totalDuration = state.totalDuration,
             shuffle = state.shuffle,
             repeatMode = state.repeatMode,
             onToggleShuffle = onToggleShuffle,
@@ -128,7 +127,6 @@ private fun QueueContent(
 @Composable
 private fun QueueHeader(
     totalTracks: Int,
-    totalDuration: String,
     shuffle: Boolean,
     repeatMode: String,
     onToggleShuffle: () -> Unit,
@@ -148,23 +146,11 @@ private fun QueueHeader(
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                text = "$totalTracks TRACKS",
-                style = MaterialTheme.typography.labelSmall,
-                color = OnSurfaceVariant,
-            )
-            if (totalDuration.isNotEmpty()) {
-                Text(
-                    text = totalDuration,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = OnSurfaceVariant,
-                )
-            }
-        }
+        Text(
+            text = "$totalTracks TRACKS",
+            style = MaterialTheme.typography.labelSmall,
+            color = OnSurfaceVariant,
+        )
 
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -319,12 +305,22 @@ private fun SwipeToDismissTrackRow(
                     .background(MaterialTheme.colorScheme.error.copy(alpha = 0.3f)),
                 contentAlignment = Alignment.CenterEnd,
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Delete,
-                    contentDescription = "Remove",
-                    tint = MaterialTheme.colorScheme.error,
+                Row(
                     modifier = Modifier.padding(end = 20.dp),
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "REMOVED",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "Remove",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         },
         enableDismissFromStartToEnd = false,

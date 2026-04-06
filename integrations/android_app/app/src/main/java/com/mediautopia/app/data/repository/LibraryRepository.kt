@@ -66,6 +66,11 @@ class LibraryRepository @Inject constructor(
     // Types that are explicitly NOT containers even if they match a pattern.
     private val explicitLeafTypes = setOf("podcastepisode")
 
+    /**
+     * Get cached metadata for an item (after resolve has been called).
+     */
+    fun getCachedMetadata(itemId: String): ResolvedMetadata? = metadataCache.get(itemId)
+
     // -------------------------------------------------------------------------
     // Browse
     // -------------------------------------------------------------------------
@@ -140,11 +145,11 @@ class LibraryRepository @Inject constructor(
     // Resolve (single)
     // -------------------------------------------------------------------------
 
-    suspend fun resolve(itemId: String): ResolvedMetadata? {
+    suspend fun resolve(itemId: String, libraryNodeId: String? = null): ResolvedMetadata? {
         // Check cache first.
         metadataCache.get(itemId)?.let { return it }
 
-        val libraryNode = findLibraryForItem(itemId) ?: return null
+        val libraryNode = libraryNodeId ?: findLibraryForItem(itemId) ?: return null
         // Strip the lib:{libraryNodeId}: prefix for the resolve command.
         val localItemId = stripLibPrefix(itemId, libraryNode)
 
@@ -268,8 +273,8 @@ class LibraryRepository @Inject constructor(
     /**
      * Resolve a single item for playback, returning the source URL.
      */
-    suspend fun resolveForPlayback(itemId: String): PlaybackSource? {
-        val libraryNode = findLibraryForItem(itemId) ?: return null
+    suspend fun resolveForPlayback(itemId: String, libraryNodeId: String? = null): PlaybackSource? {
+        val libraryNode = libraryNodeId ?: findLibraryForItem(itemId) ?: return null
         val localItemId = stripLibPrefix(itemId, libraryNode)
 
         val body = json.encodeToJsonElement(
@@ -309,13 +314,16 @@ class LibraryRepository @Inject constructor(
     /**
      * Resolve a batch of items for playback, returning source URLs.
      */
-    suspend fun resolveForPlaybackBatch(itemIds: List<String>): Map<String, PlaybackSource> {
+    suspend fun resolveForPlaybackBatch(
+        itemIds: List<String>,
+        libraryNodeId: String? = null,
+    ): Map<String, PlaybackSource> {
         val result = mutableMapOf<String, PlaybackSource>()
 
         // Group by library node.
         val byLibrary = mutableMapOf<String, MutableList<String>>()
         for (id in itemIds) {
-            val lib = findLibraryForItem(id) ?: continue
+            val lib = libraryNodeId ?: findLibraryForItem(id) ?: continue
             byLibrary.getOrPut(lib) { mutableListOf() }.add(id)
         }
 

@@ -15,6 +15,7 @@ import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
 import com.mediautopia.app.domain.model.Node
+import com.mediautopia.app.domain.usecase.LeaseManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -53,6 +54,7 @@ class RenderersViewModel @Inject constructor(
     private val mqttConnectionManager: MqttConnectionManager,
     private val libraryRepository: LibraryRepository,
     private val metadataCache: MetadataCache,
+    private val leaseManager: LeaseManager,
 ) : ViewModel() {
     private val tag = "RenderersViewModel"
 
@@ -83,6 +85,9 @@ class RenderersViewModel @Inject constructor(
             val isLocalActive = activeId == ActiveRendererRepository.LOCAL_RENDERER_ID ||
                 activeId == localId
 
+            val localState = rendererStates[localId]
+            val localLeaseOwner = localState?.session?.owner
+
             add(
                 RendererItem(
                     nodeId = localId,
@@ -90,6 +95,7 @@ class RenderersViewModel @Inject constructor(
                     isLocal = true,
                     isActive = isLocalActive,
                     status = if (isLocalActive) "LOCAL PLAYBACK" else "Local playback",
+                    leaseOwner = localLeaseOwner,
                 )
             )
 
@@ -218,6 +224,17 @@ class RenderersViewModel @Inject constructor(
     fun selectRenderer(nodeId: String) {
         viewModelScope.launch {
             activeRendererRepository.setActiveRenderer(nodeId)
+        }
+    }
+
+    fun releaseLease(nodeId: String) {
+        viewModelScope.launch {
+            try {
+                leaseManager.releaseLease(nodeId)
+                Log.i(tag, "Released lease for $nodeId")
+            } catch (e: Exception) {
+                Log.e(tag, "releaseLease failed for $nodeId: ${e.message}")
+            }
         }
     }
 

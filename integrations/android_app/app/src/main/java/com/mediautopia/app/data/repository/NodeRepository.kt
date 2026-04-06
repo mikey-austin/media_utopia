@@ -5,6 +5,7 @@ import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
 import com.mediautopia.app.data.protocol.Presence
 import com.mediautopia.app.domain.model.Node
+import com.mediautopia.app.domain.model.NodeSource
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -152,6 +153,7 @@ class NodeRepository @Inject constructor(
             caps = presence.caps?.mapValues { (_, v) -> jsonElementToAny(v) } ?: emptyMap(),
             endpoints = presence.endpoints?.mapValues { (_, v) -> jsonElementToAny(v) } ?: emptyMap(),
             source = presence.source ?: "",
+            sources = presence.sources?.map { NodeSource(id = it.id, name = it.name) } ?: emptyList(),
             lastSeen = presence.ts,
             isLocal = false,
         )

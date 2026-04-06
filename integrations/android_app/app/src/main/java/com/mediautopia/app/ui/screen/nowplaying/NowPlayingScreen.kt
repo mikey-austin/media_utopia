@@ -100,9 +100,6 @@ private fun NowPlayingContent(
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Active renderer indicator.
-        RendererIndicator(name = state.rendererName)
-
         Spacer(modifier = Modifier.height(12.dp))
 
         // Album artwork (constrained height so controls always fit).

@@ -1,8 +1,10 @@
 package com.mediautopia.app.ui.navigation
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -11,10 +13,13 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -29,12 +34,13 @@ import com.mediautopia.app.ui.MainViewModel
 import com.mediautopia.app.ui.components.TopHeader
 import com.mediautopia.app.ui.screen.library.LibraryScreen
 import com.mediautopia.app.ui.screen.nowplaying.NowPlayingScreen
-import com.mediautopia.app.ui.screen.renderers.RenderersScreen
+import com.mediautopia.app.ui.screen.renderers.RenderersSheet
 import com.mediautopia.app.ui.screen.settings.SettingsScreen
 import com.mediautopia.app.ui.screen.queue.QueueSheet
 import com.mediautopia.app.ui.screen.zones.ZonesScreen
 import com.mediautopia.app.ui.theme.Secondary
 import com.mediautopia.app.ui.theme.SurfaceContainerHigh
+import com.mediautopia.app.ui.theme.SurfaceContainerLow
 
 private val bottomNavItems = listOf(
     Screen.NowPlaying,
@@ -43,6 +49,7 @@ private val bottomNavItems = listOf(
     Screen.Zones,
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppNavigation(
     mainViewModel: MainViewModel = hiltViewModel(),
@@ -52,11 +59,27 @@ fun AppNavigation(
     val currentDestination = navBackStackEntry?.destination
     val activeRendererName by mainViewModel.activeRendererName.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showRenderersSheet by remember { mutableStateOf(false) }
+    val renderersSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // Observe snackbar messages.
     LaunchedEffect(Unit) {
         mainViewModel.snackbarManager.messages.collect { message ->
             snackbarHostState.showSnackbar(message)
+        }
+    }
+
+    // Renderers bottom sheet overlay.
+    if (showRenderersSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showRenderersSheet = false },
+            sheetState = renderersSheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+            dragHandle = null,
+        ) {
+            RenderersSheet(
+                onDismiss = { showRenderersSheet = false },
+            )
         }
     }
 
@@ -77,11 +100,7 @@ fun AppNavigation(
                         launchSingleTop = true
                     }
                 },
-                onRenderersClick = {
-                    navController.navigate(Screen.Renderers.route) {
-                        launchSingleTop = true
-                    }
-                },
+                onRenderersClick = { showRenderersSheet = true },
                 activeRendererName = activeRendererName,
             )
         },
@@ -136,7 +155,6 @@ fun AppNavigation(
             composable(Screen.NowPlaying.route) { NowPlayingScreen() }
             composable(Screen.Queue.route) { QueueSheet() }
             composable(Screen.Library.route) { LibraryScreen() }
-            composable(Screen.Renderers.route) { RenderersScreen() }
             composable(Screen.Zones.route) { ZonesScreen() }
             composable(Screen.Settings.route) {
                 SettingsScreen(

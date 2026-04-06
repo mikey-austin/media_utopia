@@ -3,29 +3,18 @@ package com.mediautopia.app.data.repository
 import android.util.Log
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
-import com.mediautopia.app.data.protocol.PlaybackSetMuteBody
-import com.mediautopia.app.data.protocol.PlaybackSetVolumeBody
 import com.mediautopia.app.domain.usecase.CommandCorrelator
-import com.mediautopia.app.domain.usecase.LeaseManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Wire-format for zone state published by zone_snapcast module.
- * This is a flat object (NOT nested inside a `playback` wrapper like RendererState).
- *
- * Example payload:
- * ```json
- * {"volume":0.75,"mute":false,"sourceId":"mu:source:snapcast:office:default","connected":true,"ts":1700000000}
- * ```
- */
 @Serializable
 private data class ZoneMqttState(
     val volume: Double = 0.0,
@@ -39,10 +28,16 @@ data class ZoneInfo(
     val nodeId: String,
     val name: String,
     val source: String = "",
+    val sourceId: String = "",
     val volume: Float = 0f,
     val isMuted: Boolean = false,
     val isOnline: Boolean = true,
     val controllerId: String = "",
+)
+
+data class ZoneSource(
+    val id: String,
+    val name: String,
 )
 
 @Singleton
@@ -50,60 +45,39 @@ class ZoneRepository @Inject constructor(
     private val mqtt: MqttConnectionManager,
     private val nodeRepository: NodeRepository,
     private val correlator: CommandCorrelator,
-    private val leaseManager: LeaseManager,
 ) {
     private val tag = "ZoneRepository"
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /**
-     * MQTT subscription IDs for zone state topics, keyed by nodeId.
-     * Used to track which zones we are currently observing so we can
-     * subscribe/unsubscribe as zones appear and disappear.
-     */
     private val stateSubscriptions = ConcurrentHashMap<String, String>()
-
-    /**
-     * Latest parsed state per zone nodeId. Updated from MQTT state messages.
-     */
     private val zoneStates = ConcurrentHashMap<String, ZoneStateSnapshot>()
-
-    /**
-     * Emitted whenever any zone's state changes. The map is keyed by nodeId.
-     */
     private val _zoneStates = MutableStateFlow<Map<String, ZoneStateSnapshot>>(emptyMap())
 
     private data class ZoneStateSnapshot(
         val volume: Float = 0f,
         val isMuted: Boolean = false,
+        val sourceId: String = "",
+        val connected: Boolean = false,
     )
 
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
 
-    /**
-     * A flow of all discovered zones combined with their real-time state.
-     * Automatically subscribes to MQTT state topics for new zones and
-     * unsubscribes when zones disappear.
-     */
     val zones: Flow<List<ZoneInfo>> = combine(
         nodeRepository.zones,
         _zoneStates,
     ) { zoneNodes, states ->
-        // Determine which zone nodeIds are currently known.
         val currentZoneIds = zoneNodes
             .filter { it.kind == "zone" }
             .map { it.nodeId }
             .toSet()
 
-        // Find the zone controller (if any) for the controllerId field.
         val controller = zoneNodes.firstOrNull { it.kind == "zone_controller" }
 
-        // Subscribe to new zones, unsubscribe from removed ones.
         reconcileSubscriptions(currentZoneIds)
 
-        // Build ZoneInfo list for zone nodes only (not controllers).
         zoneNodes
             .filter { it.kind == "zone" }
             .map { node ->
@@ -111,28 +85,44 @@ class ZoneRepository @Inject constructor(
                 ZoneInfo(
                     nodeId = node.nodeId,
                     name = node.name,
-                    source = node.source,
+                    source = state?.sourceId?.substringAfterLast(":") ?: node.source,
+                    sourceId = state?.sourceId ?: "",
                     volume = state?.volume ?: 0f,
                     isMuted = state?.isMuted ?: false,
-                    isOnline = true,
+                    isOnline = state?.connected ?: true,
                     controllerId = controller?.nodeId ?: "",
                 )
             }
     }
 
     /**
-     * Set the volume on a zone node.
+     * Get available sources from the zone controller's presence.
+     */
+    fun getAvailableSources(): List<ZoneSource> {
+        val nodes = nodeRepository.nodes.value
+        val controller = nodes.values.firstOrNull { it.kind == "zone_controller" }
+            ?: return emptyList()
+        return controller.sources.map { ZoneSource(id = it.id, name = it.name) }
+    }
+
+    /**
+     * Set volume on a zone. Commands go to the zone controller with zoneId in body.
+     * No lease required for zone commands.
      */
     suspend fun setVolume(zoneNodeId: String, volume: Float) {
+        val controllerId = findControllerId(zoneNodeId) ?: run {
+            Log.e(tag, "No zone controller found for $zoneNodeId")
+            return
+        }
         try {
-            val lease = leaseManager.ensureLease(zoneNodeId)
+            val body = buildJsonObject {
+                put("zoneId", JsonPrimitive(zoneNodeId))
+                put("volume", JsonPrimitive(volume.toDouble().coerceIn(0.0, 1.0)))
+            }
             correlator.send(
-                nodeId = zoneNodeId,
-                cmdType = "playback.setVolume",
-                body = json.encodeToJsonElement(
-                    PlaybackSetVolumeBody(volume = volume.toDouble().coerceIn(0.0, 1.0))
-                ),
-                lease = lease,
+                nodeId = controllerId,
+                cmdType = "zone.setVolume",
+                body = body,
             )
         } catch (e: Exception) {
             Log.e(tag, "setVolume failed for $zoneNodeId: ${e.message}")
@@ -140,21 +130,58 @@ class ZoneRepository @Inject constructor(
     }
 
     /**
-     * Set the mute state on a zone node.
+     * Set mute on a zone. Commands go to the zone controller.
      */
     suspend fun setMute(zoneNodeId: String, mute: Boolean) {
+        val controllerId = findControllerId(zoneNodeId) ?: run {
+            Log.e(tag, "No zone controller found for $zoneNodeId")
+            return
+        }
         try {
-            val lease = leaseManager.ensureLease(zoneNodeId)
+            val body = buildJsonObject {
+                put("zoneId", JsonPrimitive(zoneNodeId))
+                put("mute", JsonPrimitive(mute))
+            }
             correlator.send(
-                nodeId = zoneNodeId,
-                cmdType = "playback.setMute",
-                body = json.encodeToJsonElement(
-                    PlaybackSetMuteBody(mute = mute)
-                ),
-                lease = lease,
+                nodeId = controllerId,
+                cmdType = "zone.setMute",
+                body = body,
             )
         } catch (e: Exception) {
             Log.e(tag, "setMute failed for $zoneNodeId: ${e.message}")
+        }
+    }
+
+    /**
+     * Select a source for a zone. Commands go to the zone controller.
+     */
+    suspend fun selectSource(zoneNodeId: String, sourceId: String) {
+        val controllerId = findControllerId(zoneNodeId) ?: run {
+            Log.e(tag, "No zone controller found for $zoneNodeId")
+            return
+        }
+        try {
+            val body = buildJsonObject {
+                put("zoneId", JsonPrimitive(zoneNodeId))
+                put("sourceId", JsonPrimitive(sourceId))
+            }
+            correlator.send(
+                nodeId = controllerId,
+                cmdType = "zone.selectSource",
+                body = body,
+            )
+        } catch (e: Exception) {
+            Log.e(tag, "selectSource failed for $zoneNodeId: ${e.message}")
+        }
+    }
+
+    /**
+     * Set volume on all zones (master volume).
+     */
+    suspend fun setMasterVolume(volume: Float) {
+        val currentZones = _zoneStates.value.keys.toList()
+        for (zoneId in currentZones) {
+            setVolume(zoneId, volume)
         }
     }
 
@@ -162,12 +189,12 @@ class ZoneRepository @Inject constructor(
     // Internals
     // -------------------------------------------------------------------------
 
-    /**
-     * Subscribe to state topics for newly discovered zones and unsubscribe
-     * from zones that are no longer present.
-     */
+    private fun findControllerId(zoneNodeId: String): String? {
+        val nodes = nodeRepository.nodes.value
+        return nodes.values.firstOrNull { it.kind == "zone_controller" }?.nodeId
+    }
+
     private fun reconcileSubscriptions(currentZoneIds: Set<String>) {
-        // Subscribe to new zones.
         for (zoneId in currentZoneIds) {
             if (!stateSubscriptions.containsKey(zoneId)) {
                 val subscriptionId = mqtt.subscribe(
@@ -181,7 +208,6 @@ class ZoneRepository @Inject constructor(
             }
         }
 
-        // Unsubscribe from zones that have disappeared.
         val toRemove = stateSubscriptions.keys - currentZoneIds
         for (zoneId in toRemove) {
             stateSubscriptions.remove(zoneId)?.let { subscriptionId ->
@@ -209,9 +235,11 @@ class ZoneRepository @Inject constructor(
         val snapshot = ZoneStateSnapshot(
             volume = state.volume.toFloat(),
             isMuted = state.mute,
+            sourceId = state.sourceId,
+            connected = state.connected,
         )
 
-        Log.d(tag, "Zone $zoneId -> volume=${snapshot.volume}, muted=${snapshot.isMuted}")
+        Log.d(tag, "Zone $zoneId -> volume=${snapshot.volume}, muted=${snapshot.isMuted}, source=${snapshot.sourceId}")
         zoneStates[zoneId] = snapshot
         emitSnapshot()
     }

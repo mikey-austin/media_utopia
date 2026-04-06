@@ -552,10 +552,14 @@ func resolvedURL(entry QueueEntry) string {
 func toQueueEntries(entries []mu.QueueEntry) []QueueEntry {
 	result := make([]QueueEntry, 0, len(entries))
 	for _, entry := range entries {
+		meta := entry.Metadata
+		if meta == nil {
+			meta = map[string]any{}
+		}
 		result = append(result, QueueEntry{
 			QueueEntryID: fmt.Sprintf("mu:queueentry:renderer:R:%s", idgen.Generator{}.NewID()),
 			ItemID:       itemID(entry),
-			Metadata:     map[string]any{},
+			Metadata:     meta,
 			Ref:          entry.Ref,
 			Resolved:     entry.Resolved,
 		})

@@ -149,6 +149,7 @@ data class QueueLoadSuggestionBody(
 data class QueueEntry(
     val ref: ItemRef? = null,
     val resolved: ResolvedSource? = null,
+    val metadata: JsonObject? = null,
 )
 
 @Serializable

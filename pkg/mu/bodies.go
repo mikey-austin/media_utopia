@@ -137,8 +137,9 @@ type QueueLoadSuggestionBody struct {
 
 // QueueEntry is an entry reference or resolved source.
 type QueueEntry struct {
-	Ref      *ItemRef        `json:"ref,omitempty"`
-	Resolved *ResolvedSource `json:"resolved,omitempty"`
+	Ref      *ItemRef               `json:"ref,omitempty"`
+	Resolved *ResolvedSource        `json:"resolved,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // ItemRef is a reference to a library item.

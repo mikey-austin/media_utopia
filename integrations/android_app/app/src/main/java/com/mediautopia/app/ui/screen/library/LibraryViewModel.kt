@@ -29,7 +29,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 
 data class LibraryUiState(
@@ -192,7 +196,7 @@ class LibraryViewModel @Inject constructor(
         if (index < 0 || index >= currentBreadcrumbs.size) return
 
         // Going back to library list.
-        if (index == 0 && selectedLibraryNodeId != null) {
+        if (index == 0) {
             selectedLibraryNodeId = null
             _uiState.update { it.copy(
                 breadcrumbs = listOf(BreadcrumbItem("", "Libraries")),
@@ -282,8 +286,36 @@ class LibraryViewModel @Inject constructor(
     // Playback actions
     // -------------------------------------------------------------------------
 
+    private fun buildMetadataJson(itemId: String): JsonObject? {
+        val cached = libraryRepository.getCachedMetadata(itemId)
+        if (cached != null) {
+            return buildJsonObject {
+                if (cached.title.isNotEmpty()) put("title", cached.title)
+                if (cached.artist.isNotEmpty()) put("artist", cached.artist)
+                if (cached.album.isNotEmpty()) put("album", cached.album)
+                if (cached.artworkUrl != null) put("artworkUrl", cached.artworkUrl)
+                if (cached.durationMs > 0) put("durationMs", cached.durationMs)
+                if (cached.format.isNotEmpty()) put("format", cached.format)
+            }
+        }
+
+        // Fall back to BrowseItem data from current UI state.
+        val browseItem = _uiState.value.items.find { it.id == itemId } ?: return null
+        return buildJsonObject {
+            if (browseItem.title.isNotEmpty()) put("title", browseItem.title)
+            val artist = browseItem.metadata["artist"] as? String
+            if (!artist.isNullOrEmpty()) put("artist", artist)
+            val album = browseItem.metadata["album"] as? String
+            if (!album.isNullOrEmpty()) put("album", album)
+            if (browseItem.artworkUrl != null) put("artworkUrl", browseItem.artworkUrl)
+            val durationMs = browseItem.metadata["durationMs"] as? Long ?: 0L
+            if (durationMs > 0) put("durationMs", durationMs)
+        }
+    }
+
     private suspend fun buildQueueEntry(itemId: String): QueueEntry {
-        val source = libraryRepository.resolveForPlayback(itemId)
+        val source = libraryRepository.resolveForPlayback(itemId, selectedLibraryNodeId)
+        val meta = buildMetadataJson(itemId)
         return if (source != null) {
             QueueEntry(
                 ref = ItemRef(id = itemId),
@@ -292,16 +324,18 @@ class LibraryViewModel @Inject constructor(
                     url = source.url,
                     mime = source.mime,
                 ),
+                metadata = meta,
             )
         } else {
-            QueueEntry(ref = ItemRef(id = itemId))
+            QueueEntry(ref = ItemRef(id = itemId), metadata = meta)
         }
     }
 
     private suspend fun buildQueueEntries(itemIds: List<String>): List<QueueEntry> {
-        val sources = libraryRepository.resolveForPlaybackBatch(itemIds)
+        val sources = libraryRepository.resolveForPlaybackBatch(itemIds, selectedLibraryNodeId)
         return itemIds.map { itemId ->
             val source = sources[itemId]
+            val meta = buildMetadataJson(itemId)
             if (source != null) {
                 QueueEntry(
                     ref = ItemRef(id = itemId),
@@ -310,9 +344,10 @@ class LibraryViewModel @Inject constructor(
                         url = source.url,
                         mime = source.mime,
                     ),
+                    metadata = meta,
                 )
             } else {
-                QueueEntry(ref = ItemRef(id = itemId))
+                QueueEntry(ref = ItemRef(id = itemId), metadata = meta)
             }
         }
     }
@@ -344,6 +379,31 @@ class LibraryViewModel @Inject constructor(
                 )
             } catch (e: Exception) {
                 Log.e(tag, "playItem failed: ${e.message}")
+            }
+        }
+    }
+
+    fun enqueueAndPlay(itemId: String) {
+        viewModelScope.launch {
+            val rendererId = activeRendererId.value
+            try {
+                val entry = buildQueueEntry(itemId)
+                val lease = leaseManager.ensureLease(rendererId)
+
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "queue.add",
+                    body = json.encodeToJsonElement(
+                        QueueAddBody(
+                            position = "end",
+                            entries = listOf(entry),
+                        )
+                    ),
+                    lease = lease,
+                )
+                snackbarManager.show("Added to queue")
+            } catch (e: Exception) {
+                Log.e(tag, "enqueueAndPlay failed: ${e.message}")
             }
         }
     }

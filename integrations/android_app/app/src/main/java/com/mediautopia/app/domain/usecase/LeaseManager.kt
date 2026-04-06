@@ -78,10 +78,23 @@ class LeaseManager @Inject constructor(
     }
 
     /**
-     * Release a lease explicitly.
+     * Release a lease explicitly. If we don't hold a cached lease,
+     * acquire one first (stealing from any current holder) then release it.
      */
     suspend fun releaseLease(rendererId: String) {
-        val cached = leases.remove(rendererId) ?: return
+        var cached = leases.remove(rendererId)
+
+        if (cached == null) {
+            // We don't hold a lease — acquire one (stealing from current holder) then release.
+            try {
+                val lease = acquireLease(rendererId)
+                cached = leases.remove(rendererId)
+                    ?: CachedLease(sessionId = lease.sessionId, token = lease.token, expiresAt = 0)
+            } catch (e: Exception) {
+                Log.w(tag, "Could not acquire lease to release for $rendererId: ${e.message}")
+                return
+            }
+        }
 
         try {
             val body = json.encodeToJsonElement(
