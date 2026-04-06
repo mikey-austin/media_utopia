@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.Speaker
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -98,6 +99,7 @@ fun NowPlayingScreen(
         onPrevious = viewModel::previous,
         onSeek = viewModel::seek,
         onSetVolume = viewModel::setVolume,
+        onToggleMute = viewModel::toggleMute,
         onToggleShuffle = viewModel::toggleShuffle,
         onToggleRepeat = viewModel::toggleRepeat,
     )
@@ -112,6 +114,7 @@ private fun NowPlayingContent(
     onPrevious: () -> Unit,
     onSeek: (Long) -> Unit,
     onSetVolume: (Float) -> Unit,
+    onToggleMute: () -> Unit,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
 ) {
@@ -139,7 +142,7 @@ private fun NowPlayingContent(
         )
 
         // Audio visualizer (below artwork, above metadata).
-        if (state.visualizerEnabled && state.playbackStatus == "playing" && audioSessionId != 0) {
+        if (state.visualizerEnabled && state.isLocalRenderer && state.playbackStatus == "playing" && audioSessionId != 0) {
             Spacer(modifier = Modifier.height(8.dp))
             com.mediautopia.app.ui.components.AudioVisualizer(
                 audioSessionId = audioSessionId,
@@ -184,7 +187,9 @@ private fun NowPlayingContent(
         // Volume.
         VolumeSection(
             volume = state.volume,
+            isMuted = state.isMuted,
             onSetVolume = onSetVolume,
+            onToggleMute = onToggleMute,
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -456,34 +461,59 @@ private fun PlayPauseButton(
 @Composable
 private fun VolumeSection(
     volume: Float,
+    isMuted: Boolean,
     onSetVolume: (Float) -> Unit,
+    onToggleMute: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
 
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        IconButton(
-            onClick = { expanded = !expanded },
-            modifier = Modifier.size(36.dp),
+        // Collapsed: icon + percentage, tap to expand.
+        Row(
+            modifier = Modifier.clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = @Suppress("DEPRECATION") Icons.Filled.VolumeUp,
+                imageVector = if (isMuted) @Suppress("DEPRECATION") Icons.Filled.VolumeOff
+                    else @Suppress("DEPRECATION") Icons.Filled.VolumeUp,
                 contentDescription = if (expanded) "Hide volume" else "Show volume",
-                tint = if (expanded) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (isMuted) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = if (isMuted) "MUTED" else "${(volume * 100).toInt()}%",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isMuted) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
+        // Expanded: mute toggle + slider.
         androidx.compose.animation.AnimatedVisibility(visible = expanded) {
             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f),
             ) {
+                IconButton(
+                    onClick = onToggleMute,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = if (isMuted) @Suppress("DEPRECATION") Icons.Filled.VolumeOff
+                            else @Suppress("DEPRECATION") Icons.Filled.VolumeUp,
+                        contentDescription = if (isMuted) "Unmute" else "Mute",
+                        tint = if (isMuted) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+
                 Slider(
                     value = volume,
                     onValueChange = onSetVolume,
@@ -493,14 +523,6 @@ private fun VolumeSection(
                         inactiveTrackColor = SurfaceContainerHighest,
                     ),
                     modifier = Modifier.weight(1f),
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Text(
-                    text = "${(volume * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

@@ -59,6 +59,7 @@ data class NowPlayingUiState(
     val rendererName: String = "This Phone",
     val isConnected: Boolean = false,
     val visualizerEnabled: Boolean = false,
+    val isLocalRenderer: Boolean = true,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -207,6 +208,7 @@ class NowPlayingViewModel @Inject constructor(
             rendererName = name,
             isConnected = state.session != null,
             visualizerEnabled = vizEnabled,
+            isLocalRenderer = name == "This Phone",
         )
     }.stateIn(
         scope = viewModelScope,
@@ -362,6 +364,26 @@ class NowPlayingViewModel @Inject constructor(
                 )
             } catch (e: Exception) {
                 Log.e(tag, "setVolume failed: ${e.message}")
+            }
+        }
+    }
+
+    fun toggleMute() {
+        viewModelScope.launch {
+            val rendererId = activeRendererId.value
+            val currentMute = rendererState.value?.playback?.mute ?: false
+            try {
+                val lease = leaseManager.ensureLease(rendererId)
+                correlator.send(
+                    nodeId = rendererId,
+                    cmdType = "playback.setMute",
+                    body = json.encodeToJsonElement(
+                        com.mediautopia.app.data.protocol.PlaybackSetMuteBody(mute = !currentMute)
+                    ),
+                    lease = lease,
+                )
+            } catch (e: Exception) {
+                Log.e(tag, "toggleMute failed: ${e.message}")
             }
         }
     }
