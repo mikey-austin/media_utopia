@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.Speaker
 import androidx.compose.material3.DropdownMenu
@@ -47,10 +48,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.ui.components.HiResBadge
 import com.mediautopia.app.ui.theme.Primary
 import com.mediautopia.app.ui.theme.Secondary
@@ -73,6 +76,7 @@ fun RenderersSheet(
             onDismiss()
         },
         onReleaseLease = viewModel::releaseLease,
+        onReconnect = viewModel::reconnect,
         onDismiss = onDismiss,
     )
 }
@@ -82,6 +86,7 @@ private fun RenderersContent(
     state: RenderersUiState,
     onSelectRenderer: (String) -> Unit,
     onReleaseLease: (String) -> Unit,
+    onReconnect: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val localRenderer = state.renderers.firstOrNull { it.isLocal }
@@ -123,7 +128,16 @@ private fun RenderersContent(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        // Connection status + reconnect button.
+        item {
+            ConnectionStatusBar(
+                state = state.connectionState,
+                onReconnect = onReconnect,
+            )
+            Spacer(modifier = Modifier.height(20.dp))
         }
 
         // Priority output section.
@@ -297,6 +311,10 @@ private fun LocalRendererCard(
 
         RendererMenu(
             hasLease = item.leaseOwner != null,
+            // The local phone self-controls; there's no meaningful "release"
+            // action and surfacing one confuses users into thinking the
+            // phone's own MediaSession is a detached remote holder.
+            showRelease = false,
             onRelease = onReleaseLease,
             onSelect = onClick,
         )
@@ -383,6 +401,7 @@ private fun NetworkRendererCard(
 
         RendererMenu(
             hasLease = item.leaseOwner != null,
+            showRelease = true,
             onRelease = onReleaseLease,
             onSelect = onClick,
         )
@@ -395,17 +414,29 @@ private fun NetworkRendererCard(
 
 @Composable
 private fun LeaseIndicator(item: RendererItem) {
+    val countdown = item.leaseExpiresAtMs?.let { formatLeaseCountdown(it) }
     when {
         item.isOwnLease -> {
-            Text(
-                text = "CONTROLLED",
-                style = MaterialTheme.typography.labelSmall,
-                color = Primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Primary.copy(alpha = 0.12f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "CONTROLLED",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Primary.copy(alpha = 0.12f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+                if (countdown != null) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = countdown,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        maxLines = 1,
+                    )
+                }
+            }
         }
         item.leaseOwner != null -> {
             Text(
@@ -419,9 +450,24 @@ private fun LeaseIndicator(item: RendererItem) {
     }
 }
 
+/**
+ * Format "ttl remaining" as a compact mm:ss countdown. Local time is compared
+ * to the server's unix-millis expiry — slightly out-of-sync clocks yield a
+ * best-effort display, which is fine for visibility.
+ */
+private fun formatLeaseCountdown(expiresAtMs: Long): String? {
+    val remainingMs = expiresAtMs - System.currentTimeMillis()
+    if (remainingMs <= 0) return "EXPIRED"
+    val totalSec = remainingMs / 1000
+    val mins = totalSec / 60
+    val secs = totalSec % 60
+    return "%dm %02ds".format(mins, secs)
+}
+
 @Composable
 private fun RendererMenu(
     hasLease: Boolean,
+    showRelease: Boolean,
     onRelease: () -> Unit,
     onSelect: () -> Unit,
 ) {
@@ -439,19 +485,85 @@ private fun RendererMenu(
             expanded = showMenu,
             onDismissRequest = { showMenu = false },
         ) {
-            DropdownMenuItem(
-                text = { Text(if (hasLease) "Release lease" else "Force release") },
-                onClick = {
-                    showMenu = false
-                    onRelease()
-                },
-            )
+            if (showRelease) {
+                DropdownMenuItem(
+                    text = { Text(if (hasLease) "Release lease" else "Force release") },
+                    onClick = {
+                        showMenu = false
+                        onRelease()
+                    },
+                )
+            }
             DropdownMenuItem(
                 text = { Text("Select") },
                 onClick = {
                     showMenu = false
                     onSelect()
                 },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConnectionStatusBar(
+    state: ConnectionState,
+    onReconnect: () -> Unit,
+) {
+    val (dotColor, label) = when (state) {
+        ConnectionState.CONNECTED -> Color(0xFF4CAF50) to "CONNECTED"
+        ConnectionState.CONNECTING -> Color(0xFFFF9800) to "CONNECTING..."
+        ConnectionState.RECONNECTING -> Color(0xFFFF9800) to "RECONNECTING..."
+        ConnectionState.DISCONNECTED -> Color(0xFFF44336) to "DISCONNECTED"
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(SurfaceContainerLow)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "MQTT BROKER",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(SurfaceContainerHigh)
+                .clickable(onClick = onReconnect)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Refresh,
+                contentDescription = "Reconnect",
+                tint = Secondary,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "RECONNECT",
+                style = MaterialTheme.typography.labelSmall,
+                color = Secondary,
             )
         }
     }

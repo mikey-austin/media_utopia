@@ -5,12 +5,17 @@ export JAVA_HOME   ?= /usr/lib/jvm/java-21-openjdk-amd64
 
 GRADLEW := ./gradlew
 ADB := $(ANDROID_HOME)/platform-tools/adb
+EMULATOR := $(ANDROID_HOME)/emulator/emulator
 
 # Device serials (override with make install-pixel PIXEL_SERIAL=xxx)
 PIXEL_SERIAL ?= $(shell $(ADB) devices | grep -v emulator | grep device | head -1 | cut -f1)
 EMU_SERIAL   ?= $(shell $(ADB) devices | grep emulator | head -1 | cut -f1)
 
-.PHONY: help build debug release clean compile lint install install-pixel install-emu run run-pixel bundle
+# AVD to launch with `make emulator` — override with AVD=MyAvd if needed.
+# Defaults to the first AVD reported by `emulator -list-avds`.
+AVD ?= $(shell $(EMULATOR) -list-avds 2>/dev/null | head -1)
+
+.PHONY: help build debug release clean compile lint install install-pixel install-emu run run-pixel bundle emulator avd-list
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -48,6 +53,19 @@ run: install ## Build, install, and launch on all connected devices
 
 run-pixel: install-pixel ## Build, install, and launch on Pixel
 	$(ADB) -s $(PIXEL_SERIAL) shell am start -n com.mediautopia.app/.MainActivity
+
+avd-list: ## List available AVDs
+	@$(EMULATOR) -list-avds
+
+emulator: ## Launch the Android emulator window in the background (AVD=name to override)
+	@if [ -z "$(AVD)" ]; then \
+		echo "No AVD found. Create one in Android Studio or run: make avd-list"; \
+		exit 1; \
+	fi
+	@echo "Launching emulator: $(AVD)"
+	@nohup $(EMULATOR) -avd $(AVD) > /tmp/mu-emulator.log 2>&1 & \
+		disown; \
+		echo "PID=$$!, logs at /tmp/mu-emulator.log"
 
 lint: ## Run Android lint checks
 	$(GRADLEW) lintDebug

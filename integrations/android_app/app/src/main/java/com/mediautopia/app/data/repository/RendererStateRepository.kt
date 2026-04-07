@@ -91,6 +91,28 @@ class RendererStateRepository @Inject constructor(
         remoteFlows.remove(nodeId)
     }
 
+    /**
+     * Re-issue MQTT subscriptions for every remote renderer we're currently
+     * observing. Used after a hard reconnect: the MQTT connection manager's
+     * subscription table has been wiped, but the ViewModels are still
+     * collecting from the cached [remoteFlows]. We keep the flows in place
+     * (so downstream collectors don't miss anything) and just re-wire the
+     * underlying broker subscriptions.
+     */
+    fun reobserveAll(topicBase: String = MqttTopics.BASE) {
+        remoteSubscriptions.clear()
+        for (nodeId in remoteFlows.keys) {
+            val subscriptionId = mqtt.subscribe(
+                topic = MqttTopics.state(topicBase, nodeId),
+                qos = 0,
+            ) { _, payload ->
+                handleStateMessage(nodeId, payload)
+            }
+            remoteSubscriptions[nodeId] = subscriptionId
+            Log.i(tag, "Re-subscribed to state for renderer: $nodeId")
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Local renderer state
     // -------------------------------------------------------------------------

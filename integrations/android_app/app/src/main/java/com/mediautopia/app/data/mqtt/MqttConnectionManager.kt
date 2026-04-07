@@ -68,6 +68,20 @@ class MqttConnectionManager @Inject constructor(
             return
         }
 
+        // If a previous client is still around (e.g. stuck RECONNECTING in the
+        // HiveMQ auto-reconnect loop), tear it down first so we don't leave a
+        // zombie client thrashing in the background. Best-effort: failures are
+        // swallowed because the old client is about to be replaced.
+        val previous = client
+        if (previous != null) {
+            try {
+                previous.disconnect()
+            } catch (e: Exception) {
+                Log.w(tag, "Previous client disconnect failed: ${e.message}")
+            }
+            client = null
+        }
+
         _connectionState.value = ConnectionState.CONNECTING
 
         val uri = URI(brokerUrl)
@@ -144,19 +158,39 @@ class MqttConnectionManager @Inject constructor(
     // -------------------------------------------------------------------------
 
     suspend fun disconnect() {
-        val c = client ?: return
-        suspendCancellableCoroutine { cont ->
-            c.disconnect()
-                .whenComplete { _, error ->
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                    client = null
-                    if (error != null) {
-                        cont.resumeWithException(error)
-                    } else {
+        val c = client ?: run {
+            _connectionState.value = ConnectionState.DISCONNECTED
+            return
+        }
+        try {
+            suspendCancellableCoroutine<Unit> { cont ->
+                c.disconnect()
+                    .whenComplete { _, error ->
+                        _connectionState.value = ConnectionState.DISCONNECTED
+                        client = null
+                        if (error != null) {
+                            // Treat disconnect errors as non-fatal — the
+                            // caller is about to reconnect anyway and we've
+                            // already nulled the client reference.
+                            Log.w(tag, "Disconnect completed with error: ${error.message}")
+                        }
                         cont.resume(Unit)
                     }
-                }
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Disconnect threw: ${e.message}")
+            _connectionState.value = ConnectionState.DISCONNECTED
+            client = null
         }
+    }
+
+    /**
+     * Drop every tracked subscription without touching the broker. Only safe
+     * to call when the caller is about to fully tear down every component
+     * that owns a subscription and will re-register them from scratch.
+     */
+    fun clearSubscriptions() {
+        subscriptions.clear()
     }
 
     // -------------------------------------------------------------------------

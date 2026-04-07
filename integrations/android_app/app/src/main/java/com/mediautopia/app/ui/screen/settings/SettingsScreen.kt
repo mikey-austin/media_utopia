@@ -1,18 +1,13 @@
 package com.mediautopia.app.ui.screen.settings
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
@@ -32,7 +27,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
-import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.ui.components.GradientButton
 import com.mediautopia.app.ui.theme.Secondary
 
@@ -43,7 +37,6 @@ fun SettingsSheet(
 ) {
     val brokerUrl by viewModel.brokerUrl.collectAsStateWithLifecycle()
     val identity by viewModel.identity.collectAsStateWithLifecycle()
-    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val visualizerEnabled by viewModel.visualizerEnabled.collectAsStateWithLifecycle()
 
     Column(
@@ -133,28 +126,6 @@ fun SettingsSheet(
             )
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // ---- Connection status ----
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            ConnectionDot(connectionState)
-            Text(
-                text = connectionState.label(),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // ---- Reconnect button ----
-        GradientButton(onClick = viewModel::reconnect) {
-            Text("RECONNECT")
-        }
-
         Spacer(modifier = Modifier.height(32.dp))
     }
 }
@@ -209,24 +180,3 @@ private fun SettingsTextField(
     )
 }
 
-@Composable
-private fun ConnectionDot(state: ConnectionState) {
-    val color = when (state) {
-        ConnectionState.CONNECTED -> Color(0xFF4CAF50)     // green
-        ConnectionState.CONNECTING,
-        ConnectionState.RECONNECTING -> Color(0xFFFF9800)  // amber
-        ConnectionState.DISCONNECTED -> Color(0xFFF44336)  // red
-    }
-    Box(
-        modifier = Modifier
-            .size(10.dp)
-            .background(color, CircleShape),
-    )
-}
-
-private fun ConnectionState.label(): String = when (this) {
-    ConnectionState.CONNECTED -> "Connected"
-    ConnectionState.CONNECTING -> "Connecting..."
-    ConnectionState.RECONNECTING -> "Reconnecting..."
-    ConnectionState.DISCONNECTED -> "Disconnected"
-}

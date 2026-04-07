@@ -2,12 +2,16 @@ package com.mediautopia.app.domain.usecase
 
 import android.util.Log
 import com.mediautopia.app.data.protocol.Lease
+import com.mediautopia.app.data.protocol.ReplyEnvelope
 import com.mediautopia.app.data.protocol.SessionAcquireBody
 import com.mediautopia.app.data.protocol.SessionRenewBody
 import com.mediautopia.app.data.protocol.SessionReplyBody
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -23,6 +27,14 @@ private data class CachedLease(
     val expiresAt: Long,  // unix millis
 )
 
+/**
+ * Information about a currently cached lease, suitable for display in the UI.
+ */
+data class LeaseInfo(
+    val sessionId: String,
+    val expiresAtMs: Long,
+)
+
 @Singleton
 class LeaseManager @Inject constructor(
     private val correlator: CommandCorrelator,
@@ -35,11 +47,21 @@ class LeaseManager @Inject constructor(
 
     private var renewalJob: Job? = null
 
+    /** Observable snapshot of all currently cached leases, keyed by node id. */
+    private val _leaseInfos = MutableStateFlow<Map<String, LeaseInfo>>(emptyMap())
+    val leaseInfos: StateFlow<Map<String, LeaseInfo>> = _leaseInfos.asStateFlow()
+
     companion object {
         private const val TTL_MS = 300_000L           // 5 minutes
         private const val RENEWAL_CHECK_INTERVAL = 30_000L  // 30 seconds
-        private const val RENEWAL_THRESHOLD = 60_000L       // renew if expiring within 60s
-        private const val NEAR_EXPIRY_THRESHOLD = 30_000L   // considered near-expiry within 30s
+        private const val RENEWAL_THRESHOLD = 120_000L      // renew if expiring within 2 min
+        private const val NEAR_EXPIRY_THRESHOLD = 60_000L   // considered near-expiry within 1 min
+    }
+
+    private fun publishLeases() {
+        _leaseInfos.value = leases.mapValues { (_, c) ->
+            LeaseInfo(sessionId = c.sessionId, expiresAtMs = c.expiresAt)
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -80,9 +102,13 @@ class LeaseManager @Inject constructor(
     /**
      * Release a lease explicitly. If we don't hold a cached lease,
      * acquire one first (stealing from any current holder) then release it.
+     *
+     * Always clears the local cache on exit — even on failure — so stale
+     * state can never out-live an explicit release attempt.
      */
     suspend fun releaseLease(rendererId: String) {
         var cached = leases.remove(rendererId)
+        publishLeases()
 
         if (cached == null) {
             // We don't hold a lease — acquire one (stealing from current holder) then release.
@@ -90,6 +116,7 @@ class LeaseManager @Inject constructor(
                 val lease = acquireLease(rendererId)
                 cached = leases.remove(rendererId)
                     ?: CachedLease(sessionId = lease.sessionId, token = lease.token, expiresAt = 0)
+                publishLeases()
             } catch (e: Exception) {
                 Log.w(tag, "Could not acquire lease to release for $rendererId: ${e.message}")
                 return
@@ -123,11 +150,63 @@ class LeaseManager @Inject constructor(
         for (rendererId in leases.keys.toList()) {
             releaseLease(rendererId)
         }
+        publishLeases()
     }
 
     /**
+     * Drop every cached lease without attempting any network release. Used by
+     * hard-reset / reconnect flows where the broker state is about to be
+     * thrown away anyway.
+     */
+    fun clearAll() {
+        renewalJob?.cancel()
+        renewalJob = null
+        leases.clear()
+        publishLeases()
+        Log.i(tag, "Cleared all cached leases")
+    }
+
+    /**
+     * Drop the cached lease for a single renderer without touching the
+     * network. The next [ensureLease] call will acquire a fresh lease.
+     */
+    fun invalidate(rendererId: String) {
+        if (leases.remove(rendererId) != null) {
+            publishLeases()
+            Log.i(tag, "Invalidated cached lease for $rendererId")
+        }
+    }
+
+    /**
+     * Run a block against a renderer with a valid lease, automatically
+     * refreshing the cache and retrying once if the server rejects the lease
+     * with a LEASE_* error. This avoids the trap where a stale cached lease
+     * keeps being sent until its client-side TTL elapses.
+     */
+    suspend fun withLeaseRetry(
+        rendererId: String,
+        block: suspend (Lease) -> ReplyEnvelope,
+    ): ReplyEnvelope {
+        val lease = ensureLease(rendererId)
+        val reply = block(lease)
+        if (!reply.ok && isLeaseError(reply.err?.code)) {
+            Log.w(tag, "Lease rejected for $rendererId (${reply.err?.code}), reacquiring")
+            invalidate(rendererId)
+            val fresh = ensureLease(rendererId)
+            return block(fresh)
+        }
+        return reply
+    }
+
+    private fun isLeaseError(code: String?): Boolean =
+        code == "LEASE_MISMATCH" || code == "LEASE_REQUIRED" || code == "LEASE_EXPIRED"
+
+    /**
      * Start background renewal coroutine. Checks every 30s for leases that
-     * are expiring within 60s and renews them proactively.
+     * are expiring within the renewal threshold and renews them proactively,
+     * and sweeps expired entries out of the cache. Must be called for leases
+     * to stay alive across idle periods; otherwise the server-side lease
+     * expires silently and media-control commands start getting dropped.
      */
     fun startRenewal(scope: CoroutineScope) {
         renewalJob?.cancel()
@@ -168,6 +247,7 @@ class LeaseManager @Inject constructor(
             expiresAt = sessionReply.session.leaseExpiresAt * 1000, // server sends unix seconds, we use millis
         )
         leases[rendererId] = cached
+        publishLeases()
 
         Log.i(tag, "Acquired lease for $rendererId, session=${cached.sessionId}")
         return Lease(sessionId = cached.sessionId, token = cached.token)
@@ -206,6 +286,7 @@ class LeaseManager @Inject constructor(
             expiresAt = sessionReply.session.leaseExpiresAt * 1000, // server sends unix seconds, we use millis
         )
         leases[rendererId] = renewed
+        publishLeases()
 
         Log.d(tag, "Renewed lease for $rendererId")
         return Lease(sessionId = renewed.sessionId, token = renewed.token)
@@ -213,22 +294,31 @@ class LeaseManager @Inject constructor(
 
     private suspend fun renewExpiringLeases() {
         val nowMs = System.currentTimeMillis()
+        var mutated = false
 
         for ((rendererId, cached) in leases) {
             val remainingMs = cached.expiresAt - nowMs
             if (remainingMs in 1..RENEWAL_THRESHOLD) {
                 try {
                     renewLease(rendererId, cached)
+                    // publishLeases() happens inside renewLease on success.
                 } catch (e: Exception) {
                     Log.e(tag, "Background renewal failed for $rendererId: ${e.message}")
-                    // Don't remove -- ensureLease will handle re-acquire on next use.
+                    // Drop the dead cache entry so the next user action can
+                    // cleanly re-acquire instead of being stuck on a stale
+                    // token.
+                    leases.remove(rendererId)
+                    mutated = true
                 }
             } else if (remainingMs <= 0) {
                 // Already expired, remove from cache.
                 Log.w(tag, "Lease expired for $rendererId, removing from cache")
                 leases.remove(rendererId)
+                mutated = true
             }
         }
+
+        if (mutated) publishLeases()
     }
 }
 

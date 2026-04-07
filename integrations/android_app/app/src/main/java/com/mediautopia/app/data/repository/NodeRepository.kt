@@ -28,6 +28,14 @@ class NodeRepository @Inject constructor(
     private val nodeMap = ConcurrentHashMap<String, Node>()
     private val _nodes = MutableStateFlow<Map<String, Node>>(emptyMap())
 
+    /**
+     * Node IDs reserved for local-only registration. Presence messages arriving
+     * from the MQTT wildcard for these IDs are ignored — we never let a
+     * retained presence from a previous session (or an echo of our own publish)
+     * create a phantom "remote" entry for the local phone renderer.
+     */
+    private val reservedLocalIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     /** All discovered nodes keyed by nodeId. */
     val nodes: StateFlow<Map<String, Node>> = _nodes.asStateFlow()
 
@@ -89,10 +97,33 @@ class NodeRepository @Inject constructor(
     // -------------------------------------------------------------------------
 
     /**
+     * Reserve a node ID as strictly local. Any MQTT presence messages that
+     * arrive for this ID (e.g. retained messages from a previous session or
+     * the echo of our own publish) are silently ignored so they cannot create
+     * a phantom "remote" entry for the local phone renderer.
+     *
+     * Must be called before [startDiscovery] and before the local renderer
+     * publishes its presence.
+     */
+    fun reserveLocalNodeId(nodeId: String) {
+        if (reservedLocalIds.add(nodeId)) {
+            Log.i(tag, "Reserved local node id: $nodeId")
+        }
+        // If a stale entry already slipped in, wipe it so the UI doesn't
+        // momentarily show a duplicate before [registerLocalNode] runs.
+        val stale = nodeMap[nodeId]
+        if (stale != null && !stale.isLocal) {
+            nodeMap.remove(nodeId)
+            emitSnapshot()
+        }
+    }
+
+    /**
      * Register the local phone renderer. This is added directly to the node
      * map without going through MQTT presence.
      */
     fun registerLocalNode(node: Node) {
+        reservedLocalIds.add(node.nodeId)
         val localNode = node.copy(isLocal = true, lastSeen = System.currentTimeMillis() / 1000)
         nodeMap[localNode.nodeId] = localNode
         emitSnapshot()
@@ -105,6 +136,17 @@ class NodeRepository @Inject constructor(
         Log.i(tag, "Unregistered local node: $nodeId")
     }
 
+    /**
+     * Drop every known node, local and remote. Used during a hard reconnect
+     * before discovery is re-initialised. Reserved IDs are retained so the
+     * ghost guard still fires on the next round of presence messages.
+     */
+    fun clearAll() {
+        nodeMap.clear()
+        emitSnapshot()
+        Log.i(tag, "Cleared all nodes")
+    }
+
     // -------------------------------------------------------------------------
     // Internals
     // -------------------------------------------------------------------------
@@ -115,6 +157,23 @@ class NodeRepository @Inject constructor(
         val nodeId = MqttTopics.extractNodeId(topic)
         if (nodeId == null) {
             Log.w(tag, "Could not extract nodeId from topic: $topic")
+            return
+        }
+
+        // Silently drop any presence targeting a reserved local ID. This
+        // prevents stale retained messages from a prior session — or the
+        // echo of our own publishPresence — from creating a ghost remote
+        // entry for the local phone renderer.
+        if (nodeId in reservedLocalIds) {
+            if (payload.isEmpty()) {
+                // An empty retained payload is a tombstone from a previous
+                // session; drop any non-local entry that might still exist.
+                val existing = nodeMap[nodeId]
+                if (existing != null && !existing.isLocal) {
+                    nodeMap.remove(nodeId)
+                    emitSnapshot()
+                }
+            }
             return
         }
 

@@ -1,5 +1,6 @@
 package com.mediautopia.app.ui.screen.renderers
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.util.Log
@@ -17,14 +18,18 @@ import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
 import com.mediautopia.app.domain.model.Node
 import com.mediautopia.app.domain.usecase.LeaseManager
+import com.mediautopia.app.service.MqttForegroundService
 import com.mediautopia.app.ui.SnackbarManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
@@ -42,16 +47,20 @@ data class RendererItem(
     val currentTrack: String? = null,
     val leaseOwner: String? = null,
     val isOwnLease: Boolean = false,
+    /** Unix millis at which our cached lease for this renderer expires, or null. */
+    val leaseExpiresAtMs: Long? = null,
 )
 
 data class RenderersUiState(
     val renderers: List<RendererItem> = emptyList(),
     val activeRendererId: String = ActiveRendererRepository.LOCAL_RENDERER_ID,
     val isScanning: Boolean = true,
+    val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
 )
 
 @HiltViewModel
 class RenderersViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val nodeRepository: NodeRepository,
     private val activeRendererRepository: ActiveRendererRepository,
     private val rendererStateRepository: RendererStateRepository,
@@ -72,14 +81,36 @@ class RenderersViewModel @Inject constructor(
     private val rendererMetadata = ConcurrentHashMap<String, ResolvedMetadata>()
     private val resolvedItemIds = ConcurrentHashMap<String, String>() // nodeId -> last resolved itemId
     private val _statesUpdated = MutableStateFlow(0L) // bumped to trigger recomposition
+    private val _clockTick = MutableStateFlow(0L)     // bumped every second for lease countdowns
     private val observedRenderers = mutableSetOf<String>()
 
+    init {
+        // Drive a 1 Hz tick so lease countdown labels stay fresh even when
+        // no other state is changing.
+        viewModelScope.launch {
+            while (isActive) {
+                delay(1_000)
+                _clockTick.value = System.currentTimeMillis()
+            }
+        }
+    }
+
     val uiState: StateFlow<RenderersUiState> = combine(
-        nodeRepository.renderers,
-        activeRendererRepository.activeRendererId,
-        mqttConnectionManager.connectionState,
-        _statesUpdated,
-    ) { renderers, activeId, connectionState, _ ->
+        listOf<kotlinx.coroutines.flow.Flow<Any?>>(
+            nodeRepository.renderers,
+            activeRendererRepository.activeRendererId,
+            mqttConnectionManager.connectionState,
+            leaseManager.leaseInfos,
+            _statesUpdated,
+            _clockTick,
+        ),
+    ) { values: Array<Any?> ->
+        @Suppress("UNCHECKED_CAST")
+        val renderers = values[0] as List<Node>
+        val activeId = values[1] as String
+        val connectionState = values[2] as ConnectionState
+        @Suppress("UNCHECKED_CAST")
+        val leaseInfos = values[3] as Map<String, com.mediautopia.app.domain.usecase.LeaseInfo>
 
         // Start observing any new renderers we haven't seen yet.
         ensureStateObservations(renderers)
@@ -107,6 +138,7 @@ class RenderersViewModel @Inject constructor(
                     status = if (isLocalActive) "LOCAL PLAYBACK" else "Local playback",
                     leaseOwner = localLeaseOwner,
                     isOwnLease = localLeaseOwner != null && localLeaseOwner == identity,
+                    leaseExpiresAtMs = leaseInfos[localId]?.expiresAtMs,
                 )
             )
 
@@ -116,7 +148,10 @@ class RenderersViewModel @Inject constructor(
                 .forEach { node ->
                     val isActive = node.nodeId == activeId
                     val state = rendererStates[node.nodeId]
-                    add(buildRendererItem(node, isActive, state, isConnected))
+                    add(
+                        buildRendererItem(node, isActive, state, isConnected)
+                            .copy(leaseExpiresAtMs = leaseInfos[node.nodeId]?.expiresAtMs)
+                    )
                 }
         }
 
@@ -124,12 +159,23 @@ class RenderersViewModel @Inject constructor(
             renderers = items,
             activeRendererId = activeId,
             isScanning = isConnected,
+            connectionState = connectionState,
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = RenderersUiState(),
     )
+
+    /**
+     * Trigger a hard reconnect via the foreground service: stop the local
+     * renderer, clear every cached lease, drop node state, tear down MQTT,
+     * and re-initialise from scratch.
+     */
+    fun reconnect() {
+        MqttForegroundService.reconnect(appContext)
+        snackbarManager.show("Reconnecting...")
+    }
 
     private fun buildRendererItem(
         node: Node,
