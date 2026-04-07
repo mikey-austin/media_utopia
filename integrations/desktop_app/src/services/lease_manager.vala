@@ -65,10 +65,26 @@ namespace Mu {
 
         /**
          * Release the lease for a specific renderer.
+         *
+         * If we don't currently hold a cached lease for the renderer (e.g.
+         * another client owns the session, or this lease was acquired by a
+         * previous app run), acquire one first so we have valid credentials
+         * to authenticate the session.release call. Mirrors Android
+         * LeaseManager.releaseLease (LeaseManager.kt:115).
          */
         public async void release_lease (string renderer_id) {
             var cached = leases.lookup (renderer_id);
-            if (cached == null) return;
+
+            if (cached == null) {
+                var acquired = yield acquire_lease (renderer_id);
+                if (acquired == null) {
+                    warning ("LeaseManager: could not acquire lease to release for %s",
+                        renderer_id);
+                    return;
+                }
+                cached = leases.lookup (renderer_id);
+                if (cached == null) return;
+            }
 
             var lease = cached.to_lease ();
             leases.remove (renderer_id);
