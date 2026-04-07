@@ -1344,9 +1344,10 @@ namespace Mu {
 
             if (entries == null || entries.get_length () == 0) return;
 
-            /* Parse lib: refs to extract library ID and raw item ID */
-            var full_to_raw = new HashTable<string, string> (str_hash, str_equal);
-            var lib_to_raw_ids = new HashTable<string, GenericArray<string>> (str_hash, str_equal);
+            /* Group entries by library node and remember the local-id ↔ full-id mapping
+             * so we can merge cached metadata back onto the original entries. */
+            var full_to_local = new HashTable<string, string> (str_hash, str_equal);
+            var lib_to_local_ids = new HashTable<string, GenericArray<string>> (str_hash, str_equal);
 
             for (uint i = 0; i < entries.get_length (); i++) {
                 var entry = entries.get_object_element (i);
@@ -1355,37 +1356,38 @@ namespace Mu {
                 var full_id = get_playlist_entry_item_id (entry);
                 if (full_id.length == 0) continue;
 
-                string lib_id, raw_id;
-                if (split_lib_ref (full_id, out lib_id, out raw_id)) {
-                    full_to_raw.insert (full_id, raw_id);
+                var lib_id = find_library_for_item (full_id);
+                if (lib_id == null) continue;
 
-                    var items = lib_to_raw_ids.lookup (lib_id);
-                    if (items == null) {
-                        items = new GenericArray<string> ();
-                        lib_to_raw_ids.insert (lib_id, items);
-                    }
-                    items.add (raw_id);
+                var local_id = strip_lib_prefix (full_id, lib_id);
+                full_to_local.insert (full_id, local_id);
+
+                var items = lib_to_local_ids.lookup (lib_id);
+                if (items == null) {
+                    items = new GenericArray<string> ();
+                    lib_to_local_ids.insert (lib_id, items);
                 }
+                items.add (local_id);
             }
 
-            /* Resolve metadata per library */
+            /* Resolve metadata per library (for the cache side-effect). */
             var lib_keys = new GenericArray<string> ();
-            lib_to_raw_ids.foreach ((k, v) => { lib_keys.add (k); });
+            lib_to_local_ids.foreach ((k, v) => { lib_keys.add (k); });
 
             for (uint li = 0; li < lib_keys.length; li++) {
                 var lib_id = lib_keys[li];
-                var raw_ids = lib_to_raw_ids.lookup (lib_id);
-                if (raw_ids == null || raw_ids.length == 0) continue;
+                var local_ids = lib_to_local_ids.lookup (lib_id);
+                if (local_ids == null || local_ids.length == 0) continue;
 
-                var id_array = new string[raw_ids.length];
-                for (uint k = 0; k < raw_ids.length; k++) {
-                    id_array[k] = raw_ids[k];
+                var id_array = new string[local_ids.length];
+                for (uint k = 0; k < local_ids.length; k++) {
+                    id_array[k] = local_ids[k];
                 }
                 yield library_repo.resolve_batch (lib_id, id_array, true);
             }
 
             /* Build track rows with resolved metadata */
-            populate_playlist_track_rows (entries, full_to_raw);
+            populate_playlist_track_rows (entries, full_to_local);
         }
 
         private void populate_playlist_track_rows (Json.Array entries, HashTable<string, string>? full_to_raw = null) {
@@ -1440,23 +1442,39 @@ namespace Mu {
         }
 
         /**
-         * Split a lib: reference into (library_node_id, raw_item_id).
-         * Format: lib:mu:library:{provider}:{namespace}:{resource}:{item_id}
-         * Returns false if not a valid lib: reference.
+         * Find the library node id for a `lib:` reference by walking the
+         * known libraries and matching the longest node-id prefix. Returns
+         * null if no library matches and there are no libraries to fall
+         * back to. Mirrors Android LibraryRepository.findLibraryForItem
+         * (LibraryRepository.kt:398).
          */
-        private bool split_lib_ref (string ref_str, out string library_id, out string raw_item_id) {
-            library_id = "";
-            raw_item_id = "";
-            if (!ref_str.has_prefix ("lib:")) return false;
+        private string? find_library_for_item (string item_id) {
+            var libraries = node_repo.get_libraries ();
+            if (!item_id.has_prefix ("lib:")) {
+                return libraries.length > 0 ? libraries[0].node_id : null;
+            }
+            var stripped = item_id.substring (4); // strip "lib:"
+            for (uint i = 0; i < libraries.length; i++) {
+                var node_id = libraries[i].node_id;
+                if (stripped.has_prefix (node_id + ":")) {
+                    return node_id;
+                }
+            }
+            return libraries.length > 0 ? libraries[0].node_id : null;
+        }
 
-            var rest = ref_str.substring (4); // strip "lib:"
-            var parts = rest.split (":", 6);  // at most 6 parts
-            if (parts.length < 6) return false;
-
-            // First 5 parts = library node ID, 6th = raw item ID
-            library_id = string.join (":", parts[0], parts[1], parts[2], parts[3], parts[4]);
-            raw_item_id = parts[5];
-            return library_id.length > 0 && raw_item_id.length > 0;
+        /**
+         * Strip the `lib:{libraryNodeId}:` prefix from a reference, leaving
+         * the local item id the library expects. Returns the input unchanged
+         * if no prefix matches. Mirrors Android stripLibPrefix
+         * (LibraryRepository.kt:415).
+         */
+        private string strip_lib_prefix (string item_id, string library_node_id) {
+            var prefix = "lib:" + library_node_id + ":";
+            if (item_id.has_prefix (prefix)) {
+                return item_id.substring (prefix.length);
+            }
+            return item_id;
         }
 
         private string? get_first_library_id () {
@@ -1617,12 +1635,13 @@ namespace Mu {
                 var full_id = get_playlist_entry_item_id (entry);
                 if (full_id.length == 0) continue;
 
-                string lib_id, raw_id;
-                if (split_lib_ref (full_id, out lib_id, out raw_id)) {
-                    full_ids.add (full_id);
-                    lib_ids.add (lib_id);
-                    raw_ids.add (raw_id);
-                }
+                var lib_id = find_library_for_item (full_id);
+                if (lib_id == null) continue;
+
+                var raw_id = strip_lib_prefix (full_id, lib_id);
+                full_ids.add (full_id);
+                lib_ids.add (lib_id);
+                raw_ids.add (raw_id);
             }
 
             if (full_ids.length == 0) return;
