@@ -1106,15 +1106,17 @@ namespace Mu {
             library_repo.resolve_batch.begin (
                 library_id, id_array, false,
                 (obj, res) => {
-                    var resolved_list = library_repo.resolve_batch.end (res);
-                    if (resolved_list == null || resolved_list.length == 0) return;
+                    var resolved_map = library_repo.resolve_batch.end (res);
+                    if (resolved_map == null || resolved_map.size () == 0) return;
 
                     var entries = new Json.Array ();
-                    for (uint i = 0; i < resolved_list.length; i++) {
-                        var item_id = (i < track_ids.length) ? track_ids[i] : "";
-                        var browse_item = (i < track_items.length) ? track_items[i] : null;
+                    for (uint i = 0; i < track_ids.length; i++) {
+                        var iid = track_ids[i];
+                        var resolved = resolved_map.lookup (iid);
+                        if (resolved == null) continue;
+                        var browse_item = track_items[i];
                         var entry = build_queue_entry_from_batch_resolved (
-                            item_id, browse_item, resolved_list[i]);
+                            iid, browse_item, resolved);
                         if (entry != null) {
                             entries.add_object_element (entry);
                         }
@@ -1169,15 +1171,17 @@ namespace Mu {
             library_repo.resolve_batch.begin (
                 library_id, id_array, false,
                 (obj, res) => {
-                    var resolved_list = library_repo.resolve_batch.end (res);
-                    if (resolved_list == null || resolved_list.length == 0) return;
+                    var resolved_map = library_repo.resolve_batch.end (res);
+                    if (resolved_map == null || resolved_map.size () == 0) return;
 
                     var entries = new Json.Array ();
-                    for (uint i = 0; i < resolved_list.length; i++) {
-                        var item_id = (i < track_ids.length) ? track_ids[i] : "";
-                        var browse_item = (i < track_items.length) ? track_items[i] : null;
+                    for (uint i = 0; i < track_ids.length; i++) {
+                        var iid = track_ids[i];
+                        var resolved = resolved_map.lookup (iid);
+                        if (resolved == null) continue;
+                        var browse_item = track_items[i];
                         var entry = build_queue_entry_from_batch_resolved (
-                            item_id, browse_item, resolved_list[i]);
+                            iid, browse_item, resolved);
                         if (entry != null) {
                             entries.add_object_element (entry);
                         }

@@ -81,14 +81,16 @@ namespace Mu {
 
         /**
          * Resolve multiple items in batches of 20.
-         * Returns collected result objects, or null on failure.
+         * Returns a map of itemId → result object so callers can pair
+         * results with their request IDs even when the library skips,
+         * reorders, or partially fails items in a batch. Returns null only if
+         * nothing was resolved at all.
          */
-        public async GenericArray<Json.Object>? resolve_batch (string library_id,
-                                                                string[] item_ids,
-                                                                bool metadata_only = false) {
-            var results = new GenericArray<Json.Object> ();
+        public async HashTable<string, Json.Object>? resolve_batch (string library_id,
+                                                                      string[] item_ids,
+                                                                      bool metadata_only = false) {
+            var results = new HashTable<string, Json.Object> (str_hash, str_equal);
 
-            /* Process in chunks of BATCH_SIZE */
             int offset = 0;
             while (offset < item_ids.length) {
                 int chunk_end = int.min (offset + BATCH_SIZE, item_ids.length);
@@ -104,7 +106,7 @@ namespace Mu {
 
                 if (reply == null || !reply.ok || reply.body == null) {
                     /* Partial failure — return what we have so far, or null if nothing */
-                    return results.length > 0 ? results : null;
+                    return results.size () > 0 ? results : null;
                 }
 
                 if (reply.body.has_member ("items") &&
@@ -112,12 +114,15 @@ namespace Mu {
                     var items = reply.body.get_array_member ("items");
                     for (uint i = 0; i < items.get_length (); i++) {
                         var item = items.get_object_element (i);
-                        results.add (item);
+                        if (!item.has_member ("itemId")) continue;
+                        var iid = item.get_string_member ("itemId");
+                        if (iid == null || iid.length == 0) continue;
+
+                        results.set (iid, item);
 
                         /* Cache metadata for each resolved item */
-                        if (item.has_member ("itemId") && item.has_member ("metadata") &&
+                        if (item.has_member ("metadata") &&
                             !item.get_null_member ("metadata")) {
-                            var iid = item.get_string_member ("itemId");
                             metadata_cache.set (iid, item.get_object_member ("metadata"));
                         }
                     }
@@ -126,7 +131,7 @@ namespace Mu {
                 offset = chunk_end;
             }
 
-            return results;
+            return results.size () > 0 ? results : null;
         }
 
         /**
