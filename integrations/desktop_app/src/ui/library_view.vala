@@ -1740,6 +1740,8 @@ namespace Mu {
 
             string[] patterns = { "container", "artist", "album", "folder" };
             foreach (var pattern in patterns) {
+                /* contains() intentionally: some backends use compound types
+                 * like "musiccontainer". Keep in sync with Android. */
                 if (type_lower.contains (pattern)) return true;
                 if (id_lower.has_prefix (pattern + ":")) return true;
             }
