@@ -557,10 +557,10 @@ namespace Mu {
 
         private void browse_root () {
             nav_stack = new GenericArray<BrowseCrumb> ();
-            nav_stack.add (new BrowseCrumb ("0", "Root"));
+            nav_stack.add (new BrowseCrumb ("", "Root"));
             browse_offset = 0;
             is_search_mode = false;
-            load_container ("0", true);
+            load_container ("", true);
         }
 
         private void navigate_to (string container_id, string label) {
@@ -1714,18 +1714,40 @@ namespace Mu {
          * ================================================================ */
 
         private bool is_container_item (Json.Object item) {
-            /* Explicit type field */
-            if (item.has_member ("type")) {
-                var item_type = item.get_string_member ("type");
-                if (item_type == "container") return true;
-                if (item_type == "item") return false;
+            /* Container patterns and explicit overrides — keep in sync with
+             * Android LibraryRepository.kt:61 (containerPatterns,
+             * explicitContainerTypes, explicitLeafTypes). */
+            string item_type = "";
+            if (item.has_member ("type") && !item.get_null_member ("type")) {
+                item_type = item.get_string_member ("type") ?? "";
+            }
+            var type_lower = item_type.down ();
+
+            /* Explicit leaves win over patterns. */
+            if (type_lower == "podcastepisode") return false;
+
+            /* Explicit containers. */
+            if (type_lower == "podcast") return true;
+
+            /* Pattern match: type contains the pattern, OR itemId starts with "{pattern}:". */
+            string item_id = "";
+            if (item.has_member ("itemId") && !item.get_null_member ("itemId")) {
+                item_id = item.get_string_member ("itemId") ?? "";
+            } else if (item.has_member ("id") && !item.get_null_member ("id")) {
+                item_id = item.get_string_member ("id") ?? "";
+            }
+            var id_lower = item_id.down ();
+
+            string[] patterns = { "container", "artist", "album", "folder" };
+            foreach (var pattern in patterns) {
+                if (type_lower.contains (pattern)) return true;
+                if (id_lower.has_prefix (pattern + ":")) return true;
             }
 
-            /* Has childCount or children → container */
+            /* Legacy fallbacks the old desktop code relied on. */
             if (item.has_member ("childCount")) return true;
             if (item.has_member ("children")) return true;
 
-            /* Otherwise treat as a track/leaf */
             return false;
         }
 
@@ -1763,15 +1785,25 @@ namespace Mu {
         }
 
         private string get_item_artwork_url (Json.Object item) {
-            if (item.has_member ("artworkUrl")) {
+            /* Direct fields: prefer artworkUrl, fall back to imageUrl. */
+            if (item.has_member ("artworkUrl") && !item.get_null_member ("artworkUrl")) {
                 var url = item.get_string_member ("artworkUrl");
                 if (url != null && url.length > 0) return url;
             }
+            if (item.has_member ("imageUrl") && !item.get_null_member ("imageUrl")) {
+                var url = item.get_string_member ("imageUrl");
+                if (url != null && url.length > 0) return url;
+            }
 
+            /* Nested metadata. */
             if (item.has_member ("metadata") && !item.get_null_member ("metadata")) {
                 var meta = item.get_object_member ("metadata");
-                if (meta.has_member ("artworkUrl")) {
+                if (meta.has_member ("artworkUrl") && !meta.get_null_member ("artworkUrl")) {
                     var url = meta.get_string_member ("artworkUrl");
+                    if (url != null && url.length > 0) return url;
+                }
+                if (meta.has_member ("imageUrl") && !meta.get_null_member ("imageUrl")) {
+                    var url = meta.get_string_member ("imageUrl");
                     if (url != null && url.length > 0) return url;
                 }
             }
@@ -1780,20 +1812,49 @@ namespace Mu {
         }
 
         private string get_item_artist (Json.Object item) {
-            if (item.has_member ("artist")) {
+            /* Try artists[] first (Android-style). */
+            var joined = read_artists_array (item);
+            if (joined.length > 0) return joined;
+
+            /* Direct artist scalar. */
+            if (item.has_member ("artist") && !item.get_null_member ("artist")) {
                 var artist = item.get_string_member ("artist");
                 if (artist != null && artist.length > 0) return artist;
             }
 
+            /* Nested metadata. */
             if (item.has_member ("metadata") && !item.get_null_member ("metadata")) {
                 var meta = item.get_object_member ("metadata");
-                if (meta.has_member ("artist")) {
+                var meta_joined = read_artists_array (meta);
+                if (meta_joined.length > 0) return meta_joined;
+                if (meta.has_member ("artist") && !meta.get_null_member ("artist")) {
                     var artist = meta.get_string_member ("artist");
                     if (artist != null && artist.length > 0) return artist;
                 }
             }
 
             return "";
+        }
+
+        private string read_artists_array (Json.Object obj) {
+            if (!obj.has_member ("artists") || obj.get_null_member ("artists")) return "";
+            var arr = obj.get_array_member ("artists");
+            var parts = new GenericArray<string> ();
+            for (uint i = 0; i < arr.get_length (); i++) {
+                var node = arr.get_element (i);
+                if (node.get_node_type () == Json.NodeType.VALUE) {
+                    var s = node.get_string ();
+                    if (s != null && s.length > 0) parts.add (s);
+                }
+            }
+            if (parts.length == 0) return "";
+
+            var sb = new StringBuilder ();
+            for (uint i = 0; i < parts.length; i++) {
+                if (i > 0) sb.append (", ");
+                sb.append (parts[i]);
+            }
+            return sb.str;
         }
 
         private int64 get_item_duration_ms (Json.Object item) {
