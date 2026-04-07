@@ -32,7 +32,7 @@ namespace Mu {
          * Calls callback on the main thread with the loaded texture, or null on error.
          * Results are cached by URL.
          */
-        public void load_async (string url, ArtworkCallback callback) {
+        public void load_async (string url, owned ArtworkCallback callback) {
             if (url.length == 0) {
                 callback (null);
                 return;
@@ -45,11 +45,15 @@ namespace Mu {
                 return;
             }
 
+            /* All remaining paths queue the callback into a wrapper.
+             * Hoist construction so the (owned) transfer happens exactly once. */
+            var wrapper = new ArtworkCallbackWrapper ((owned) callback);
+
             /* Already in flight — queue callback */
             if (inflight.contains (url)) {
-                var waiters = pending.lookup (url);
-                if (waiters != null) {
-                    waiters.add (new ArtworkCallbackWrapper (callback));
+                var existing = pending.lookup (url);
+                if (existing != null) {
+                    existing.add (wrapper);
                 }
                 return;
             }
@@ -57,7 +61,7 @@ namespace Mu {
             /* Mark in-flight */
             inflight.insert (url, true);
             var waiters = new GenericArray<ArtworkCallbackWrapper> ();
-            waiters.add (new ArtworkCallbackWrapper (callback));
+            waiters.add (wrapper);
             pending.insert (url, waiters);
 
             /* Fetch */
