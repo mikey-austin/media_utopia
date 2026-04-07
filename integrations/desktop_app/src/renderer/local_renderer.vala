@@ -543,7 +543,22 @@ namespace Mu {
 
                 var item_id = "";
                 if (entry_obj.has_member ("ref") && !entry_obj.get_null_member ("ref")) {
-                    item_id = entry_obj.get_string_member ("ref");
+                    /* Canonical wire format is ref: {id: "..."} (set by
+                     * QueueEntryBuilder.build); accept legacy ref as a
+                     * bare string too. Reading the wrong shape with
+                     * get_string_member fires a Json-CRITICAL and returns
+                     * NULL, which then trips LocalQueueEntry's non-null
+                     * item_id precondition and segfaults. */
+                    var ref_node = entry_obj.get_member ("ref");
+                    if (ref_node.get_node_type () == Json.NodeType.OBJECT) {
+                        var ref_obj = entry_obj.get_object_member ("ref");
+                        if (ref_obj.has_member ("id") &&
+                            !ref_obj.get_null_member ("id")) {
+                            item_id = ref_obj.get_string_member ("id");
+                        }
+                    } else if (ref_node.get_node_type () == Json.NodeType.VALUE) {
+                        item_id = entry_obj.get_string_member ("ref");
+                    }
                 }
 
                 var url = "";
