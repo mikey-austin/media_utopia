@@ -78,14 +78,17 @@ class MqttTransport @Inject constructor(
 }
 
 /**
- * In-process transport. Holds a weak-ish reference to the active
- * [com.mediautopia.app.renderer.LocalRendererService] via [register] /
- * [unregister], called from the service's own start/stop. When no service
- * is registered, [isAvailable] returns false and [send] throws — callers
- * should route through [TransportRouter] which falls back to MQTT.
+ * In-process transport. Holds a reference to the active
+ * [com.mediautopia.app.renderer.LocalRendererService] (as a [LocalDispatcher])
+ * via [register] / [unregister], called from the service's own start/stop.
  *
- * Typed as `Any` here to avoid a forward dependency on the renderer
- * package; Task 5 wires the real call site.
+ * The interface dependency on [LocalDispatcher] (defined in this same file)
+ * keeps the transport package decoupled from renderer internals.
+ *
+ * When no service is registered, [send] returns null so [TransportRouter]
+ * can transparently fall back to MQTT — important during the brief windows
+ * around service start/stop when a TOCTOU race could otherwise leak an
+ * IllegalStateException to callers.
  */
 @Singleton
 class LocalTransport @Inject constructor() : RendererTransport {
@@ -130,6 +133,41 @@ class LocalTransport @Inject constructor() : RendererTransport {
         // Best-effort: launch on the dispatcher's own scope.
         dispatcher.dispatchFireAndForget(nodeId, cmdType, body, lease)
     }
+
+    /**
+     * Try to dispatch in-process. Returns the reply if a [LocalDispatcher] for
+     * [nodeId] is currently registered, or `null` if not (in which case the
+     * caller should fall back to MQTT). Avoids the TOCTOU race between an
+     * `isAvailable` check and a subsequent `send`.
+     */
+    suspend fun trySend(
+        nodeId: String,
+        cmdType: String,
+        body: JsonElement,
+        lease: Lease?,
+        ifRevision: Long?,
+    ): ReplyEnvelope? {
+        val dispatcher = serviceRef.get() ?: return null
+        if (dispatcher.nodeId != nodeId) return null
+        return dispatcher.dispatch(nodeId, cmdType, body, lease, ifRevision)
+    }
+
+    /**
+     * Try to dispatch a fire-and-forget command in-process. Returns true if a
+     * dispatcher was registered (and the call was forwarded), false if the
+     * caller should fall back to MQTT.
+     */
+    fun trySendFireAndForget(
+        nodeId: String,
+        cmdType: String,
+        body: JsonElement,
+        lease: Lease?,
+    ): Boolean {
+        val dispatcher = serviceRef.get() ?: return false
+        if (dispatcher.nodeId != nodeId) return false
+        dispatcher.dispatchFireAndForget(nodeId, cmdType, body, lease)
+        return true
+    }
 }
 
 /**
@@ -173,9 +211,8 @@ class TransportRouter @Inject constructor(
         ifRevision: Long?,
         timeout: Duration,
     ): ReplyEnvelope {
-        val transport: RendererTransport =
-            if (local.isAvailable(nodeId)) local else mqtt
-        return transport.send(nodeId, cmdType, body, lease, ifRevision, timeout)
+        local.trySend(nodeId, cmdType, body, lease, ifRevision)?.let { return it }
+        return mqtt.send(nodeId, cmdType, body, lease, ifRevision, timeout)
     }
 
     override fun sendFireAndForget(
@@ -184,8 +221,7 @@ class TransportRouter @Inject constructor(
         body: JsonElement,
         lease: Lease?,
     ) {
-        val transport: RendererTransport =
-            if (local.isAvailable(nodeId)) local else mqtt
-        transport.sendFireAndForget(nodeId, cmdType, body, lease)
+        if (local.trySendFireAndForget(nodeId, cmdType, body, lease)) return
+        mqtt.sendFireAndForget(nodeId, cmdType, body, lease)
     }
 }
