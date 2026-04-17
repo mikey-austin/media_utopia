@@ -296,6 +296,19 @@ class RenderersViewModel @Inject constructor(
         }
     }
 
+    fun takeControl(nodeId: String) {
+        viewModelScope.launch {
+            try {
+                leaseManager.takeControl(nodeId)
+                Log.i(tag, "Took control of $nodeId")
+                snackbarManager.show("You now control this renderer")
+            } catch (e: Exception) {
+                Log.e(tag, "takeControl failed for $nodeId: ${e.message}", e)
+                snackbarManager.show("Take control failed: ${e.message}")
+            }
+        }
+    }
+
     private fun buildFormatBadge(metadata: Map<String, JsonElement>?): String? {
         metadata ?: return null
         val bitDepth = metadata["bitDepth"]?.asPrimitiveOrNull()

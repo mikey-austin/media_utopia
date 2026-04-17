@@ -76,6 +76,7 @@ fun RenderersSheet(
             onDismiss()
         },
         onReleaseLease = viewModel::releaseLease,
+        onTakeControl = viewModel::takeControl,
         onReconnect = viewModel::reconnect,
         onDismiss = onDismiss,
     )
@@ -86,6 +87,7 @@ private fun RenderersContent(
     state: RenderersUiState,
     onSelectRenderer: (String) -> Unit,
     onReleaseLease: (String) -> Unit,
+    onTakeControl: (String) -> Unit,
     onReconnect: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -152,6 +154,7 @@ private fun RenderersContent(
                     item = localRenderer,
                     onClick = { onSelectRenderer(localRenderer.nodeId) },
                     onReleaseLease = { onReleaseLease(localRenderer.nodeId) },
+                    onTakeControl = { onTakeControl(localRenderer.nodeId) },
                 )
                 Spacer(modifier = Modifier.height(28.dp))
             }
@@ -247,6 +250,7 @@ private fun LocalRendererCard(
     item: RendererItem,
     onClick: () -> Unit,
     onReleaseLease: () -> Unit,
+    onTakeControl: () -> Unit,
 ) {
     val accentColor = Secondary
     val backgroundColor by animateColorAsState(
@@ -309,13 +313,10 @@ private fun LocalRendererCard(
             )
         }
 
-        RendererMenu(
-            hasLease = item.leaseOwner != null,
-            // The local phone self-controls; there's no meaningful "release"
-            // action and surfacing one confuses users into thinking the
-            // phone's own MediaSession is a detached remote holder.
-            showRelease = false,
+        LocalRendererMenu(
+            item = item,
             onRelease = onReleaseLease,
+            onTakeControl = onTakeControl,
             onSelect = onClick,
         )
     }
@@ -402,6 +403,7 @@ private fun NetworkRendererCard(
         RendererMenu(
             hasLease = item.leaseOwner != null,
             showRelease = true,
+            isOwnLease = item.isOwnLease,
             onRelease = onReleaseLease,
             onSelect = onClick,
         )
@@ -468,6 +470,7 @@ private fun formatLeaseCountdown(expiresAtMs: Long): String? {
 private fun RendererMenu(
     hasLease: Boolean,
     showRelease: Boolean,
+    isOwnLease: Boolean,
     onRelease: () -> Unit,
     onSelect: () -> Unit,
 ) {
@@ -485,9 +488,9 @@ private fun RendererMenu(
             expanded = showMenu,
             onDismissRequest = { showMenu = false },
         ) {
-            if (showRelease) {
+            if (showRelease && hasLease && isOwnLease) {
                 DropdownMenuItem(
-                    text = { Text(if (hasLease) "Release lease" else "Force release") },
+                    text = { Text("Release lease") },
                     onClick = {
                         showMenu = false
                         onRelease()
@@ -502,6 +505,87 @@ private fun RendererMenu(
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun LocalRendererMenu(
+    item: RendererItem,
+    onRelease: () -> Unit,
+    onTakeControl: () -> Unit,
+    onSelect: () -> Unit,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    var showConfirmTakeControl by remember { mutableStateOf(false) }
+
+    Box {
+        IconButton(onClick = { showMenu = true }, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = Icons.Filled.MoreVert,
+                contentDescription = "Options",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        DropdownMenu(
+            expanded = showMenu,
+            onDismissRequest = { showMenu = false },
+        ) {
+            when {
+                item.isOwnLease -> {
+                    DropdownMenuItem(
+                        text = { Text("Release lease") },
+                        onClick = {
+                            showMenu = false
+                            onRelease()
+                        },
+                    )
+                }
+                item.leaseOwner != null -> {
+                    DropdownMenuItem(
+                        text = { Text("Take control") },
+                        onClick = {
+                            showMenu = false
+                            showConfirmTakeControl = true
+                        },
+                    )
+                }
+                else -> {
+                    // No lease held; nothing lease-related to offer.
+                }
+            }
+            DropdownMenuItem(
+                text = { Text("Select") },
+                onClick = {
+                    showMenu = false
+                    onSelect()
+                },
+            )
+        }
+    }
+
+    if (showConfirmTakeControl) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showConfirmTakeControl = false },
+            title = { Text("Take control?") },
+            text = {
+                val owner = item.leaseOwner ?: "another device"
+                Text("Take control from ${owner.uppercase()}?")
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        showConfirmTakeControl = false
+                        onTakeControl()
+                    },
+                ) { Text("Take control") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { showConfirmTakeControl = false },
+                ) { Text("Cancel") }
+            },
+        )
     }
 }
 
