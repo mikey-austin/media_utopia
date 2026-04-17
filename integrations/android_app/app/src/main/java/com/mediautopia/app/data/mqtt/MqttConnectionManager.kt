@@ -14,10 +14,13 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
@@ -57,6 +60,18 @@ class MqttConnectionManager @Inject constructor(
     )
 
     private val subscriptions = ConcurrentHashMap<String, Subscription>()
+
+    private var heartbeatJob: Job? = null
+    private var heartbeatSubscriptionId: String? = null
+    @Volatile private var lastEchoMs: Long = 0L
+    private var currentClientId: String? = null
+
+    companion object {
+        private const val HEARTBEAT_INTERVAL_MS = 30_000L
+        private const val HEARTBEAT_GRACE_MS = 10_000L
+        private const val HEARTBEAT_TIMEOUT_MS = HEARTBEAT_INTERVAL_MS + HEARTBEAT_GRACE_MS
+        private const val HEARTBEAT_TOPIC_PREFIX = "mu/v1/heartbeat/"
+    }
 
     // -------------------------------------------------------------------------
     // Connect
@@ -151,8 +166,10 @@ class MqttConnectionManager @Inject constructor(
             }
             _connectionState.value = ConnectionState.CONNECTED
             resubscribeAll()
+            startHeartbeat(clientId)
         } catch (e: Exception) {
             Log.w(tag, "connect() failed or timed out: ${e.message}")
+            stopHeartbeat()
             if (client === mqtt3Client) {
                 client = null
             }
@@ -185,6 +202,7 @@ class MqttConnectionManager @Inject constructor(
         } catch (e: Exception) {
             Log.w(tag, "Disconnect threw or timed out: ${e.message}")
         } finally {
+            stopHeartbeat()
             client = null
             _connectionState.value = ConnectionState.DISCONNECTED
         }
@@ -201,6 +219,7 @@ class MqttConnectionManager @Inject constructor(
      * client on the next attempt.
      */
     fun markDisconnected() {
+        stopHeartbeat()
         val previous = client
         client = null
         _connectionState.value = ConnectionState.DISCONNECTED
@@ -293,6 +312,44 @@ class MqttConnectionManager @Inject constructor(
     // -------------------------------------------------------------------------
     // Internals
     // -------------------------------------------------------------------------
+
+    private fun startHeartbeat(clientId: String) {
+        stopHeartbeat()
+
+        val topic = "$HEARTBEAT_TOPIC_PREFIX$clientId"
+        lastEchoMs = System.currentTimeMillis()
+        currentClientId = clientId
+
+        heartbeatSubscriptionId = subscribe(topic = topic, qos = 0) { _, _ ->
+            lastEchoMs = System.currentTimeMillis()
+        }
+
+        heartbeatJob = callbackScope.launch {
+            while (isActive) {
+                delay(HEARTBEAT_INTERVAL_MS)
+                if (_connectionState.value != ConnectionState.CONNECTED) continue
+                try {
+                    publish(topic = topic, qos = 0, retained = false, payload = ByteArray(0))
+                } catch (e: Exception) {
+                    Log.w(tag, "heartbeat publish failed: ${e.message}")
+                }
+                val silenceMs = System.currentTimeMillis() - lastEchoMs
+                if (silenceMs > HEARTBEAT_TIMEOUT_MS) {
+                    Log.w(tag, "heartbeat silent for ${silenceMs}ms, tripping reconnect")
+                    markDisconnected()
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        heartbeatSubscriptionId?.let { unsubscribe(it) }
+        heartbeatSubscriptionId = null
+        currentClientId = null
+    }
 
     /**
      * Subscribe to the broker (no per-message callback — messages are routed
