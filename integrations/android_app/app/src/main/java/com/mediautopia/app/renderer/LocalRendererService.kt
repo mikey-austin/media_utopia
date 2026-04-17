@@ -9,6 +9,7 @@ import androidx.media3.session.MediaSession
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
 import com.mediautopia.app.data.protocol.CommandEnvelope
+import com.mediautopia.app.data.protocol.Lease
 import com.mediautopia.app.data.protocol.PlaybackSeekBody
 import com.mediautopia.app.data.protocol.Presence
 import com.mediautopia.app.data.protocol.ReplyEnvelope
@@ -26,10 +27,12 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.encodeToJsonElement
 
@@ -49,12 +52,14 @@ class LocalRendererService(
     private val context: Context,
     private val queueStore: com.mediautopia.app.data.cache.QueueStore,
     private val audioSessionHolder: AudioSessionHolder,
-) {
+    private val localTransport: com.mediautopia.app.data.transport.LocalTransport,
+    private val settingsDataStore: com.mediautopia.app.data.cache.SettingsDataStore,
+) : com.mediautopia.app.data.transport.LocalDispatcher {
     private val tag = "LocalRendererService"
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     private val deviceName: String = Build.MODEL.replace(" ", "-")
-    val nodeId: String = "mu:renderer:media3:android:$deviceName:default"
+    override val nodeId: String = "mu:renderer:media3:android:$deviceName:default"
     private val displayName: String = Build.MODEL
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -226,10 +231,14 @@ class LocalRendererService(
         rendererStateRepository.registerLocalStateSource(nodeId, eng.stateFlow)
 
         Log.i(tag, "Local renderer fully started")
+
+        localTransport.register(this@LocalRendererService)
     }
 
     fun stop() {
         Log.i(tag, "Stopping local renderer: $nodeId")
+
+        localTransport.unregister()
 
         // Persist queue state before shutdown.
         engine?.let { eng ->
@@ -376,13 +385,75 @@ class LocalRendererService(
 
     private suspend fun processCommand(eng: LocalRendererEngine, cmd: CommandEnvelope) {
         Log.d(tag, "Processing ${cmd.type} id=${cmd.id} from=${cmd.from}")
+        val reply = processLocal(cmd)
+        publishReply(cmd.replyTo, reply)
+    }
 
-        val reply: ReplyEnvelope = if (LocalRendererEngine.isSessionCommand(cmd.type)) {
+    // -----------------------------------------------------------------
+    // LocalDispatcher implementation (in-process command entry points)
+    // -----------------------------------------------------------------
+
+    override suspend fun dispatch(
+        nodeId: String,
+        cmdType: String,
+        body: JsonElement,
+        lease: Lease?,
+        ifRevision: Long?,
+    ): com.mediautopia.app.data.protocol.ReplyEnvelope {
+        val identity = settingsDataStore.identity.first()
+        val envelope = com.mediautopia.app.data.protocol.CommandEnvelope(
+            id = java.util.UUID.randomUUID().toString(),
+            type = cmdType,
+            ts = System.currentTimeMillis() / 1000,
+            from = identity,
+            replyTo = null,
+            lease = lease,
+            ifRevision = ifRevision,
+            body = body,
+        )
+        return processLocal(envelope)
+    }
+
+    override fun dispatchFireAndForget(
+        nodeId: String,
+        cmdType: String,
+        body: JsonElement,
+        lease: Lease?,
+    ) {
+        scope.launch {
+            try {
+                dispatch(nodeId, cmdType, body, lease, null)
+            } catch (e: Exception) {
+                Log.w(tag, "fire-and-forget dispatch failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Run a command in-process and return the resulting reply. This is the
+     * same dispatch path [processCommand] uses for MQTT-driven commands, with
+     * one difference: the reply is *returned* to the caller instead of being
+     * published via [publishReply]. Safe to call from any coroutine context
+     * (the engine handles its own threading for playback commands).
+     */
+    private suspend fun processLocal(
+        cmd: com.mediautopia.app.data.protocol.CommandEnvelope,
+    ): com.mediautopia.app.data.protocol.ReplyEnvelope {
+        val eng = engine ?: return com.mediautopia.app.data.protocol.ReplyEnvelope(
+            id = cmd.id,
+            type = "error",
+            ok = false,
+            ts = System.currentTimeMillis() / 1000,
+            err = com.mediautopia.app.data.protocol.ReplyError(
+                code = "UNAVAILABLE",
+                message = "local engine not started",
+            ),
+        )
+
+        return if (LocalRendererEngine.isSessionCommand(cmd.type)) {
             eng.handleSessionCommand(cmd)
         } else if (isPlaybackCommand(cmd.type)) {
-            // Playback commands touch ExoPlayer which requires the main thread.
             withContext(Dispatchers.Main) {
-                // Request audio focus before play commands.
                 if (cmd.type == "playback.play") {
                     audioFocusManager?.requestFocus()
                 }
@@ -391,8 +462,6 @@ class LocalRendererService(
         } else {
             eng.handleCommand(cmd)
         }
-
-        publishReply(cmd.replyTo, reply)
     }
 
     // -----------------------------------------------------------------
