@@ -16,7 +16,6 @@ import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.PlaylistEntryInfo
 import com.mediautopia.app.data.repository.PlaylistInfo
 import com.mediautopia.app.data.repository.PlaylistRepository
-import com.mediautopia.app.domain.usecase.CommandCorrelator
 import com.mediautopia.app.domain.usecase.LeaseManager
 import com.mediautopia.app.ui.SnackbarManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -73,7 +72,7 @@ class LibraryViewModel @Inject constructor(
     private val playlistRepository: PlaylistRepository,
     private val nodeRepository: NodeRepository,
     private val leaseManager: LeaseManager,
-    private val correlator: CommandCorrelator,
+    private val transport: com.mediautopia.app.data.transport.TransportRouter,
     private val activeRendererRepository: ActiveRendererRepository,
     private val snackbarManager: SnackbarManager,
 ) : ViewModel() {
@@ -391,7 +390,7 @@ class LibraryViewModel @Inject constructor(
                 val lease = leaseManager.ensureLease(rendererId)
                 Log.d(tag, "playItem: lease acquired, session=${lease.sessionId}")
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
@@ -403,7 +402,7 @@ class LibraryViewModel @Inject constructor(
                     lease = lease,
                 )
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.next",
                     body = json.encodeToJsonElement(mapOf<String, String>()),
@@ -424,7 +423,7 @@ class LibraryViewModel @Inject constructor(
                 val lease = leaseManager.ensureLease(rendererId)
 
                 // Add to end of queue, then jump to and play the last item.
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
@@ -436,7 +435,7 @@ class LibraryViewModel @Inject constructor(
                     lease = lease,
                 )
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.play",
                     body = json.encodeToJsonElement(
@@ -459,7 +458,7 @@ class LibraryViewModel @Inject constructor(
                 val entry = buildQueueEntry(itemId)
                 val lease = leaseManager.ensureLease(rendererId)
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
@@ -487,7 +486,7 @@ class LibraryViewModel @Inject constructor(
                 val entries = buildQueueEntries(allItemIds)
                 val lease = leaseManager.ensureLease(rendererId)
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
@@ -496,7 +495,7 @@ class LibraryViewModel @Inject constructor(
                     lease = lease,
                 )
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.next",
                     body = json.encodeToJsonElement(mapOf<String, String>()),
@@ -522,7 +521,7 @@ class LibraryViewModel @Inject constructor(
                 val entries = buildQueueEntries(tracks.map { it.id })
                 val lease = leaseManager.ensureLease(rendererId)
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
@@ -531,7 +530,7 @@ class LibraryViewModel @Inject constructor(
                     lease = lease,
                 )
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.next",
                     body = json.encodeToJsonElement(mapOf<String, String>()),
@@ -557,7 +556,7 @@ class LibraryViewModel @Inject constructor(
                 val entries = buildQueueEntries(tracks.map { it.id })
                 val lease = leaseManager.ensureLease(rendererId)
 
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
@@ -797,7 +796,7 @@ class LibraryViewModel @Inject constructor(
 
                 if (mode == "replace") {
                     // Clear queue, set entries, then play from the start.
-                    correlator.send(
+                    transport.send(
                         nodeId = rendererId,
                         cmdType = "queue.set",
                         body = json.encodeToJsonElement(
@@ -808,7 +807,7 @@ class LibraryViewModel @Inject constructor(
                         ),
                         lease = lease,
                     )
-                    correlator.send(
+                    transport.send(
                         nodeId = rendererId,
                         cmdType = "playback.play",
                         body = json.encodeToJsonElement(PlaybackPlayBody(index = 0)),
@@ -817,7 +816,7 @@ class LibraryViewModel @Inject constructor(
                     snackbarManager.show("Playing ${queueEntries.size} items")
                 } else {
                     // Append to existing queue.
-                    correlator.send(
+                    transport.send(
                         nodeId = rendererId,
                         cmdType = "queue.add",
                         body = json.encodeToJsonElement(
@@ -847,13 +846,13 @@ class LibraryViewModel @Inject constructor(
                 }
 
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(QueueAddBody(position = "end", entries = listOf(queueEntry))),
                     lease = lease,
                 )
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.play",
                     body = json.encodeToJsonElement(PlaybackPlayBody(index = -1)),
@@ -879,7 +878,7 @@ class LibraryViewModel @Inject constructor(
                 }
 
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(QueueAddBody(position = "end", entries = listOf(queueEntry))),

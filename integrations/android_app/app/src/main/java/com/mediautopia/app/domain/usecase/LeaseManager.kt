@@ -37,7 +37,7 @@ data class LeaseInfo(
 
 @Singleton
 class LeaseManager @Inject constructor(
-    private val correlator: CommandCorrelator,
+    private val transport: com.mediautopia.app.data.transport.TransportRouter,
 ) {
     private val tag = "LeaseManager"
 
@@ -100,39 +100,26 @@ class LeaseManager @Inject constructor(
     }
 
     /**
-     * Release a lease explicitly. If we don't hold a cached lease,
-     * acquire one first (stealing from any current holder) then release it.
-     *
-     * Always clears the local cache on exit — even on failure — so stale
-     * state can never out-live an explicit release attempt.
+     * Release a lease explicitly. If we don't hold a cached lease, simply
+     * drop any stale state and return — the contested-take path is handled
+     * elsewhere via `takeControl`.
      */
     suspend fun releaseLease(rendererId: String) {
-        var cached = leases.remove(rendererId)
+        val cached = leases.remove(rendererId) ?: run {
+            publishLeases()
+            return
+        }
         publishLeases()
 
-        if (cached == null) {
-            // We don't hold a lease — acquire one (stealing from current holder) then release.
-            try {
-                val lease = acquireLease(rendererId)
-                cached = leases.remove(rendererId)
-                    ?: CachedLease(sessionId = lease.sessionId, token = lease.token, expiresAt = 0)
-                publishLeases()
-            } catch (e: Exception) {
-                Log.w(tag, "Could not acquire lease to release for $rendererId: ${e.message}")
-                return
-            }
-        }
-
         try {
-            val lease = Lease(sessionId = cached.sessionId, token = cached.token)
             val body = json.encodeToJsonElement(
                 mapOf("sessionId" to cached.sessionId, "token" to cached.token)
             )
-            correlator.send(
+            transport.send(
                 nodeId = rendererId,
                 cmdType = "session.release",
                 body = body,
-                lease = lease,
+                lease = Lease(sessionId = cached.sessionId, token = cached.token),
             )
             Log.i(tag, "Released lease for $rendererId")
         } catch (e: Exception) {
@@ -226,7 +213,7 @@ class LeaseManager @Inject constructor(
     private suspend fun acquireLease(rendererId: String): Lease {
         val body = json.encodeToJsonElement(SessionAcquireBody(ttlMs = TTL_MS))
 
-        val reply = correlator.send(
+        val reply = transport.send(
             nodeId = rendererId,
             cmdType = "session.acquire",
             body = body,
@@ -256,7 +243,7 @@ class LeaseManager @Inject constructor(
     private suspend fun renewLease(rendererId: String, cached: CachedLease): Lease {
         val body = json.encodeToJsonElement(SessionRenewBody(ttlMs = TTL_MS))
 
-        val reply = correlator.send(
+        val reply = transport.send(
             nodeId = rendererId,
             cmdType = "session.renew",
             body = body,

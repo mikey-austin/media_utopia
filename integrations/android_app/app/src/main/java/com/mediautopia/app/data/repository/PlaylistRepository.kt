@@ -5,7 +5,6 @@ import com.mediautopia.app.data.cache.MetadataCache
 import com.mediautopia.app.data.protocol.PlaylistGetBody
 import com.mediautopia.app.data.protocol.PlaylistListBody
 import com.mediautopia.app.data.protocol.PlaylistListReply
-import com.mediautopia.app.domain.usecase.CommandCorrelator
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -67,7 +66,7 @@ private data class ResolvedRaw(
 @Singleton
 class PlaylistRepository @Inject constructor(
     private val nodeRepository: NodeRepository,
-    private val correlator: CommandCorrelator,
+    private val transport: com.mediautopia.app.data.transport.TransportRouter,
     private val libraryRepository: LibraryRepository,
     private val metadataCache: MetadataCache,
 ) {
@@ -81,7 +80,7 @@ class PlaylistRepository @Inject constructor(
         val body = json.encodeToJsonElement(PlaylistListBody(owner = ""))
 
         val reply = try {
-            correlator.send(
+            transport.send(
                 nodeId = serverNodeId,
                 cmdType = "playlist.list",
                 body = body,
@@ -112,7 +111,7 @@ class PlaylistRepository @Inject constructor(
         val body = json.encodeToJsonElement(PlaylistGetBody(playlistId = playlistId))
 
         val reply = try {
-            correlator.send(
+            transport.send(
                 nodeId = serverNodeId,
                 cmdType = "playlist.get",
                 body = body,

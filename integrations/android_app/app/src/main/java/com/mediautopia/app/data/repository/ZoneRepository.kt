@@ -3,7 +3,6 @@ package com.mediautopia.app.data.repository
 import android.util.Log
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
-import com.mediautopia.app.domain.usecase.CommandCorrelator
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -44,7 +43,7 @@ data class ZoneSource(
 class ZoneRepository @Inject constructor(
     private val mqtt: MqttConnectionManager,
     private val nodeRepository: NodeRepository,
-    private val correlator: CommandCorrelator,
+    private val transport: com.mediautopia.app.data.transport.TransportRouter,
 ) {
     private val tag = "ZoneRepository"
 
@@ -119,7 +118,7 @@ class ZoneRepository @Inject constructor(
                 put("zoneId", JsonPrimitive(zoneNodeId))
                 put("volume", JsonPrimitive(volume.toDouble().coerceIn(0.0, 1.0)))
             }
-            correlator.send(
+            transport.send(
                 nodeId = controllerId,
                 cmdType = "zone.setVolume",
                 body = body,
@@ -142,7 +141,7 @@ class ZoneRepository @Inject constructor(
                 put("zoneId", JsonPrimitive(zoneNodeId))
                 put("mute", JsonPrimitive(mute))
             }
-            correlator.send(
+            transport.send(
                 nodeId = controllerId,
                 cmdType = "zone.setMute",
                 body = body,
@@ -165,7 +164,7 @@ class ZoneRepository @Inject constructor(
                 put("zoneId", JsonPrimitive(zoneNodeId))
                 put("sourceId", JsonPrimitive(sourceId))
             }
-            correlator.send(
+            transport.send(
                 nodeId = controllerId,
                 cmdType = "zone.selectSource",
                 body = body,

@@ -22,7 +22,6 @@ import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
-import com.mediautopia.app.domain.usecase.CommandCorrelator
 import com.mediautopia.app.domain.usecase.LeaseManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -76,7 +75,7 @@ class QueueViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val metadataCache: MetadataCache,
     private val leaseManager: LeaseManager,
-    private val correlator: CommandCorrelator,
+    private val transport: com.mediautopia.app.data.transport.TransportRouter,
 ) : ViewModel() {
 
     private val tag = "QueueViewModel"
@@ -168,7 +167,7 @@ class QueueViewModel @Inject constructor(
                 val body = json.encodeToJsonElement(
                     QueueGetBody(from = 0, count = 200, resolve = "metadata")
                 )
-                val reply = correlator.send(
+                val reply = transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.get",
                     body = body,
@@ -303,7 +302,7 @@ class QueueViewModel @Inject constructor(
                 val body = json.encodeToJsonElement(
                     QueueMoveBody(fromIndex = fromIndex.toLong(), toIndex = toIndex.toLong())
                 )
-                val reply = correlator.send(
+                val reply = transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.move",
                     body = body,
@@ -335,7 +334,7 @@ class QueueViewModel @Inject constructor(
                 val body = json.encodeToJsonElement(
                     QueueRemoveBody(queueEntryId = removed.queueEntryId, index = index.toLong())
                 )
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.remove",
                     body = body,
@@ -355,7 +354,7 @@ class QueueViewModel @Inject constructor(
             val rendererId = activeRendererId.value
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.clear",
                     body = json.encodeToJsonElement(mapOf<String, String>()),
@@ -376,7 +375,7 @@ class QueueViewModel @Inject constructor(
                 val body = json.encodeToJsonElement(
                     QueueShuffleBody(seed = System.currentTimeMillis())
                 )
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.shuffle",
                     body = body,
@@ -394,7 +393,7 @@ class QueueViewModel @Inject constructor(
             val currentShuffle = rendererState.value?.queue?.shuffle ?: false
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.setShuffle",
                     body = json.encodeToJsonElement(
@@ -419,7 +418,7 @@ class QueueViewModel @Inject constructor(
             }
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.setRepeat",
                     body = json.encodeToJsonElement(
@@ -438,7 +437,7 @@ class QueueViewModel @Inject constructor(
             val rendererId = activeRendererId.value
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.play",
                     body = json.encodeToJsonElement(

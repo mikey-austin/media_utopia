@@ -14,7 +14,6 @@ import com.mediautopia.app.data.protocol.artistString
 import com.mediautopia.app.data.protocol.artworkUrl
 import com.mediautopia.app.data.protocol.format
 import com.mediautopia.app.data.protocol.title
-import com.mediautopia.app.domain.usecase.CommandCorrelator
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -50,7 +49,7 @@ data class BrowseItem(
 @Singleton
 class LibraryRepository @Inject constructor(
     private val nodeRepository: NodeRepository,
-    private val correlator: CommandCorrelator,
+    private val transport: com.mediautopia.app.data.transport.TransportRouter,
     private val metadataCache: MetadataCache,
 ) {
     private val tag = "LibraryRepository"
@@ -92,7 +91,7 @@ class LibraryRepository @Inject constructor(
             )
         )
 
-        val reply = correlator.send(
+        val reply = transport.send(
             nodeId = libraryNode,
             cmdType = "library.browse",
             body = body,
@@ -127,7 +126,7 @@ class LibraryRepository @Inject constructor(
             )
         )
 
-        val reply = correlator.send(
+        val reply = transport.send(
             nodeId = libraryNode,
             cmdType = "library.search",
             body = body,
@@ -158,7 +157,7 @@ class LibraryRepository @Inject constructor(
         )
 
         val reply = try {
-            correlator.send(
+            transport.send(
                 nodeId = libraryNode,
                 cmdType = "library.resolve",
                 body = body,
@@ -221,7 +220,7 @@ class LibraryRepository @Inject constructor(
             )
 
             val reply = try {
-                correlator.send(
+                transport.send(
                     nodeId = libraryNode,
                     cmdType = "library.resolveBatch",
                     body = body,
@@ -282,7 +281,7 @@ class LibraryRepository @Inject constructor(
         )
 
         val reply = try {
-            correlator.send(
+            transport.send(
                 nodeId = libraryNode,
                 cmdType = "library.resolve",
                 body = body,
@@ -337,7 +336,7 @@ class LibraryRepository @Inject constructor(
                 )
 
                 val reply = try {
-                    correlator.send(
+                    transport.send(
                         nodeId = libraryNode,
                         cmdType = "library.resolveBatch",
                         body = body,

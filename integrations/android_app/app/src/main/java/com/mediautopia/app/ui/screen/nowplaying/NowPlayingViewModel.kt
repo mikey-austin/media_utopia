@@ -20,7 +20,6 @@ import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
-import com.mediautopia.app.domain.usecase.CommandCorrelator
 import com.mediautopia.app.domain.usecase.LeaseManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -71,7 +70,7 @@ class NowPlayingViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val metadataCache: MetadataCache,
     private val leaseManager: LeaseManager,
-    private val correlator: CommandCorrelator,
+    private val transport: com.mediautopia.app.data.transport.TransportRouter,
     private val settingsDataStore: com.mediautopia.app.data.cache.SettingsDataStore,
     val audioSessionHolder: com.mediautopia.app.renderer.AudioSessionHolder,
 ) : ViewModel() {
@@ -283,7 +282,7 @@ class NowPlayingViewModel @Inject constructor(
                 } else {
                     json.encodeToJsonElement(mapOf<String, String>())
                 }
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = cmdType,
                     body = body,
@@ -300,7 +299,7 @@ class NowPlayingViewModel @Inject constructor(
             val rendererId = activeRendererId.value
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.next",
                     body = json.encodeToJsonElement(mapOf<String, String>()),
@@ -317,7 +316,7 @@ class NowPlayingViewModel @Inject constructor(
             val rendererId = activeRendererId.value
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.prev",
                     body = json.encodeToJsonElement(mapOf<String, String>()),
@@ -339,7 +338,7 @@ class NowPlayingViewModel @Inject constructor(
             val rendererId = activeRendererId.value
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.seek",
                     body = json.encodeToJsonElement(PlaybackSeekBody(positionMs = positionMs)),
@@ -358,7 +357,7 @@ class NowPlayingViewModel @Inject constructor(
             val rendererId = activeRendererId.value
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.setVolume",
                     body = json.encodeToJsonElement(
@@ -378,7 +377,7 @@ class NowPlayingViewModel @Inject constructor(
             val currentMute = rendererState.value?.playback?.mute ?: false
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.setMute",
                     body = json.encodeToJsonElement(
@@ -398,7 +397,7 @@ class NowPlayingViewModel @Inject constructor(
             val currentShuffle = rendererState.value?.queue?.shuffle ?: false
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.setShuffle",
                     body = json.encodeToJsonElement(
@@ -424,7 +423,7 @@ class NowPlayingViewModel @Inject constructor(
             }
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.setRepeat",
                     body = json.encodeToJsonElement(

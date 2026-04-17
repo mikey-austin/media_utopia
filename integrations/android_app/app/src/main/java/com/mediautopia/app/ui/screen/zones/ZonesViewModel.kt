@@ -8,7 +8,6 @@ import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
 import com.mediautopia.app.data.repository.ZoneRepository
 import com.mediautopia.app.data.repository.ZoneSource
-import com.mediautopia.app.domain.usecase.CommandCorrelator
 import com.mediautopia.app.domain.usecase.LeaseManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -50,7 +49,7 @@ class ZonesViewModel @Inject constructor(
     private val activeRendererRepository: ActiveRendererRepository,
     private val rendererStateRepository: RendererStateRepository,
     private val leaseManager: LeaseManager,
-    private val correlator: CommandCorrelator,
+    private val transport: com.mediautopia.app.data.transport.TransportRouter,
 ) : ViewModel() {
 
     private val tag = "ZonesViewModel"
@@ -140,7 +139,7 @@ class ZonesViewModel @Inject constructor(
             val rendererId = activeRendererId.value
             try {
                 val lease = leaseManager.ensureLease(rendererId)
-                correlator.send(
+                transport.send(
                     nodeId = rendererId,
                     cmdType = "playback.setVolume",
                     body = json.encodeToJsonElement(
