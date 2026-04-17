@@ -19,20 +19,21 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URI
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.time.Duration.Companion.seconds
 
 enum class ConnectionState {
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
-    RECONNECTING,
 }
 
 @Singleton
@@ -68,14 +69,14 @@ class MqttConnectionManager @Inject constructor(
             return
         }
 
-        // If a previous client is still around (e.g. stuck RECONNECTING in the
-        // HiveMQ auto-reconnect loop), tear it down first so we don't leave a
-        // zombie client thrashing in the background. Best-effort: failures are
-        // swallowed because the old client is about to be replaced.
         val previous = client
         if (previous != null) {
             try {
-                previous.disconnect()
+                withTimeoutOrNull(2.seconds) {
+                    suspendCancellableCoroutine<Unit> { cont ->
+                        previous.disconnect().whenComplete { _, _ -> cont.resume(Unit) }
+                    }
+                }
             } catch (e: Exception) {
                 Log.w(tag, "Previous client disconnect failed: ${e.message}")
             }
@@ -94,26 +95,17 @@ class MqttConnectionManager @Inject constructor(
             .identifier(clientId)
             .serverHost(host)
             .serverPort(port)
-            .automaticReconnect()
-                .initialDelay(2, TimeUnit.SECONDS)
-                .maxDelay(30, TimeUnit.SECONDS)
-                .applyAutomaticReconnect()
+            // NOTE: automaticReconnect intentionally removed — we own the loop.
             .addConnectedListener(object : MqttClientConnectedListener {
                 override fun onConnected(ctx: MqttClientConnectedContext) {
                     Log.i(tag, "MQTT connected")
-                    val wasReconnect = _connectionState.value == ConnectionState.RECONNECTING
                     _connectionState.value = ConnectionState.CONNECTED
-                    if (wasReconnect) {
-                        resubscribeAll()
-                    }
                 }
             })
             .addDisconnectedListener(object : MqttClientDisconnectedListener {
                 override fun onDisconnected(ctx: MqttClientDisconnectedContext) {
                     Log.w(tag, "MQTT disconnected: ${ctx.cause?.message}")
-                    if (_connectionState.value == ConnectionState.CONNECTED) {
-                        _connectionState.value = ConnectionState.RECONNECTING
-                    }
+                    _connectionState.value = ConnectionState.DISCONNECTED
                 }
             })
 
@@ -135,21 +127,29 @@ class MqttConnectionManager @Inject constructor(
             }
         }
 
-        suspendCancellableCoroutine { cont ->
-            mqtt3Client.connectWith()
-                .cleanSession(true)
-                .keepAlive(60)
-                .send()
-                .whenComplete { _: Mqtt3ConnAck?, error: Throwable? ->
-                    if (error != null) {
-                        _connectionState.value = ConnectionState.DISCONNECTED
-                        cont.resumeWithException(error)
-                    } else {
-                        _connectionState.value = ConnectionState.CONNECTED
-                        resubscribeAll()
-                        cont.resume(Unit)
-                    }
+        try {
+            withTimeout(10.seconds) {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    mqtt3Client.connectWith()
+                        .cleanSession(true)
+                        .keepAlive(60)
+                        .send()
+                        .whenComplete { _: Mqtt3ConnAck?, error: Throwable? ->
+                            if (error != null) {
+                                cont.resumeWithException(error)
+                            } else {
+                                cont.resume(Unit)
+                            }
+                        }
                 }
+            }
+            _connectionState.value = ConnectionState.CONNECTED
+            resubscribeAll()
+        } catch (e: Exception) {
+            Log.w(tag, "connect() failed or timed out: ${e.message}")
+            client = null
+            _connectionState.value = ConnectionState.DISCONNECTED
+            throw e
         }
     }
 
@@ -163,24 +163,49 @@ class MqttConnectionManager @Inject constructor(
             return
         }
         try {
-            suspendCancellableCoroutine<Unit> { cont ->
-                c.disconnect()
-                    .whenComplete { _, error ->
-                        _connectionState.value = ConnectionState.DISCONNECTED
-                        client = null
-                        if (error != null) {
-                            // Treat disconnect errors as non-fatal — the
-                            // caller is about to reconnect anyway and we've
-                            // already nulled the client reference.
-                            Log.w(tag, "Disconnect completed with error: ${error.message}")
+            withTimeout(5.seconds) {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    c.disconnect()
+                        .whenComplete { _, error ->
+                            if (error != null) {
+                                Log.w(tag, "Disconnect completed with error: ${error.message}")
+                            }
+                            cont.resume(Unit)
                         }
-                        cont.resume(Unit)
-                    }
+                }
             }
         } catch (e: Exception) {
-            Log.w(tag, "Disconnect threw: ${e.message}")
-            _connectionState.value = ConnectionState.DISCONNECTED
+            Log.w(tag, "Disconnect threw or timed out: ${e.message}")
+        } finally {
             client = null
+            _connectionState.value = ConnectionState.DISCONNECTED
+        }
+    }
+
+    /**
+     * Force the connection state to DISCONNECTED without waiting for broker
+     * acknowledgement. Safe to call from any thread. Used by the watchdog, the
+     * network callback, and the UI reconnect button to trip the reconnect loop
+     * in [MqttForegroundService] without holding any mutex.
+     *
+     * Best-effort drops the underlying client reference so no stale callback
+     * can resurrect the state later. The reconnect loop will build a fresh
+     * client on the next attempt.
+     */
+    fun markDisconnected() {
+        val previous = client
+        client = null
+        _connectionState.value = ConnectionState.DISCONNECTED
+        if (previous != null) {
+            callbackScope.launch {
+                try {
+                    withTimeoutOrNull(2.seconds) {
+                        suspendCancellableCoroutine<Unit> { cont ->
+                            previous.disconnect().whenComplete { _, _ -> cont.resume(Unit) }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
         }
     }
 

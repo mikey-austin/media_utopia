@@ -513,7 +513,6 @@ private fun ConnectionStatusBar(
     val (dotColor, label) = when (state) {
         ConnectionState.CONNECTED -> Color(0xFF4CAF50) to "CONNECTED"
         ConnectionState.CONNECTING -> Color(0xFFFF9800) to "CONNECTING..."
-        ConnectionState.RECONNECTING -> Color(0xFFFF9800) to "RECONNECTING..."
         ConnectionState.DISCONNECTED -> Color(0xFFF44336) to "DISCONNECTED"
     }
 

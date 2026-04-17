@@ -142,10 +142,8 @@ class MqttForegroundService : Service() {
                 val text = when (state) {
                     ConnectionState.CONNECTED -> "Connected"
                     ConnectionState.CONNECTING -> "Connecting..."
-                    ConnectionState.RECONNECTING -> "Reconnecting..."
                     ConnectionState.DISCONNECTED -> "Disconnected"
                 }
-                // Only update with service notification when no media is playing.
                 val renderer = localRenderer
                 if (renderer?.mediaSession == null) {
                     val manager = getSystemService(NotificationManager::class.java)
@@ -336,13 +334,8 @@ class MqttForegroundService : Service() {
                 // initial startSession() is still in flight — don't race it.
                 if (localRenderer == null) return
                 val state = mqttConnectionManager.connectionState.value
-                // Recover from either a clean disconnect or a stuck
-                // auto-reconnect loop — the HiveMQ client can sit in
-                // RECONNECTING indefinitely on flaky networks, and just
-                // waiting for it to recover is exactly the "restart the
-                // app" pain we're trying to fix.
-                if (state == ConnectionState.DISCONNECTED || state == ConnectionState.RECONNECTING) {
-                    triggerHardReconnect()
+                if (state == ConnectionState.DISCONNECTED) {
+                    mqttConnectionManager.markDisconnected()
                 }
             }
         }

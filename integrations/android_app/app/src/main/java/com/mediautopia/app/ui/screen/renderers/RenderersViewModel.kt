@@ -115,8 +115,7 @@ class RenderersViewModel @Inject constructor(
         // Start observing any new renderers we haven't seen yet.
         ensureStateObservations(renderers)
 
-        val isConnected = connectionState == ConnectionState.CONNECTED ||
-            connectionState == ConnectionState.RECONNECTING
+        val isConnected = connectionState == ConnectionState.CONNECTED
 
         val items = buildList {
             // "This Phone" always first.
