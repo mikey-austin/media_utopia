@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(adb logcat *)",
+      "Bash(adb install *)",
+      "Bash(adb devices)",
+      "Bash(adb pull *)",
+      "Bash(./gradlew assembleDebug)",
+      "Bash(./gradlew compileDebugKotlin)",
+      "Bash(./gradlew installDebug)",
+      "Bash(./gradlew :app:compileDebugKotlin)",
+      "Bash(./gradlew clean)",
+      "Bash(go vet *)",
+      "Bash(meson compile *)",
+      "Bash(pkg-config *)",
+      "Bash(mosquitto_sub *)",
+      "Bash(docker compose logs *)",
+      "Bash(docker compose ps)",
+      "mcp__claude-in-chrome__read_console_messages",
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__claude-in-chrome__read_page"
+    ]
+  }
+}

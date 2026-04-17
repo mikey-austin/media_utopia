@@ -14,3 +14,21 @@ integrations/home_assistant/mosquitto/log/
 /.mud/
 integrations/home_assistant/mud_config/music/
 integrations/home_assistant/mud_config/playlists/
+
+# Android build artifacts
+integrations/android_app/.gradle/
+integrations/android_app/.kotlin/
+integrations/android_app/build/
+integrations/android_app/app/build/
+integrations/android_app/local.properties
+*.apk
+*.aab
+
+# Compiled GSettings (regenerated from .gschema.xml at build time)
+integrations/desktop_app/data/gschemas.compiled
+
+# Per-developer tool/agent configs
+.claude/settings.local.json
+.codex
+.superpowers/
+integrations/.codex
