@@ -100,6 +100,42 @@ class LeaseManager @Inject constructor(
     }
 
     /**
+     * Force-acquire a lease by sending `session.takeControl`, overwriting any
+     * active lease on the renderer. Used by the UI when the user explicitly
+     * wants to kick a current holder. Caches the new lease identically to
+     * [acquireLease].
+     */
+    suspend fun takeControl(rendererId: String): Lease {
+        val body = json.encodeToJsonElement(SessionAcquireBody(ttlMs = TTL_MS))
+
+        val reply = transport.send(
+            nodeId = rendererId,
+            cmdType = "session.takeControl",
+            body = body,
+        )
+
+        if (!reply.ok) {
+            val errorCode = reply.err?.code ?: "UNKNOWN"
+            throw LeaseException("session.takeControl failed for $rendererId: $errorCode - ${reply.err?.message}")
+        }
+
+        val sessionReply = json.decodeFromJsonElement<SessionReplyBody>(
+            reply.body ?: throw LeaseException("session.takeControl reply missing body")
+        )
+
+        val cached = CachedLease(
+            sessionId = sessionReply.session.id,
+            token = sessionReply.session.token,
+            expiresAt = sessionReply.session.leaseExpiresAt * 1000,
+        )
+        leases[rendererId] = cached
+        publishLeases()
+
+        Log.i(tag, "Took control of $rendererId, session=${cached.sessionId}")
+        return Lease(sessionId = cached.sessionId, token = cached.token)
+    }
+
+    /**
      * Release a lease explicitly. If we don't hold a cached lease, simply
      * drop any stale state and return — the contested-take path is handled
      * elsewhere via `takeControl`.
