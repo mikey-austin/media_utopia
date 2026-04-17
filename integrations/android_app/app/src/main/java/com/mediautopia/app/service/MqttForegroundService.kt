@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -56,8 +57,11 @@ class MqttForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var localRenderer: LocalRendererService? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private val reconnectMutex = Mutex()
-    private var reconnectJob: Job? = null
+    private val sessionMutex = Mutex()
+    private val reconnectTrigger = kotlinx.coroutines.channels.Channel<Unit>(
+        capacity = kotlinx.coroutines.channels.Channel.CONFLATED
+    )
+    private var reconnectLoopJob: Job? = null
 
     companion object {
         private const val CHANNEL_ID = "mu_service"
@@ -97,14 +101,13 @@ class MqttForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_RECONNECT) {
-            if (!isStarted) {
-                // Service isn't initialised yet — fall through to the regular
-                // startup path.
-            } else {
-                Log.i(tag, "ACTION_RECONNECT received, triggering hard reset")
-                triggerHardReconnect()
+            if (isStarted) {
+                Log.i(tag, "ACTION_RECONNECT received")
+                mqttConnectionManager.markDisconnected()
+                reconnectTrigger.trySend(Unit)
                 return START_STICKY
             }
+            // Fall through to normal startup.
         }
 
         if (isStarted) return START_STICKY
@@ -119,22 +122,14 @@ class MqttForegroundService : Service() {
         }
         isStarted = true
 
-        serviceScope.launch {
-            // Serialize against reconnect paths so a synchronous network
-            // callback firing during startup can't run a second startSession
-            // concurrently (the two would collide on the MediaSession id).
-            reconnectMutex.withLock {
-                try {
-                    startSession()
-                } catch (e: Exception) {
-                    Log.e(tag, "Failed to start MQTT session: ${e.message}", e)
-                }
-            }
-            // Network callback is registered *after* the initial session
-            // is up — its early synchronous onAvailable() callback on
-            // registration would otherwise race with the initial start.
-            registerNetworkCallback()
-        }
+        // Single authoritative reconnect loop. Also runs the initial session
+        // startup by observing the initial DISCONNECTED state.
+        reconnectLoopJob = serviceScope.launch { reconnectLoop() }
+
+        // Kick the loop once so the initial startSession runs even if the
+        // state flow doesn't emit a fresh DISCONNECTED value at subscription
+        // time.
+        reconnectTrigger.trySend(Unit)
 
         // Observe connection state and update the notification text.
         serviceScope.launch {
@@ -152,6 +147,8 @@ class MqttForegroundService : Service() {
             }
         }
 
+        registerNetworkCallback()
+
         return START_STICKY
     }
 
@@ -159,7 +156,7 @@ class MqttForegroundService : Service() {
      * Bring the full pipeline up from a fresh state: connect MQTT, set up
      * command correlator, reserve the local node id, start discovery, start
      * the local renderer, and kick off the background lease renewal loop.
-     * Must be called from within [serviceScope], holding [reconnectMutex].
+     * Must be called from within [serviceScope], holding [sessionMutex].
      */
     private suspend fun startSession() {
         // Defensive guard: creating a second LocalRendererService while one
@@ -265,40 +262,63 @@ class MqttForegroundService : Service() {
     }
 
     /**
-     * Public entry point invoked via the [ACTION_RECONNECT] intent. Safely
-     * debounces against simultaneous taps of the reconnect button by using
-     * a mutex.
+     * Single authoritative reconnect loop. Performs the initial startSession
+     * and every subsequent rebuild, driven by [reconnectTrigger]. The trigger
+     * is poked on any DISCONNECTED transition (via a state observer launched
+     * here) and on explicit external events (UI reconnect button, network-
+     * available callback). Exponential backoff grows on failed attempts and
+     * resets to 2s once a connection stays CONNECTED for 60s.
      */
-    private fun triggerHardReconnect() {
-        val existing = reconnectJob
-        if (existing != null && existing.isActive) {
-            Log.i(tag, "Hard reconnect already in progress, ignoring")
-            return
-        }
-        reconnectJob = serviceScope.launch {
-            reconnectMutex.withLock {
-                try {
-                    updateServiceNotificationText("Reconnecting...")
-                    stopSession()
-                    // Brief yield before reconnecting — gives any in-flight
-                    // callbacks a chance to drain on the hivemq threads.
-                    kotlinx.coroutines.delay(250)
-                    startSession()
-                } catch (e: Exception) {
-                    Log.e(tag, "Hard reconnect failed: ${e.message}", e)
-                    updateServiceNotificationText("Disconnected")
+    private suspend fun reconnectLoop() {
+        var backoffMs = 2_000L
+
+        // Side observer: trip the trigger on DISCONNECTED; schedule a backoff
+        // reset when CONNECTED stays stable. StateFlow already de-duplicates
+        // by equality, so no explicit distinctUntilChanged is needed.
+        serviceScope.launch {
+            mqttConnectionManager.connectionState.collect { state ->
+                when (state) {
+                    ConnectionState.DISCONNECTED -> reconnectTrigger.trySend(Unit)
+                    ConnectionState.CONNECTED -> {
+                        serviceScope.launch {
+                            delay(60_000)
+                            if (mqttConnectionManager.connectionState.value == ConnectionState.CONNECTED) {
+                                backoffMs = 2_000L
+                                Log.i(tag, "Connection stable 60s; backoff reset")
+                            }
+                        }
+                    }
+                    ConnectionState.CONNECTING -> {}
                 }
             }
         }
-    }
 
-    private fun updateServiceNotificationText(text: String) {
-        val renderer = localRenderer
-        if (renderer?.mediaSession == null) {
-            val manager = getSystemService(NotificationManager::class.java)
-            try {
-                manager.notify(NOTIFICATION_ID, buildServiceNotification(text))
-            } catch (_: Exception) {}
+        // Main reconnect driver.
+        for (unit in reconnectTrigger) {
+            if (!isStarted) continue
+            if (mqttConnectionManager.connectionState.value == ConnectionState.CONNECTED) continue
+
+            Log.i(tag, "Reconnect trigger; waiting ${backoffMs}ms before attempt")
+            delay(backoffMs)
+            if (mqttConnectionManager.connectionState.value == ConnectionState.CONNECTED) continue
+
+            sessionMutex.withLock {
+                try {
+                    if (localRenderer != null) {
+                        stopSession()
+                    }
+                    if (isStarted) {
+                        startSession()
+                    }
+                } catch (e: Exception) {
+                    Log.e(tag, "Reconnect attempt failed: ${e.message}", e)
+                }
+            }
+
+            // Grow backoff only if we didn't reach CONNECTED.
+            if (mqttConnectionManager.connectionState.value != ConnectionState.CONNECTED) {
+                backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+            }
         }
     }
 
@@ -329,14 +349,8 @@ class MqttForegroundService : Service() {
             .build()
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.i(tag, "Network available, checking MQTT connection")
-                // If the local renderer hasn't finished starting yet, the
-                // initial startSession() is still in flight — don't race it.
-                if (localRenderer == null) return
-                val state = mqttConnectionManager.connectionState.value
-                if (state == ConnectionState.DISCONNECTED) {
-                    mqttConnectionManager.markDisconnected()
-                }
+                Log.i(tag, "Network available")
+                reconnectTrigger.trySend(Unit)
             }
         }
         networkCallback = callback
