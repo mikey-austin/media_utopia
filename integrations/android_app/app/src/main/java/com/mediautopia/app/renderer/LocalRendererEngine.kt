@@ -142,6 +142,7 @@ class LocalRendererEngine(
                 "session.acquire" -> handleSessionAcquire(cmd)
                 "session.renew" -> handleSessionRenew(cmd)
                 "session.release" -> handleSessionRelease(cmd)
+                "session.takeControl" -> handleSessionTakeControl(cmd)
                 else -> errorReply(cmd, "INVALID", "not a session command")
             }
         }
@@ -169,6 +170,9 @@ class LocalRendererEngine(
             }
             "session.release" -> {
                 sessionLock.withLock { handleSessionRelease(cmd) }
+            }
+            "session.takeControl" -> {
+                sessionLock.withLock { handleSessionTakeControl(cmd) }
             }
 
             // Queue read (uses read lock).
@@ -311,6 +315,22 @@ class LocalRendererEngine(
         stateVersion++
         emitStateWithSession(null)
         return ackReply(cmd)
+    }
+
+    private fun handleSessionTakeControl(cmd: CommandEnvelope): ReplyEnvelope {
+        val body = decodeBody<SessionAcquireBody>(cmd) ?: return errorReply(cmd, "INVALID", "invalid body")
+        val ttlMs = if (body.ttlMs <= 0) 300_000L else body.ttlMs
+        val lease = leaseManager.forceAcquire(cmd.from, ttlMs)
+
+        val sessionState = SessionState(
+            id = lease.id,
+            owner = lease.owner,
+            leaseExpiresAt = lease.leaseExpiresAt,
+        )
+        stateVersion++
+        val replyBody = SessionReplyBody(session = lease, stateVersion = stateVersion)
+        emitStateWithSession(sessionState)
+        return withBody(cmd, json.encodeToJsonElement(replyBody))
     }
 
     // -----------------------------------------------------------------
@@ -730,7 +750,7 @@ class LocalRendererEngine(
 
     companion object {
         fun isSessionCommand(cmdType: String): Boolean = when (cmdType) {
-            "session.acquire", "session.renew", "session.release" -> true
+            "session.acquire", "session.renew", "session.release", "session.takeControl" -> true
             else -> false
         }
     }
@@ -756,6 +776,13 @@ internal class RendererLeaseManager(private val idPrefix: String = "renderer") {
     fun acquire(requestOwner: String, ttlMs: Long): SessionLease? {
         lock.withLock {
             if (isActiveLocked()) return null  // Already held
+            return newLeaseLocked(requestOwner, ttlMs)
+        }
+    }
+
+    fun forceAcquire(requestOwner: String, ttlMs: Long): SessionLease {
+        lock.withLock {
+            clearLocked()
             return newLeaseLocked(requestOwner, ttlMs)
         }
     }
