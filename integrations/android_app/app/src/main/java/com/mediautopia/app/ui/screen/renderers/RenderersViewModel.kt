@@ -124,7 +124,6 @@ class RenderersViewModel @Inject constructor(
             val isLocalActive = activeId == ActiveRendererRepository.LOCAL_RENDERER_ID ||
                 activeId == localId
 
-            val identity = appIdentity.value
             val localState = rendererStates[localId]
             val localLeaseOwner = localState?.session?.owner
 
@@ -136,7 +135,11 @@ class RenderersViewModel @Inject constructor(
                     isActive = isLocalActive,
                     status = if (isLocalActive) "LOCAL PLAYBACK" else "Local playback",
                     leaseOwner = localLeaseOwner,
-                    isOwnLease = localLeaseOwner != null && localLeaseOwner == identity,
+                    // We own the lease iff we have a token cached. By
+                    // construction only this controller can populate
+                    // leaseInfos, so this is more reliable than comparing
+                    // identity strings (which can race with DataStore loads).
+                    isOwnLease = leaseInfos[localId] != null,
                     leaseExpiresAtMs = leaseInfos[localId]?.expiresAtMs,
                 )
             )
@@ -148,8 +151,10 @@ class RenderersViewModel @Inject constructor(
                     val isActive = node.nodeId == activeId
                     val state = rendererStates[node.nodeId]
                     add(
-                        buildRendererItem(node, isActive, state, isConnected)
-                            .copy(leaseExpiresAtMs = leaseInfos[node.nodeId]?.expiresAtMs)
+                        buildRendererItem(node, isActive, state, isConnected).copy(
+                            leaseExpiresAtMs = leaseInfos[node.nodeId]?.expiresAtMs,
+                            isOwnLease = leaseInfos[node.nodeId] != null,
+                        )
                     )
                 }
         }

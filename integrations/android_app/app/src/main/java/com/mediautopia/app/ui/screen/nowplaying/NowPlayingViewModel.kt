@@ -170,7 +170,8 @@ class NowPlayingViewModel @Inject constructor(
             _interpolatedPositionMs,
             _resolvedMetadata,
             settingsDataStore.visualizerEnabled,
-            settingsDataStore.identity,
+            activeRendererId,
+            leaseManager.leaseInfos,
         ),
     ) { values: Array<Any?> ->
         @Suppress("UNCHECKED_CAST")
@@ -179,7 +180,9 @@ class NowPlayingViewModel @Inject constructor(
         val interpolatedPosition = values[2] as Long
         val resolved = values[3] as ResolvedMetadata?
         val vizEnabled = values[4] as Boolean
-        val identity = values[5] as String
+        val activeId = values[5] as String
+        @Suppress("UNCHECKED_CAST")
+        val leaseInfos = values[6] as Map<String, com.mediautopia.app.domain.usecase.LeaseInfo>
 
         if (state == null) {
             return@combine NowPlayingUiState(rendererName = name, visualizerEnabled = vizEnabled)
@@ -209,7 +212,11 @@ class NowPlayingViewModel @Inject constructor(
         }
 
         val leaseOwner = state.session?.owner
-        val isOwnLease = leaseOwner != null && leaseOwner == identity
+        // We own the lease iff we have a token cached for the active
+        // renderer. Comparing identity strings races with DataStore loads
+        // and causes the transport-disable note to flicker; the cached
+        // token is authoritative.
+        val isOwnLease = leaseInfos[activeId] != null
 
         NowPlayingUiState(
             playbackStatus = playbackStatus,

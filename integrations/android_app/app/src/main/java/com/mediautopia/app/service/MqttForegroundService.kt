@@ -102,6 +102,28 @@ class MqttForegroundService : Service() {
     private var isStarted = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Every call to startForegroundService() comes with a 5-second
+        // promise to call startForeground(); failure crashes the process
+        // with ForegroundServiceDidNotStartInTimeException. The OS does
+        // not exempt subsequent intents to an already-foreground service,
+        // so we must call startForeground() unconditionally on EVERY
+        // onStartCommand. createNotificationChannels() is idempotent.
+        createNotificationChannels()
+        val statusText = when (mqttConnectionManager.connectionState.value) {
+            ConnectionState.CONNECTED -> "Connected"
+            ConnectionState.CONNECTING -> "Connecting..."
+            ConnectionState.DISCONNECTED -> "Disconnected"
+        }
+        try {
+            startForeground(NOTIFICATION_ID, buildServiceNotification(statusText))
+        } catch (e: Exception) {
+            Log.e(tag, "startForeground failed: ${e.message}")
+            if (!isStarted) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
+
         if (intent?.action == ACTION_RECONNECT) {
             if (isStarted) {
                 Log.i(tag, "ACTION_RECONNECT received")
@@ -114,14 +136,6 @@ class MqttForegroundService : Service() {
 
         if (isStarted) return START_STICKY
 
-        createNotificationChannels()
-        try {
-            startForeground(NOTIFICATION_ID, buildServiceNotification("Connecting..."))
-        } catch (e: Exception) {
-            Log.e(tag, "startForeground failed: ${e.message}")
-            stopSelf()
-            return START_NOT_STICKY
-        }
         isStarted = true
 
         // Single authoritative reconnect loop. Also runs the initial session
