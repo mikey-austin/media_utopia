@@ -63,8 +63,10 @@ class MqttConnectionManager @Inject constructor(
 
     private var heartbeatJob: Job? = null
     private var heartbeatSubscriptionId: String? = null
+    // Written from the subscribe handler (publish-routing thread on callbackScope),
+    // read from the heartbeat coroutine (also on callbackScope). @Volatile gives
+    // us atomic 64-bit access and happens-before across carrier threads.
     @Volatile private var lastEchoMs: Long = 0L
-    private var currentClientId: String? = null
 
     companion object {
         private const val HEARTBEAT_INTERVAL_MS = 30_000L
@@ -318,7 +320,6 @@ class MqttConnectionManager @Inject constructor(
 
         val topic = "$HEARTBEAT_TOPIC_PREFIX$clientId"
         lastEchoMs = System.currentTimeMillis()
-        currentClientId = clientId
 
         heartbeatSubscriptionId = subscribe(topic = topic, qos = 0) { _, _ ->
             lastEchoMs = System.currentTimeMillis()
@@ -328,11 +329,7 @@ class MqttConnectionManager @Inject constructor(
             while (isActive) {
                 delay(HEARTBEAT_INTERVAL_MS)
                 if (_connectionState.value != ConnectionState.CONNECTED) continue
-                try {
-                    publish(topic = topic, qos = 0, retained = false, payload = ByteArray(0))
-                } catch (e: Exception) {
-                    Log.w(tag, "heartbeat publish failed: ${e.message}")
-                }
+                publish(topic = topic, qos = 0, retained = false, payload = ByteArray(0))
                 val silenceMs = System.currentTimeMillis() - lastEchoMs
                 if (silenceMs > HEARTBEAT_TIMEOUT_MS) {
                     Log.w(tag, "heartbeat silent for ${silenceMs}ms, tripping reconnect")
@@ -348,7 +345,6 @@ class MqttConnectionManager @Inject constructor(
         heartbeatJob = null
         heartbeatSubscriptionId?.let { unsubscribe(it) }
         heartbeatSubscriptionId = null
-        currentClientId = null
     }
 
     /**
