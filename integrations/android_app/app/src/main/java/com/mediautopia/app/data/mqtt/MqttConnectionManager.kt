@@ -11,6 +11,7 @@ import com.hivemq.client.mqtt.lifecycle.MqttClientDisconnectedListener
 import com.hivemq.client.mqtt.mqtt3.Mqtt3AsyncClient
 import com.hivemq.client.mqtt.mqtt3.message.connect.connack.Mqtt3ConnAck
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -71,14 +72,10 @@ class MqttConnectionManager @Inject constructor(
 
         val previous = client
         if (previous != null) {
-            try {
-                withTimeoutOrNull(2.seconds) {
-                    suspendCancellableCoroutine<Unit> { cont ->
-                        previous.disconnect().whenComplete { _, _ -> cont.resume(Unit) }
-                    }
+            withTimeoutOrNull(2.seconds) {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    previous.disconnect().whenComplete { _, _ -> cont.resume(Unit) }
                 }
-            } catch (e: Exception) {
-                Log.w(tag, "Previous client disconnect failed: ${e.message}")
             }
             client = null
         }
@@ -98,14 +95,16 @@ class MqttConnectionManager @Inject constructor(
             // NOTE: automaticReconnect intentionally removed — we own the loop.
             .addConnectedListener(object : MqttClientConnectedListener {
                 override fun onConnected(ctx: MqttClientConnectedContext) {
-                    Log.i(tag, "MQTT connected")
-                    _connectionState.value = ConnectionState.CONNECTED
+                    // State is driven from the coroutine path in connect(); this is log-only
+                    // so a transient HiveMQ callback cannot invert state mid-coroutine.
+                    Log.i(tag, "MQTT client onConnected fired")
                 }
             })
             .addDisconnectedListener(object : MqttClientDisconnectedListener {
                 override fun onDisconnected(ctx: MqttClientDisconnectedContext) {
-                    Log.w(tag, "MQTT disconnected: ${ctx.cause?.message}")
-                    _connectionState.value = ConnectionState.DISCONNECTED
+                    Log.w(tag, "MQTT client onDisconnected fired: ${ctx.cause?.message}")
+                    // We don't flip state here — disconnect() / markDisconnected() own that.
+                    // The listener is a log-only observer.
                 }
             })
 
@@ -143,11 +142,20 @@ class MqttConnectionManager @Inject constructor(
                         }
                 }
             }
+            // Guard against markDisconnected() firing between send() and here. If it
+            // did, `client` was nulled and we'd report CONNECTED with no active
+            // client — treat as a failed connect instead.
+            if (client !== mqtt3Client) {
+                Log.w(tag, "connect() succeeded but client was superseded; aborting")
+                throw CancellationException("connect superseded by markDisconnected")
+            }
             _connectionState.value = ConnectionState.CONNECTED
             resubscribeAll()
         } catch (e: Exception) {
             Log.w(tag, "connect() failed or timed out: ${e.message}")
-            client = null
+            if (client === mqtt3Client) {
+                client = null
+            }
             _connectionState.value = ConnectionState.DISCONNECTED
             throw e
         }
@@ -198,13 +206,11 @@ class MqttConnectionManager @Inject constructor(
         _connectionState.value = ConnectionState.DISCONNECTED
         if (previous != null) {
             callbackScope.launch {
-                try {
-                    withTimeoutOrNull(2.seconds) {
-                        suspendCancellableCoroutine<Unit> { cont ->
-                            previous.disconnect().whenComplete { _, _ -> cont.resume(Unit) }
-                        }
+                withTimeoutOrNull(2.seconds) {
+                    suspendCancellableCoroutine<Unit> { cont ->
+                        previous.disconnect().whenComplete { _, _ -> cont.resume(Unit) }
                     }
-                } catch (_: Exception) {}
+                }
             }
         }
     }
