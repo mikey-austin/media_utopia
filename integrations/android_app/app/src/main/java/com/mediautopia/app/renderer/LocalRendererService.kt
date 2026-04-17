@@ -66,9 +66,11 @@ class LocalRendererService(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var driver: ExoPlayerDriver? = null
-    private var engine: LocalRendererEngine? = null
+    @Volatile private var engine: LocalRendererEngine? = null
     private var audioFocusManager: AudioFocusManager? = null
     private var mediaSessionManager: MediaSessionManager? = null
+
+    @Volatile private var cachedIdentity: String = ""
 
     /** Exposed so MqttForegroundService can use the session token for MediaStyle notification. */
     var mediaSession: MediaSession? = null
@@ -231,6 +233,8 @@ class LocalRendererService(
         rendererStateRepository.registerLocalStateSource(nodeId, eng.stateFlow)
 
         Log.i(tag, "Local renderer fully started")
+
+        cachedIdentity = settingsDataStore.identity.first()
 
         localTransport.register(this@LocalRendererService)
     }
@@ -400,7 +404,7 @@ class LocalRendererService(
         lease: Lease?,
         ifRevision: Long?,
     ): com.mediautopia.app.data.protocol.ReplyEnvelope {
-        val identity = settingsDataStore.identity.first()
+        val identity = cachedIdentity
         val envelope = com.mediautopia.app.data.protocol.CommandEnvelope(
             id = java.util.UUID.randomUUID().toString(),
             type = cmdType,
