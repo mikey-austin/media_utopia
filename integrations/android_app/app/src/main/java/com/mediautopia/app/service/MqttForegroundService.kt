@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -223,6 +224,9 @@ class MqttForegroundService : Service() {
     /**
      * Tear down the session in reverse order of [startSession]. Safe to call
      * even if individual components never started — each step is best-effort.
+     *
+     * Callers must hold [sessionMutex] for the duration of this call to
+     * serialise against concurrent [startSession] / reconnect attempts.
      */
     private suspend fun stopSession() {
         try {
@@ -269,38 +273,42 @@ class MqttForegroundService : Service() {
      * available callback). Exponential backoff grows on failed attempts and
      * resets to 2s once a connection stays CONNECTED for 60s.
      */
-    private suspend fun reconnectLoop() {
-        var backoffMs = 2_000L
+    private suspend fun reconnectLoop() = coroutineScope {
+        val backoffMs = java.util.concurrent.atomic.AtomicLong(2_000L)
 
-        // Side observer: trip the trigger on DISCONNECTED; schedule a backoff
-        // reset when CONNECTED stays stable. StateFlow already de-duplicates
-        // by equality, so no explicit distinctUntilChanged is needed.
-        serviceScope.launch {
-            mqttConnectionManager.connectionState.collect { state ->
-                when (state) {
-                    ConnectionState.DISCONNECTED -> reconnectTrigger.trySend(Unit)
-                    ConnectionState.CONNECTED -> {
-                        serviceScope.launch {
-                            delay(60_000)
-                            if (mqttConnectionManager.connectionState.value == ConnectionState.CONNECTED) {
-                                backoffMs = 2_000L
-                                Log.i(tag, "Connection stable 60s; backoff reset")
+        // Side observer: parent it to this coroutine so cancellation of the
+        // reconnect loop also tears down the observer.
+        launch {
+            mqttConnectionManager.connectionState
+                // StateFlow de-duplicates equal emissions natively. If this
+                // is ever migrated to SharedFlow, restore distinctUntilChanged.
+                .collect { state ->
+                    when (state) {
+                        ConnectionState.DISCONNECTED -> reconnectTrigger.trySend(Unit)
+                        ConnectionState.CONNECTED -> {
+                            launch {
+                                delay(60_000)
+                                if (mqttConnectionManager.connectionState.value == ConnectionState.CONNECTED) {
+                                    backoffMs.set(2_000L)
+                                    Log.i(tag, "Connection stable 60s; backoff reset")
+                                }
                             }
                         }
+                        ConnectionState.CONNECTING -> {}
                     }
-                    ConnectionState.CONNECTING -> {}
                 }
-            }
         }
 
         // Main reconnect driver.
-        for (unit in reconnectTrigger) {
+        for (ignored in reconnectTrigger) {
             if (!isStarted) continue
-            if (mqttConnectionManager.connectionState.value == ConnectionState.CONNECTED) continue
+            val cs = mqttConnectionManager.connectionState.value
+            if (cs == ConnectionState.CONNECTED || cs == ConnectionState.CONNECTING) continue
 
-            Log.i(tag, "Reconnect trigger; waiting ${backoffMs}ms before attempt")
-            delay(backoffMs)
-            if (mqttConnectionManager.connectionState.value == ConnectionState.CONNECTED) continue
+            Log.i(tag, "Reconnect trigger; waiting ${backoffMs.get()}ms before attempt")
+            delay(backoffMs.get())
+            val cs2 = mqttConnectionManager.connectionState.value
+            if (cs2 == ConnectionState.CONNECTED || cs2 == ConnectionState.CONNECTING) continue
 
             sessionMutex.withLock {
                 try {
@@ -315,9 +323,8 @@ class MqttForegroundService : Service() {
                 }
             }
 
-            // Grow backoff only if we didn't reach CONNECTED.
             if (mqttConnectionManager.connectionState.value != ConnectionState.CONNECTED) {
-                backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+                backoffMs.set((backoffMs.get() * 2).coerceAtMost(30_000L))
             }
         }
     }
