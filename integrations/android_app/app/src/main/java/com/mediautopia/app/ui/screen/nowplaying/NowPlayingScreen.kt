@@ -118,6 +118,7 @@ private fun NowPlayingContent(
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
 ) {
+    val blockedByLease = state.leaseOwner != null && !state.isOwnLease
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -175,6 +176,7 @@ private fun NowPlayingContent(
             playbackStatus = state.playbackStatus,
             shuffle = state.shuffle,
             repeatMode = state.repeatMode,
+            blocked = blockedByLease,
             onTogglePlayPause = onTogglePlayPause,
             onNext = onNext,
             onPrevious = onPrevious,
@@ -182,14 +184,25 @@ private fun NowPlayingContent(
             onToggleRepeat = onToggleRepeat,
         )
 
+        if (blockedByLease) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Controlled by ${state.leaseOwner!!.uppercase()} — take control in the renderers menu",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
 
         // Volume.
         VolumeSection(
             volume = state.volume,
             isMuted = state.isMuted,
-            onSetVolume = onSetVolume,
-            onToggleMute = onToggleMute,
+            onSetVolume = if (blockedByLease) ({ /* no-op */ }) else onSetVolume,
+            onToggleMute = if (blockedByLease) ({ /* no-op */ }) else onToggleMute,
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -374,6 +387,7 @@ private fun TransportControls(
     playbackStatus: String,
     shuffle: Boolean,
     repeatMode: String,
+    blocked: Boolean,
     onTogglePlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -385,7 +399,7 @@ private fun TransportControls(
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = onToggleShuffle) {
+        IconButton(onClick = onToggleShuffle, enabled = !blocked) {
             Icon(
                 imageVector = Icons.Filled.Shuffle,
                 contentDescription = "Shuffle",
@@ -396,7 +410,7 @@ private fun TransportControls(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        IconButton(onClick = onPrevious) {
+        IconButton(onClick = onPrevious, enabled = !blocked) {
             Icon(
                 imageVector = Icons.Filled.SkipPrevious,
                 contentDescription = "Previous",
@@ -409,12 +423,13 @@ private fun TransportControls(
 
         PlayPauseButton(
             isPlaying = playbackStatus == "playing",
+            enabled = !blocked,
             onClick = onTogglePlayPause,
         )
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        IconButton(onClick = onNext) {
+        IconButton(onClick = onNext, enabled = !blocked) {
             Icon(
                 imageVector = Icons.Filled.SkipNext,
                 contentDescription = "Next",
@@ -425,7 +440,7 @@ private fun TransportControls(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        IconButton(onClick = onToggleRepeat) {
+        IconButton(onClick = onToggleRepeat, enabled = !blocked) {
             Icon(
                 imageVector = if (repeatMode == "one") Icons.Filled.RepeatOne else Icons.Filled.Repeat,
                 contentDescription = "Repeat",
@@ -439,14 +454,15 @@ private fun TransportControls(
 @Composable
 private fun PlayPauseButton(
     isPlaying: Boolean,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .size(64.dp)
             .clip(CircleShape)
-            .background(Secondary)
-            .clickable(onClick = onClick),
+            .background(if (enabled) Secondary else Secondary.copy(alpha = 0.4f))
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
         Icon(

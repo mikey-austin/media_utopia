@@ -59,6 +59,8 @@ data class NowPlayingUiState(
     val isConnected: Boolean = false,
     val visualizerEnabled: Boolean = false,
     val isLocalRenderer: Boolean = true,
+    val leaseOwner: String? = null,
+    val isOwnLease: Boolean = false,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -162,12 +164,23 @@ class NowPlayingViewModel @Inject constructor(
         }.stateIn(viewModelScope, SharingStarted.Eagerly, "This Phone")
 
     val uiState: StateFlow<NowPlayingUiState> = combine(
-        rendererState,
-        rendererName,
-        _interpolatedPositionMs,
-        _resolvedMetadata,
-        settingsDataStore.visualizerEnabled,
-    ) { state, name, interpolatedPosition, resolved, vizEnabled ->
+        listOf<kotlinx.coroutines.flow.Flow<Any?>>(
+            rendererState,
+            rendererName,
+            _interpolatedPositionMs,
+            _resolvedMetadata,
+            settingsDataStore.visualizerEnabled,
+            settingsDataStore.identity,
+        ),
+    ) { values: Array<Any?> ->
+        @Suppress("UNCHECKED_CAST")
+        val state = values[0] as RendererState?
+        val name = values[1] as String
+        val interpolatedPosition = values[2] as Long
+        val resolved = values[3] as ResolvedMetadata?
+        val vizEnabled = values[4] as Boolean
+        val identity = values[5] as String
+
         if (state == null) {
             return@combine NowPlayingUiState(rendererName = name, visualizerEnabled = vizEnabled)
         }
@@ -195,6 +208,9 @@ class NowPlayingViewModel @Inject constructor(
             (state.playback?.positionMs ?: 0).coerceIn(0, durationMs)
         }
 
+        val leaseOwner = state.session?.owner
+        val isOwnLease = leaseOwner != null && leaseOwner == identity
+
         NowPlayingUiState(
             playbackStatus = playbackStatus,
             trackTitle = title,
@@ -212,6 +228,8 @@ class NowPlayingViewModel @Inject constructor(
             isConnected = state.session != null,
             visualizerEnabled = vizEnabled,
             isLocalRenderer = name == "This Phone",
+            leaseOwner = leaseOwner,
+            isOwnLease = isOwnLease,
         )
     }.stateIn(
         scope = viewModelScope,
