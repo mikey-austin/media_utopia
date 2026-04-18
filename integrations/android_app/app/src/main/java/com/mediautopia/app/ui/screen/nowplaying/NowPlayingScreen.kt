@@ -746,15 +746,17 @@ private fun PanelZoneRow(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (canToggleAssignment) {
-                androidx.compose.material3.Switch(
+                androidx.compose.material3.Checkbox(
                     checked = zone.assignedToCurrent,
                     onCheckedChange = { onToggleAssignment(it) },
                     enabled = zone.isOnline,
-                    colors = androidx.compose.material3.SwitchDefaults.colors(
-                        checkedTrackColor = Secondary,
-                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                    colors = androidx.compose.material3.CheckboxDefaults.colors(
+                        checkedColor = Secondary,
+                        uncheckedColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     ),
-                    modifier = Modifier.padding(end = 12.dp),
+                    modifier = Modifier
+                        .size(24.dp)
+                        .padding(end = 12.dp),
                 )
             }
             Text(
