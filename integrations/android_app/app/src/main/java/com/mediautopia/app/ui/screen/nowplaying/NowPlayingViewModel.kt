@@ -196,6 +196,7 @@ class NowPlayingViewModel @Inject constructor(
             activeRendererId,
             leaseManager.leaseInfos,
             zoneRepository.zones,
+            nodeRepository.nodes,
         ),
     ) { values: Array<Any?> ->
         @Suppress("UNCHECKED_CAST")
@@ -209,13 +210,17 @@ class NowPlayingViewModel @Inject constructor(
         val leaseInfos = values[6] as Map<String, com.mediautopia.app.domain.usecase.LeaseInfo>
         @Suppress("UNCHECKED_CAST")
         val zones = values[7] as List<ZoneInfo>
+        @Suppress("UNCHECKED_CAST")
+        val nodes = values[8] as Map<String, com.mediautopia.app.domain.model.Node>
 
-        // Panel zones: one entry per discovered zone. A zone is "assigned
-        // to the current renderer" when the zone controller's source for
-        // that zone matches the active renderer's nodeId — by convention
-        // the zone_controller exposes renderer nodeIds as source ids.
-        val availableSources = zoneRepository.getAvailableSources()
-        val zoneAssignmentSupported = availableSources.any { it.id == activeId }
+        // The renderer's presence advertises a `source` id that the zone
+        // controller routes audio from. A zone is "assigned to the current
+        // renderer" when the zone's current sourceId matches that advertised
+        // source id. Checkboxes are hidden when the active renderer has no
+        // source configured (e.g. local android renderer without a zone
+        // source mapping).
+        val rendererSourceId = nodes[activeId]?.source ?: ""
+        val zoneAssignmentSupported = rendererSourceId.isNotEmpty()
         val panelZones = zones.map { z ->
             PanelZone(
                 nodeId = z.nodeId,
@@ -223,7 +228,7 @@ class NowPlayingViewModel @Inject constructor(
                 volume = z.volume,
                 isMuted = z.isMuted,
                 isOnline = z.isOnline,
-                assignedToCurrent = zoneAssignmentSupported && z.sourceId == activeId,
+                assignedToCurrent = zoneAssignmentSupported && z.sourceId == rendererSourceId,
             )
         }
         val assignedZoneCount = panelZones.count { it.assignedToCurrent }
@@ -545,20 +550,24 @@ class NowPlayingViewModel @Inject constructor(
     }
 
     /**
-     * Enable/disable this zone for the active renderer. Matches by source id
-     * == renderer node id, which is the zone_controller's convention. If the
-     * controller doesn't expose a source for this renderer, the call is a
-     * no-op (and the UI hides the toggle).
+     * Enable/disable this zone for the active renderer. The renderer
+     * advertises a `source` id in its presence; matching a zone's sourceId
+     * to that value routes the zone's audio from this renderer.
+     *
+     * If the active renderer has no source id configured (e.g. the local
+     * android renderer without a zone source mapping), the UI hides the
+     * checkbox and this call is a no-op.
      */
     fun togglePanelZoneAssignment(zoneNodeId: String, assign: Boolean) {
-        if (!uiState.value.zoneAssignmentSupported) return
         val rendererId = activeRendererId.value
+        val rendererSource = nodeRepository.nodes.value[rendererId]?.source ?: ""
+        if (rendererSource.isEmpty()) return
         viewModelScope.launch {
             try {
-                // Assigning: point the zone at our renderer. Unassigning:
-                // clear the zone's source — the server interprets an empty
-                // sourceId as "no source selected".
-                val target = if (assign) rendererId else ""
+                // Assigning: point the zone at our renderer's advertised
+                // source. Unassigning: clear the zone's source — the server
+                // interprets an empty sourceId as "no source selected".
+                val target = if (assign) rendererSource else ""
                 zoneRepository.selectSource(zoneNodeId, target)
             } catch (e: Exception) {
                 Log.e(tag, "togglePanelZoneAssignment failed for $zoneNodeId: ${e.message}")
