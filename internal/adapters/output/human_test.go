@@ -937,9 +937,9 @@ func TestRenderLibraryItemsOutput(t *testing.T) {
 				Payload:   json.RawMessage(payload),
 			},
 			contains: []string{
-				"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID", "LIB_REF",
+				"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID",
 				"Cool Track", "track", "Alice, Bob", "Greatest Hits", "container-abc",
-				"id-1", "lib:lib-1:id-1",
+				"id-1",
 			},
 		},
 	}

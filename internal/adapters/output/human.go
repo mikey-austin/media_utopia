@@ -528,7 +528,6 @@ func renderLibraryItemsOutput(result LibraryItemsOutput) (string, error) {
 	rows := make([][]string, 0, len(payload.Items))
 	for _, item := range payload.Items {
 		artist := strings.Join(item.Artists, ", ")
-		libRef := fmt.Sprintf("lib:%s:%s", result.LibraryID, item.ItemID)
 		rows = append(rows, []string{
 			truncateCell(item.Name, 64),
 			truncateCell(item.Type, 16),
@@ -536,10 +535,9 @@ func renderLibraryItemsOutput(result LibraryItemsOutput) (string, error) {
 			truncateCell(item.Album, 40),
 			truncateCell(item.ContainerID, 36),
 			item.ItemID,
-			libRef,
 		})
 	}
-	table, err := renderTable([]string{"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID", "LIB_REF"}, rows)
+	table, err := renderTable([]string{"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID"}, rows)
 	if err != nil {
 		return "", err
 	}
