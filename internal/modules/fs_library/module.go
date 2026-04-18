@@ -486,6 +486,11 @@ type folderNode struct {
 	Name    string
 	SubDirs []string // sorted child directory paths
 	Items   []string // sorted item IDs in this directory
+	// CoverAlbumHash is the album hash whose cover art represents this
+	// folder — picked at scan time by walking the subtree for the first
+	// audio album with real cover art. Populated by populateFolderCovers
+	// and persisted to the sidecar so browse stays O(1) after restart.
+	CoverAlbumHash string `json:"coverAlbumHash,omitempty"`
 }
 
 // artistEntry groups albums under an artist.
@@ -1494,9 +1499,11 @@ func (m *Module) browseFolderNode(info containerInfo, start, count int64) ([]lib
 	}
 	subDirImages := make([]subDirData, len(subDirs))
 	for i, sd := range subDirs {
-		img := m.folderArtworkURLUnlocked(sd, info.Type)
-		if img == "" {
-			img = defaultImg
+		img := defaultImg
+		if child, ok := tree[sd]; ok && child.CoverAlbumHash != "" {
+			if u := m.artURLUnlocked(child.CoverAlbumHash); u != "" {
+				img = u
+			}
 		}
 		subDirImages[i] = subDirData{path: sd, imageURL: img}
 	}
@@ -3018,48 +3025,6 @@ func (m *Module) defaultArtURLUnlocked() string {
 	return m.defaultArtURL
 }
 
-// folderArtworkURLUnlocked walks the folder subtree at dirPath depth-first,
-// returning the first item's album-art URL that isn't the default placeholder.
-// Used to give folder rows a real cover instead of the generic placeholder.
-// Caller must hold m.mu (read or write). Returns "" if nothing useful found.
-func (m *Module) folderArtworkURLUnlocked(dirPath string, treeKind string) string {
-	var tree map[string]*folderNode
-	if treeKind == "audiodir" {
-		tree = m.index.AudioFolderTree
-	} else {
-		tree = m.index.VideoFolderTree
-	}
-	return m.walkFolderForArtUnlocked(dirPath, tree, 0)
-}
-
-// walkFolderForArtUnlocked is the recursive helper for folderArtworkURLUnlocked.
-// Bounded depth to keep worst-case work manageable on huge trees.
-func (m *Module) walkFolderForArtUnlocked(dirPath string, tree map[string]*folderNode, depth int) string {
-	if depth > 6 {
-		return ""
-	}
-	node, ok := tree[dirPath]
-	if !ok {
-		return ""
-	}
-	for _, id := range node.Items {
-		item, found := m.index.Items[id]
-		if !found {
-			continue
-		}
-		url := m.itemArtworkURLUnlocked(item)
-		if url != "" && url != m.defaultArtURL {
-			return url
-		}
-	}
-	for _, sd := range node.SubDirs {
-		if url := m.walkFolderForArtUnlocked(sd, tree, depth+1); url != "" {
-			return url
-		}
-	}
-	return ""
-}
-
 // itemArtworkURLUnlocked is the lock-free counterpart of getItemArtworkURL.
 // Caller must hold m.mu.
 func (m *Module) itemArtworkURLUnlocked(item mediaItem) string {
@@ -3468,6 +3433,68 @@ func buildFolderTrees(idx *libraryIndex, roots []string) {
 			idx.Containers[hash] = containerInfo{Type: tree.ctyp, Artist: dirPath}
 		}
 	}
+
+	// Pick a cover album for each folder once, post-build, so browse stays
+	// O(1). Result is persisted to the sidecar via folderNode.CoverAlbumHash.
+	populateFolderCovers(idx, idx.AudioFolderTree)
+	populateFolderCovers(idx, idx.VideoFolderTree)
+}
+
+// populateFolderCovers walks each folder subtree depth-first and sets
+// CoverAlbumHash on every node to the first audio album with real cover
+// art it finds. Audio art is the only useful source today; video folders
+// inherit nothing and stay empty (browse falls back to the placeholder).
+// Each tree is walked once; per-folder lookups are memoized via the
+// CoverAlbumHash field itself.
+func populateFolderCovers(idx *libraryIndex, tree map[string]*folderNode) {
+	for path := range tree {
+		pickFolderCover(tree[path], tree, idx, make(map[string]bool))
+	}
+}
+
+// pickFolderCover returns the album hash to use as cover for node, recursing
+// into subdirs as needed. visiting guards against accidental cycles in the
+// folder graph (e.g. symlinks in the source tree).
+func pickFolderCover(node *folderNode, tree map[string]*folderNode, idx *libraryIndex, visiting map[string]bool) string {
+	if node == nil {
+		return ""
+	}
+	if node.CoverAlbumHash != "" {
+		return node.CoverAlbumHash
+	}
+	if visiting[node.Path] {
+		return ""
+	}
+	visiting[node.Path] = true
+
+	for _, id := range node.Items {
+		item, ok := idx.Items[id]
+		if !ok || item.MediaType != "Audio" {
+			continue
+		}
+		artistName := firstOr(item.Artists, "Unknown Artist")
+		albumName := item.Album
+		if albumName == "" {
+			albumName = "Unknown Album"
+		}
+		artist, ok := idx.Audio[artistName]
+		if !ok {
+			continue
+		}
+		album, ok := artist.Albums[albumName]
+		if !ok || album.CoverArt == "" {
+			continue
+		}
+		node.CoverAlbumHash = containerHash("album", artistName, albumName)
+		return node.CoverAlbumHash
+	}
+	for _, sd := range node.SubDirs {
+		if h := pickFolderCover(tree[sd], tree, idx, visiting); h != "" {
+			node.CoverAlbumHash = h
+			return h
+		}
+	}
+	return ""
 }
 
 func paginate[T any](items []T, start int64, count int64) []T {
