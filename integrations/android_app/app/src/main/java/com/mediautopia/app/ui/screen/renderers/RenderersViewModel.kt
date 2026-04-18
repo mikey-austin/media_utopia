@@ -314,6 +314,25 @@ class RenderersViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Polite acquire for a renderer whose cached or displayed lease is foreign.
+     * Succeeds if the server-side lease has expired (common case: stale state
+     * display outliving the real TTL). Fails with a snackbar if the other
+     * controller still actively holds it.
+     */
+    fun acquireLease(nodeId: String) {
+        viewModelScope.launch {
+            try {
+                leaseManager.ensureLease(nodeId)
+                Log.i(tag, "Acquired lease for $nodeId")
+                snackbarManager.show("Lease acquired")
+            } catch (e: Exception) {
+                Log.e(tag, "acquireLease failed for $nodeId: ${e.message}", e)
+                snackbarManager.show("Acquire failed: lease still held")
+            }
+        }
+    }
+
     private fun buildFormatBadge(metadata: Map<String, JsonElement>?): String? {
         metadata ?: return null
         val bitDepth = metadata["bitDepth"]?.asPrimitiveOrNull()

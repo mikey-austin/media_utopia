@@ -77,6 +77,7 @@ fun RenderersSheet(
         },
         onReleaseLease = viewModel::releaseLease,
         onTakeControl = viewModel::takeControl,
+        onAcquireLease = viewModel::acquireLease,
         onReconnect = viewModel::reconnect,
         onDismiss = onDismiss,
     )
@@ -88,6 +89,7 @@ private fun RenderersContent(
     onSelectRenderer: (String) -> Unit,
     onReleaseLease: (String) -> Unit,
     onTakeControl: (String) -> Unit,
+    onAcquireLease: (String) -> Unit,
     onReconnect: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -199,6 +201,7 @@ private fun RenderersContent(
                 item = renderer,
                 onClick = { onSelectRenderer(renderer.nodeId) },
                 onReleaseLease = { onReleaseLease(renderer.nodeId) },
+                onAcquireLease = { onAcquireLease(renderer.nodeId) },
             )
             Spacer(modifier = Modifier.height(10.dp))
         }
@@ -329,6 +332,7 @@ private fun NetworkRendererCard(
     item: RendererItem,
     onClick: () -> Unit,
     onReleaseLease: () -> Unit,
+    onAcquireLease: () -> Unit,
 ) {
     val backgroundColor by animateColorAsState(
         targetValue = if (item.isActive) SurfaceContainerHigh else SurfaceContainerLow,
@@ -402,9 +406,9 @@ private fun NetworkRendererCard(
 
         RendererMenu(
             hasLease = item.leaseOwner != null,
-            showRelease = true,
             isOwnLease = item.isOwnLease,
             onRelease = onReleaseLease,
+            onAcquire = onAcquireLease,
             onSelect = onClick,
         )
     }
@@ -469,9 +473,9 @@ private fun formatLeaseCountdown(expiresAtMs: Long): String? {
 @Composable
 private fun RendererMenu(
     hasLease: Boolean,
-    showRelease: Boolean,
     isOwnLease: Boolean,
     onRelease: () -> Unit,
+    onAcquire: () -> Unit,
     onSelect: () -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -488,14 +492,25 @@ private fun RendererMenu(
             expanded = showMenu,
             onDismissRequest = { showMenu = false },
         ) {
-            if (showRelease && hasLease && isOwnLease) {
-                DropdownMenuItem(
-                    text = { Text("Release lease") },
-                    onClick = {
-                        showMenu = false
-                        onRelease()
-                    },
-                )
+            when {
+                hasLease && isOwnLease -> {
+                    DropdownMenuItem(
+                        text = { Text("Release lease") },
+                        onClick = {
+                            showMenu = false
+                            onRelease()
+                        },
+                    )
+                }
+                hasLease && !isOwnLease -> {
+                    DropdownMenuItem(
+                        text = { Text("Acquire lease") },
+                        onClick = {
+                            showMenu = false
+                            onAcquire()
+                        },
+                    )
+                }
             }
             DropdownMenuItem(
                 text = { Text("Select") },
