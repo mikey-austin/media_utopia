@@ -1,5 +1,12 @@
 package com.mediautopia.app.ui.screen.nowplaying
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -11,15 +18,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -45,7 +56,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
@@ -102,6 +115,9 @@ fun NowPlayingScreen(
         onToggleMute = viewModel::toggleMute,
         onToggleShuffle = viewModel::toggleShuffle,
         onToggleRepeat = viewModel::toggleRepeat,
+        onSetZoneVolume = viewModel::setPanelZoneVolume,
+        onToggleZoneMute = viewModel::togglePanelZoneMute,
+        onToggleZoneAssignment = viewModel::togglePanelZoneAssignment,
     )
 }
 
@@ -117,9 +133,15 @@ private fun NowPlayingContent(
     onToggleMute: () -> Unit,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
+    onSetZoneVolume: (String, Float) -> Unit,
+    onToggleZoneMute: (String) -> Unit,
+    onToggleZoneAssignment: (String, Boolean) -> Unit,
 ) {
     val blockedByLease = state.leaseOwner != null && !state.isOwnLease
-    Column(
+    // Peek-bar reserve so the main scroll content isn't hidden under the panel.
+    val peekReserve = 72.dp
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
@@ -129,83 +151,88 @@ private fun NowPlayingContent(
                         Surface,
                     ),
                 )
-            )
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            ),
     ) {
-        Spacer(modifier = Modifier.height(12.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = peekReserve),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(modifier = Modifier.height(12.dp))
 
-        // Album artwork (constrained height so controls always fit).
-        ArtworkSection(
-            artworkUrl = state.artworkUrl,
-            hiResInfo = state.hiResInfo,
-        )
-
-        // Audio visualizer (below artwork, above metadata).
-        if (state.visualizerEnabled && state.isLocalRenderer && state.playbackStatus == "playing" && audioSessionId != 0) {
-            Spacer(modifier = Modifier.height(8.dp))
-            com.mediautopia.app.ui.components.AudioVisualizer(
-                audioSessionId = audioSessionId,
-                modifier = Modifier.padding(horizontal = 8.dp),
+            ArtworkSection(
+                artworkUrl = state.artworkUrl,
+                hiResInfo = state.hiResInfo,
             )
+
+            if (state.visualizerEnabled && state.isLocalRenderer && state.playbackStatus == "playing" && audioSessionId != 0) {
+                Spacer(modifier = Modifier.height(8.dp))
+                com.mediautopia.app.ui.components.AudioVisualizer(
+                    audioSessionId = audioSessionId,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            MetadataSection(
+                title = state.trackTitle,
+                artist = state.artist,
+                album = state.album,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            SeekSection(
+                positionMs = state.positionMs,
+                durationMs = state.durationMs,
+                onSeek = onSeek,
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            TransportControls(
+                playbackStatus = state.playbackStatus,
+                shuffle = state.shuffle,
+                repeatMode = state.repeatMode,
+                blocked = blockedByLease,
+                onTogglePlayPause = onTogglePlayPause,
+                onNext = onNext,
+                onPrevious = onPrevious,
+                onToggleShuffle = onToggleShuffle,
+                onToggleRepeat = onToggleRepeat,
+            )
+
+            if (blockedByLease) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Controlled by ${state.leaseOwner!!.uppercase()} — take control in the renderers menu",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // Track metadata.
-        MetadataSection(
-            title = state.trackTitle,
-            artist = state.artist,
-            album = state.album,
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Seek scrubber.
-        SeekSection(
-            positionMs = state.positionMs,
-            durationMs = state.durationMs,
-            onSeek = onSeek,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Transport controls.
-        TransportControls(
-            playbackStatus = state.playbackStatus,
-            shuffle = state.shuffle,
-            repeatMode = state.repeatMode,
+        PlaybackPanel(
+            rendererVolume = state.volume,
+            rendererIsMuted = state.isMuted,
+            rendererName = state.rendererName,
             blocked = blockedByLease,
-            onTogglePlayPause = onTogglePlayPause,
-            onNext = onNext,
-            onPrevious = onPrevious,
-            onToggleShuffle = onToggleShuffle,
-            onToggleRepeat = onToggleRepeat,
+            zones = state.panelZones,
+            assignedZoneCount = state.assignedZoneCount,
+            canToggleZoneAssignment = state.zoneAssignmentSupported,
+            onSetRendererVolume = if (blockedByLease) ({ /* no-op */ }) else onSetVolume,
+            onToggleRendererMute = if (blockedByLease) ({}) else onToggleMute,
+            onSetZoneVolume = onSetZoneVolume,
+            onToggleZoneMute = onToggleZoneMute,
+            onToggleZoneAssignment = onToggleZoneAssignment,
+            modifier = Modifier.align(Alignment.BottomCenter),
         )
-
-        if (blockedByLease) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Controlled by ${state.leaseOwner!!.uppercase()} — take control in the renderers menu",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Volume.
-        VolumeSection(
-            volume = state.volume,
-            isMuted = state.isMuted,
-            onSetVolume = if (blockedByLease) ({ /* no-op */ }) else onSetVolume,
-            onToggleMute = if (blockedByLease) ({ /* no-op */ }) else onToggleMute,
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 
@@ -474,73 +501,313 @@ private fun PlayPauseButton(
     }
 }
 
+// ---------------------------------------------------------------------------
+// PlaybackPanel — slide-up panel containing renderer volume + zones list.
+// ---------------------------------------------------------------------------
+
 @Composable
-private fun VolumeSection(
-    volume: Float,
-    isMuted: Boolean,
-    onSetVolume: (Float) -> Unit,
-    onToggleMute: () -> Unit,
+private fun PlaybackPanel(
+    rendererVolume: Float,
+    rendererIsMuted: Boolean,
+    rendererName: String,
+    blocked: Boolean,
+    zones: List<com.mediautopia.app.ui.screen.nowplaying.PanelZone>,
+    assignedZoneCount: Int,
+    canToggleZoneAssignment: Boolean,
+    onSetRendererVolume: (Float) -> Unit,
+    onToggleRendererMute: () -> Unit,
+    onSetZoneVolume: (String, Float) -> Unit,
+    onToggleZoneMute: (String) -> Unit,
+    onToggleZoneAssignment: (String, Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(durationMillis = 200),
+        label = "panelChevron",
+    )
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+            .background(SurfaceContainerHigh.copy(alpha = 0.96f)),
     ) {
-        // Collapsed: icon + percentage, tap to expand.
+        // Peek bar — always visible, tap anywhere to toggle.
         Row(
-            modifier = Modifier.clickable { expanded = !expanded },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Drag indicator bar on top — visually suggests a pullable sheet.
+            Column(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 36.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)),
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (rendererIsMuted) {
+                            @Suppress("DEPRECATION") Icons.Filled.VolumeOff
+                        } else {
+                            @Suppress("DEPRECATION") Icons.Filled.VolumeUp
+                        },
+                        contentDescription = null,
+                        tint = if (rendererIsMuted) Secondary else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (rendererIsMuted) "MUTED" else "${(rendererVolume * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (rendererIsMuted) Secondary else MaterialTheme.colorScheme.onSurface,
+                    )
+                    if (zones.isNotEmpty()) {
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(4.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = if (assignedZoneCount > 0) {
+                                "$assignedZoneCount / ${zones.size} ZONES"
+                            } else {
+                                "${zones.size} ZONES"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (assignedZoneCount > 0) Secondary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
             Icon(
-                imageVector = if (isMuted) @Suppress("DEPRECATION") Icons.Filled.VolumeOff
-                    else @Suppress("DEPRECATION") Icons.Filled.VolumeUp,
-                contentDescription = if (expanded) "Hide volume" else "Show volume",
-                tint = if (isMuted) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = if (isMuted) "MUTED" else "${(volume * 100).toInt()}%",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isMuted) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                imageVector = Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(22.dp)
+                    .rotate(180f - chevronRotation),
             )
         }
 
-        // Expanded: mute toggle + slider.
-        androidx.compose.animation.AnimatedVisibility(visible = expanded) {
-            Row(
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .heightIn(max = 420.dp)
+                    .padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
             ) {
-                IconButton(
-                    onClick = onToggleMute,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        imageVector = if (isMuted) @Suppress("DEPRECATION") Icons.Filled.VolumeOff
-                            else @Suppress("DEPRECATION") Icons.Filled.VolumeUp,
-                        contentDescription = if (isMuted) "Unmute" else "Mute",
-                        tint = if (isMuted) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
+                PanelRendererVolume(
+                    rendererName = rendererName,
+                    volume = rendererVolume,
+                    isMuted = rendererIsMuted,
+                    enabled = !blocked,
+                    onSetVolume = onSetRendererVolume,
+                    onToggleMute = onToggleRendererMute,
+                )
 
-                Slider(
-                    value = volume,
-                    onValueChange = onSetVolume,
-                    colors = SliderDefaults.colors(
-                        thumbColor = Primary,
-                        activeTrackColor = Primary,
-                        inactiveTrackColor = SurfaceContainerHighest,
-                    ),
-                    modifier = Modifier.weight(1f),
+                if (zones.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f)),
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "ZONES",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Scrollable zone list.
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(
+                            items = zones,
+                            key = { it.nodeId },
+                        ) { zone ->
+                            PanelZoneRow(
+                                zone = zone,
+                                canToggleAssignment = canToggleZoneAssignment,
+                                onSetVolume = { v -> onSetZoneVolume(zone.nodeId, v) },
+                                onToggleMute = { onToggleZoneMute(zone.nodeId) },
+                                onToggleAssignment = { a ->
+                                    onToggleZoneAssignment(zone.nodeId, a)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PanelRendererVolume(
+    rendererName: String,
+    volume: Float,
+    isMuted: Boolean,
+    enabled: Boolean,
+    onSetVolume: (Float) -> Unit,
+    onToggleMute: () -> Unit,
+) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = rendererName.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = if (isMuted) "MUTED" else "${(volume * 100).toInt()}%",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (isMuted) Secondary else MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                onClick = onToggleMute,
+                enabled = enabled,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = if (isMuted) {
+                        @Suppress("DEPRECATION") Icons.Filled.VolumeOff
+                    } else {
+                        @Suppress("DEPRECATION") Icons.Filled.VolumeUp
+                    },
+                    contentDescription = if (isMuted) "Unmute" else "Mute",
+                    tint = if (isMuted) Secondary else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(20.dp),
                 )
             }
+            Slider(
+                value = volume,
+                onValueChange = onSetVolume,
+                enabled = enabled,
+                colors = SliderDefaults.colors(
+                    thumbColor = Primary,
+                    activeTrackColor = Primary,
+                    inactiveTrackColor = SurfaceContainerHighest,
+                ),
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PanelZoneRow(
+    zone: com.mediautopia.app.ui.screen.nowplaying.PanelZone,
+    canToggleAssignment: Boolean,
+    onSetVolume: (Float) -> Unit,
+    onToggleMute: () -> Unit,
+    onToggleAssignment: (Boolean) -> Unit,
+) {
+    val rowAlpha = if (zone.isOnline) 1f else 0.4f
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (zone.assignedToCurrent) Secondary.copy(alpha = 0.08f)
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.04f)
+            )
+            .alpha(rowAlpha)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (canToggleAssignment) {
+                androidx.compose.material3.Switch(
+                    checked = zone.assignedToCurrent,
+                    onCheckedChange = { onToggleAssignment(it) },
+                    enabled = zone.isOnline,
+                    colors = androidx.compose.material3.SwitchDefaults.colors(
+                        checkedTrackColor = Secondary,
+                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                    modifier = Modifier.padding(end = 12.dp),
+                )
+            }
+            Text(
+                text = zone.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (!zone.isOnline) {
+                Text(
+                    text = "OFFLINE",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    text = if (zone.isMuted) "MUTED" else "${(zone.volume * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (zone.isMuted) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                onClick = onToggleMute,
+                enabled = zone.isOnline,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = if (zone.isMuted) {
+                        @Suppress("DEPRECATION") Icons.Filled.VolumeOff
+                    } else {
+                        @Suppress("DEPRECATION") Icons.Filled.VolumeUp
+                    },
+                    contentDescription = if (zone.isMuted) "Unmute" else "Mute",
+                    tint = if (zone.isMuted) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            Slider(
+                value = zone.volume,
+                onValueChange = onSetVolume,
+                enabled = zone.isOnline,
+                colors = SliderDefaults.colors(
+                    thumbColor = Primary,
+                    activeTrackColor = Primary,
+                    inactiveTrackColor = SurfaceContainerHighest,
+                ),
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }

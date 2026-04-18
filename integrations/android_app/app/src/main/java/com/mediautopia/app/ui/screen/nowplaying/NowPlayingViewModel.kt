@@ -20,6 +20,8 @@ import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
+import com.mediautopia.app.data.repository.ZoneInfo
+import com.mediautopia.app.data.repository.ZoneRepository
 import com.mediautopia.app.domain.usecase.LeaseManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -42,6 +44,15 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import javax.inject.Inject
 
+data class PanelZone(
+    val nodeId: String,
+    val name: String,
+    val volume: Float,
+    val isMuted: Boolean,
+    val isOnline: Boolean,
+    val assignedToCurrent: Boolean,
+)
+
 data class NowPlayingUiState(
     val playbackStatus: String = "stopped",
     val trackTitle: String? = null,
@@ -61,6 +72,17 @@ data class NowPlayingUiState(
     val isLocalRenderer: Boolean = true,
     val leaseOwner: String? = null,
     val isOwnLease: Boolean = false,
+    /** Zones visible in the slide-up panel. */
+    val panelZones: List<PanelZone> = emptyList(),
+    /** Count of zones currently playing the active renderer. */
+    val assignedZoneCount: Int = 0,
+    /**
+     * Whether the zone controller exposes a source that maps to the
+     * current renderer. When false, zone assignment toggles are hidden
+     * (only volume/mute remain); the renderer/source mapping is keyed
+     * by matching source.id to the active renderer's nodeId.
+     */
+    val zoneAssignmentSupported: Boolean = false,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -74,6 +96,7 @@ class NowPlayingViewModel @Inject constructor(
     private val leaseManager: LeaseManager,
     private val transport: com.mediautopia.app.data.transport.TransportRouter,
     private val settingsDataStore: com.mediautopia.app.data.cache.SettingsDataStore,
+    private val zoneRepository: ZoneRepository,
     val audioSessionHolder: com.mediautopia.app.renderer.AudioSessionHolder,
 ) : ViewModel() {
 
@@ -172,6 +195,7 @@ class NowPlayingViewModel @Inject constructor(
             settingsDataStore.visualizerEnabled,
             activeRendererId,
             leaseManager.leaseInfos,
+            zoneRepository.zones,
         ),
     ) { values: Array<Any?> ->
         @Suppress("UNCHECKED_CAST")
@@ -183,9 +207,35 @@ class NowPlayingViewModel @Inject constructor(
         val activeId = values[5] as String
         @Suppress("UNCHECKED_CAST")
         val leaseInfos = values[6] as Map<String, com.mediautopia.app.domain.usecase.LeaseInfo>
+        @Suppress("UNCHECKED_CAST")
+        val zones = values[7] as List<ZoneInfo>
+
+        // Panel zones: one entry per discovered zone. A zone is "assigned
+        // to the current renderer" when the zone controller's source for
+        // that zone matches the active renderer's nodeId — by convention
+        // the zone_controller exposes renderer nodeIds as source ids.
+        val availableSources = zoneRepository.getAvailableSources()
+        val zoneAssignmentSupported = availableSources.any { it.id == activeId }
+        val panelZones = zones.map { z ->
+            PanelZone(
+                nodeId = z.nodeId,
+                name = z.name,
+                volume = z.volume,
+                isMuted = z.isMuted,
+                isOnline = z.isOnline,
+                assignedToCurrent = zoneAssignmentSupported && z.sourceId == activeId,
+            )
+        }
+        val assignedZoneCount = panelZones.count { it.assignedToCurrent }
 
         if (state == null) {
-            return@combine NowPlayingUiState(rendererName = name, visualizerEnabled = vizEnabled)
+            return@combine NowPlayingUiState(
+                rendererName = name,
+                visualizerEnabled = vizEnabled,
+                panelZones = panelZones,
+                assignedZoneCount = assignedZoneCount,
+                zoneAssignmentSupported = zoneAssignmentSupported,
+            )
         }
 
         // Metadata comes from resolved library data (or inline if available).
@@ -237,6 +287,9 @@ class NowPlayingViewModel @Inject constructor(
             isLocalRenderer = name == "This Phone",
             leaseOwner = leaseOwner,
             isOwnLease = isOwnLease,
+            panelZones = panelZones,
+            assignedZoneCount = assignedZoneCount,
+            zoneAssignmentSupported = zoneAssignmentSupported,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -458,6 +511,57 @@ class NowPlayingViewModel @Inject constructor(
                 )
             } catch (e: Exception) {
                 Log.e(tag, "toggleRepeat failed: ${e.message}")
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Slide-up panel: per-zone controls
+    // -------------------------------------------------------------------------
+
+    private val zoneVolumeJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    fun setPanelZoneVolume(zoneNodeId: String, volume: Float) {
+        zoneVolumeJobs[zoneNodeId]?.cancel()
+        zoneVolumeJobs[zoneNodeId] = viewModelScope.launch {
+            delay(200)
+            try {
+                zoneRepository.setVolume(zoneNodeId, volume)
+            } catch (e: Exception) {
+                Log.e(tag, "setPanelZoneVolume failed for $zoneNodeId: ${e.message}")
+            }
+        }
+    }
+
+    fun togglePanelZoneMute(zoneNodeId: String) {
+        val z = uiState.value.panelZones.find { it.nodeId == zoneNodeId } ?: return
+        viewModelScope.launch {
+            try {
+                zoneRepository.setMute(zoneNodeId, !z.isMuted)
+            } catch (e: Exception) {
+                Log.e(tag, "togglePanelZoneMute failed for $zoneNodeId: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Enable/disable this zone for the active renderer. Matches by source id
+     * == renderer node id, which is the zone_controller's convention. If the
+     * controller doesn't expose a source for this renderer, the call is a
+     * no-op (and the UI hides the toggle).
+     */
+    fun togglePanelZoneAssignment(zoneNodeId: String, assign: Boolean) {
+        if (!uiState.value.zoneAssignmentSupported) return
+        val rendererId = activeRendererId.value
+        viewModelScope.launch {
+            try {
+                // Assigning: point the zone at our renderer. Unassigning:
+                // clear the zone's source — the server interprets an empty
+                // sourceId as "no source selected".
+                val target = if (assign) rendererId else ""
+                zoneRepository.selectSource(zoneNodeId, target)
+            } catch (e: Exception) {
+                Log.e(tag, "togglePanelZoneAssignment failed for $zoneNodeId: ${e.message}")
             }
         }
     }

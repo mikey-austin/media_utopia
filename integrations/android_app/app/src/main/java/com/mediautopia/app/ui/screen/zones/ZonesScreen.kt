@@ -1,5 +1,8 @@
 package com.mediautopia.app.ui.screen.zones
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.Checkbox
@@ -41,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -233,54 +238,101 @@ private fun SourceCard(
     zones: List<ZoneUiItem>,
     onToggleZone: (String, Boolean) -> Unit,
 ) {
+    var expanded by remember { mutableStateOf(false) }
+    val assignedCount = zones.count { it.sourceId == source.id }
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(durationMillis = 200),
+        label = "sourceChevron",
+    )
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(CardShape)
-            .background(SurfaceContainerLow)
-            .padding(16.dp),
+            .background(SurfaceContainerLow),
     ) {
-        Text(
-            text = source.name,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-
-        zones.forEach { zone ->
-            val isAssigned = zone.sourceId == source.id
-            Row(
+        // Header: always visible, tap to toggle.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = source.name,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "$assignedCount / ${zones.size}",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (assignedCount > 0) Secondary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onToggleZone(zone.nodeId, !isAssigned) }
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Checkbox(
-                    checked = isAssigned,
-                    onCheckedChange = { onToggleZone(zone.nodeId, it) },
-                    colors = CheckboxDefaults.colors(
-                        checkedColor = Secondary,
-                        uncheckedColor = OnSurfaceVariant,
-                    ),
-                    modifier = Modifier.size(24.dp),
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = zone.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isAssigned) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .alpha(if (zone.isOnline) 1f else 0.4f),
-                )
-                if (!zone.isOnline) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "OFFLINE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        if (assignedCount > 0) Secondary.copy(alpha = 0.12f)
+                        else SurfaceContainerHigh
                     )
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(20.dp)
+                    .rotate(chevronRotation),
+            )
+        }
+
+        AnimatedVisibility(visible = expanded) {
+            Column(
+                modifier = Modifier.padding(
+                    start = 16.dp, end = 16.dp, bottom = 12.dp,
+                ),
+            ) {
+                zones.forEach { zone ->
+                    val isAssigned = zone.sourceId == source.id
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onToggleZone(zone.nodeId, !isAssigned) }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = isAssigned,
+                            onCheckedChange = { onToggleZone(zone.nodeId, it) },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = Secondary,
+                                uncheckedColor = OnSurfaceVariant,
+                            ),
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = zone.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isAssigned) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .alpha(if (zone.isOnline) 1f else 0.4f),
+                        )
+                        if (!zone.isOnline) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "OFFLINE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         }
