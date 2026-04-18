@@ -253,11 +253,11 @@ class MqttForegroundService : Service() {
         }
         localRenderer = null
 
-        try {
-            leaseManager.clearAll()
-        } catch (e: Exception) {
-            Log.w(tag, "leaseManager.clearAll() threw: ${e.message}")
-        }
+        // NOTE: lease cache intentionally NOT cleared. Renderer-side leases
+        // are independent of the broker, so wiping our token cache here
+        // would make us compete with our own previous self for the lease.
+        // The next startSession's renewal pass refreshes them against the
+        // live renderer state.
 
         try {
             nodeRepository.stopDiscovery()

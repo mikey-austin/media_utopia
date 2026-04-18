@@ -1,13 +1,17 @@
 package com.mediautopia.app.domain.usecase
 
 import android.util.Log
+import com.mediautopia.app.data.cache.LeaseStore
+import com.mediautopia.app.data.cache.StoredLease
 import com.mediautopia.app.data.protocol.Lease
 import com.mediautopia.app.data.protocol.ReplyEnvelope
 import com.mediautopia.app.data.protocol.SessionAcquireBody
 import com.mediautopia.app.data.protocol.SessionRenewBody
 import com.mediautopia.app.data.protocol.SessionReplyBody
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,7 +29,14 @@ private data class CachedLease(
     val sessionId: String,
     val token: String,
     val expiresAt: Long,  // unix millis
-)
+) {
+    fun toStored(): StoredLease = StoredLease(sessionId, token, expiresAt)
+
+    companion object {
+        fun fromStored(s: StoredLease): CachedLease =
+            CachedLease(s.sessionId, s.token, s.expiresAt)
+    }
+}
 
 /**
  * Information about a currently cached lease, suitable for display in the UI.
@@ -38,6 +49,7 @@ data class LeaseInfo(
 @Singleton
 class LeaseManager @Inject constructor(
     private val transport: com.mediautopia.app.data.transport.TransportRouter,
+    private val leaseStore: LeaseStore,
 ) {
     private val tag = "LeaseManager"
 
@@ -47,9 +59,19 @@ class LeaseManager @Inject constructor(
 
     private var renewalJob: Job? = null
 
+    /** Internal scope for fire-and-forget disk writes. Survives across sessions. */
+    private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     /** Observable snapshot of all currently cached leases, keyed by node id. */
     private val _leaseInfos = MutableStateFlow<Map<String, LeaseInfo>>(emptyMap())
     val leaseInfos: StateFlow<Map<String, LeaseInfo>> = _leaseInfos.asStateFlow()
+
+    init {
+        // Load durable cache asynchronously. Anything that arrives before the
+        // load completes will see an empty map and acquire from scratch — the
+        // worst case is a redundant acquire, not a stuck lease.
+        persistScope.launch { loadCached() }
+    }
 
     companion object {
         private const val TTL_MS = 300_000L           // 5 minutes
@@ -62,6 +84,28 @@ class LeaseManager @Inject constructor(
         _leaseInfos.value = leases.mapValues { (_, c) ->
             LeaseInfo(sessionId = c.sessionId, expiresAtMs = c.expiresAt)
         }
+        // Snapshot now (off the ConcurrentHashMap) so the IO write is consistent.
+        val snapshot = leases.mapValues { (_, c) -> c.toStored() }
+        persistScope.launch {
+            try {
+                leaseStore.save(snapshot)
+            } catch (e: Exception) {
+                Log.w(tag, "Persist failed: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun loadCached() {
+        val now = System.currentTimeMillis()
+        val saved = leaseStore.load().filterValues { it.expiresAt > now }
+        if (saved.isEmpty()) return
+        for ((rendererId, stored) in saved) {
+            // putIfAbsent avoids clobbering anything acquired in the brief
+            // window before the load completed.
+            leases.putIfAbsent(rendererId, CachedLease.fromStored(stored))
+        }
+        publishLeases()
+        Log.i(tag, "Loaded ${saved.size} cached lease(s) from disk")
     }
 
     // -------------------------------------------------------------------------
@@ -225,21 +269,55 @@ class LeaseManager @Inject constructor(
         code == "LEASE_MISMATCH" || code == "LEASE_REQUIRED" || code == "LEASE_EXPIRED"
 
     /**
-     * Start background renewal coroutine. Checks every 30s for leases that
-     * are expiring within the renewal threshold and renews them proactively,
-     * and sweeps expired entries out of the cache. Must be called for leases
-     * to stay alive across idle periods; otherwise the server-side lease
-     * expires silently and media-control commands start getting dropped.
+     * Start background renewal coroutine. On each invocation (i.e. on every
+     * session start), the first thing the loop does is a refresh-all pass:
+     * for every cached lease, attempt to renew, falling back to acquire if
+     * the renderer has forgotten our session (LEASE_MISMATCH). This is what
+     * makes leases survive MQTT reconnects and process restarts — the cache
+     * is loaded from disk, then refreshed against the live renderer state
+     * as soon as the broker is reachable.
+     *
+     * After the initial refresh, it loops every 30s to renew anything
+     * expiring within the renewal threshold and sweep expired entries.
      */
     fun startRenewal(scope: CoroutineScope) {
         renewalJob?.cancel()
         renewalJob = scope.launch {
+            refreshAllLeases()
             while (isActive) {
                 delay(RENEWAL_CHECK_INTERVAL)
                 renewExpiringLeases()
             }
         }
         Log.i(tag, "Started lease renewal loop")
+    }
+
+    /**
+     * Renew (or reacquire on LEASE_MISMATCH) every cached lease. Called
+     * once on each session start so that:
+     *   - locally-controlled renderers immediately become "ours" again
+     *     after an app restart (the engine boots fresh, renew fails,
+     *     reacquire succeeds because nothing else holds it)
+     *   - remote renderers stay "ours" across MQTT reconnects (renew
+     *     succeeds while the server-side lease is still valid)
+     *   - cached entries for renderers someone else has since taken
+     *     control of are silently dropped
+     */
+    private suspend fun refreshAllLeases() {
+        val toRefresh = leases.toMap()
+        if (toRefresh.isEmpty()) return
+        Log.i(tag, "Refreshing ${toRefresh.size} cached lease(s) on session start")
+        var mutated = false
+        for ((rendererId, cached) in toRefresh) {
+            try {
+                renewLease(rendererId, cached)
+            } catch (e: Exception) {
+                Log.w(tag, "Refresh failed for $rendererId, dropping: ${e.message}")
+                leases.remove(rendererId)
+                mutated = true
+            }
+        }
+        if (mutated) publishLeases()
     }
 
     // -------------------------------------------------------------------------
