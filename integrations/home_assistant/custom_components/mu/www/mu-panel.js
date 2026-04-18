@@ -1378,16 +1378,14 @@ class MuPanel extends LitElement {
   }
 
   async _queueJump(idx) {
-    // Single click on a queue row: jump and start playing. The retained
-    // renderer state fan-out will refresh the UI on its own, so don't
-    // `await _loadRendererState` here — blocking on that round trip was
-    // what made clicks feel laggy and "not working" until a second click.
-    // The previous gate + dblclick fallback meant users had to double-click
-    // whenever `leaseOwned` was briefly stale; the server is the real
-    // authority on the lease and will reject with a toast-worthy error
-    // if we don't own it.
+    // Single click on a queue row: jump and start playing. Pull renderer
+    // state explicitly after the command completes — relying on the push
+    // subscription alone was unreliable (events sometimes don't arrive,
+    // or arrive after a noticeable delay). Both calls are fire-and-forget
+    // so the UI stays responsive.
     if (!this.selectedRenderer) return;
     this._callWS('mu/queue_jump', { renderer_id: this.selectedRenderer, index: idx })
+      .then(() => this._loadRendererState())
       .catch(err => {
         console.warn('[MU] queue_jump failed:', err);
         this._showToast(err?.message || 'Jump failed');
@@ -1400,9 +1398,8 @@ class MuPanel extends LitElement {
       this._showToast('Acquire control first');
       return;
     }
-    // Fire and forget; renderer state push bumps revision and the
-    // state-event handler auto-refreshes the queue list.
     this._callWS('mu/queue_remove', { renderer_id: this.selectedRenderer, queue_entry_id: id })
+      .then(() => this._loadRendererState())
       .catch(err => {
         console.warn('[MU] queue_remove failed:', err);
         this._showToast(err?.message || 'Remove failed');
@@ -1416,7 +1413,10 @@ class MuPanel extends LitElement {
       return;
     }
     this._callWS('mu/queue_clear', { renderer_id: this.selectedRenderer })
-      .then(() => this._showToast('Cleared'))
+      .then(() => {
+        this._showToast('Cleared');
+        return this._loadRendererState();
+      })
       .catch(err => {
         console.warn('[MU] queue_clear failed:', err);
         this._showToast(err?.message || 'Clear failed');
@@ -1508,6 +1508,7 @@ class MuPanel extends LitElement {
 
     await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
     this._showToast(mode === 'replace' ? `Playing folder (${items.length})` : `Added folder (${items.length})`);
+    this._loadRendererState();
   }
 
   async _addToQueue(item, mode) {
@@ -1529,9 +1530,7 @@ class MuPanel extends LitElement {
         if (!children.length) { this._showToast('No playable items'); return; }
         await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
         this._showToast(mode === 'replace' ? `Playing (${children.length})` : mode === 'next' ? `Next (${children.length})` : `Added (${children.length})`);
-        // The renderer's state push will bump queue.revision and trigger
-        // _loadQueue on its own; awaiting an explicit reload here just
-        // doubles the round-trip and makes the click feel laggy.
+        this._loadRendererState();
         return;
       }
 
@@ -1541,6 +1540,7 @@ class MuPanel extends LitElement {
         items: [{ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }],
       });
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
+      this._loadRendererState();
     } finally {
       this._addInProgress = false;
     }
@@ -1600,6 +1600,7 @@ class MuPanel extends LitElement {
         if (!children.length) { this._showToast('No playable items'); return; }
         await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
         this._showToast(mode === 'replace' ? `Playing (${children.length})` : mode === 'next' ? `Next (${children.length})` : `Added (${children.length})`);
+        this._loadRendererState();
         return;
       }
 
@@ -1609,6 +1610,7 @@ class MuPanel extends LitElement {
         items: [{ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }],
       });
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
+      this._loadRendererState();
     } catch (err) {
       console.warn('[MU] add search result failed:', err);
       this._showToast(err?.message || 'Add failed');
@@ -1624,6 +1626,7 @@ class MuPanel extends LitElement {
     if (!items.length) { this._showToast('No playable items'); return; }
     await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
     this._showToast(mode === 'replace' ? `Playing (${items.length})` : `Added (${items.length})`);
+    this._loadRendererState();
   }
 
   _browseFromSearch(item) {
