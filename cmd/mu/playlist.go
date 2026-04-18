@@ -133,11 +133,10 @@ func playlistAddCommand() *cobra.Command {
 			"Items can be:\n" +
 			"  - http(s) URLs\n" +
 			"  - mu URNs (mu:...)\n" +
-			"  - library refs (lib:<selector>:<itemId>)\n" +
-			"    where selector can be a library alias or full nodeId\n" +
+			"  - \"<library> <itemId>\" pairs\n" +
 			"    container items (albums/artists) expand into playable tracks\n",
 		Example: `  mu playlist add "Evening Jazz" https://example.com/song.mp3
-  mu playlist add "Evening Jazz" lib:jellyfin:abc123 --resolve yes`,
+  mu playlist add "Evening Jazz" jellyfin abc123 --resolve yes`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)

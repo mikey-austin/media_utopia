@@ -97,7 +97,6 @@ func TestLooksLikeItem(t *testing.T) {
 		want bool
 	}{
 		{"mu:renderer:foo", true},
-		{"lib:jellyfin:abc", true},
 		{"playlist:my-list", true},
 		{"http://example.com/song.mp3", true},
 		{"https://example.com/song.mp3", true},

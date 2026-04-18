@@ -27,10 +27,8 @@ Media Item IDs (used for playback/resolve):
 The hash component is a SHA-1 of "path|size|mtime" which changes when the file
 is modified, ensuring cache invalidation. Example: "audio:a1b2c3d4e5f6..."
 
-When referenced externally (e.g., in playlists), items use the lib: prefix:
-
-	lib:<library-node-id>:<item-id>
-	lib:mu:library:filesystem:home:default:audio:a1b2c3d4...
+When referenced externally, items are addressed by a structured
+LibraryItemRef{kind:"libraryItem", libraryId, itemId} (see pkg/mu).
 
 # Browse Hierarchy
 

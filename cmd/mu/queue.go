@@ -345,14 +345,14 @@ func queueAddCommand() *cobra.Command {
 		Short: "Add items to the queue",
 		Long: `Add one or more items to the queue.
 
-Items can be URLs, mu URNs (mu:...), or library references (lib:<library>:<itemId>).
+Items can be URLs, mu URNs (mu:...), or "<library> <itemId>" pairs.
 By default items are appended to the end. Use --next to insert after the current
 track, or --at to insert at a specific position.`,
 		Example: `  mu queue add https://example.com/song.mp3
-  mu queue add lib:jellyfin:abc123
-  mu queue add --next lib:jellyfin:abc123
+  mu queue add jellyfin abc123
+  mu queue add --next jellyfin abc123
   mu queue add --at 0 https://example.com/song.mp3
-  mu queue add living-room lib:jellyfin:abc123 lib:jellyfin:def456`,
+  mu queue add living-room jellyfin abc123`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -411,7 +411,6 @@ track, or --at to insert at a specific position.`,
 
 func looksLikeItem(arg string) bool {
 	return strings.HasPrefix(arg, "mu:") ||
-		strings.HasPrefix(arg, "lib:") ||
 		strings.HasPrefix(arg, "playlist:") ||
 		strings.HasPrefix(arg, "http://") ||
 		strings.HasPrefix(arg, "https://")

@@ -168,8 +168,8 @@ func libResolveCommand() *cobra.Command {
 By default only metadata is fetched (library.getItem). Pass --sources to
 additionally resolve playable URLs (library.resolveSources).
 
-The item argument accepts either a bare item id (with [library] selector)
-or a "lib:<selector>:<itemId>" shorthand.`,
+Pass either "<itemId>" (uses the default/configured library) or
+"<library> <itemId>".`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -184,18 +184,7 @@ or a "lib:<selector>:<itemId>" shorthand.`,
 				selector = args[0]
 				itemID = args[1]
 			}
-			trimmed := strings.TrimSpace(itemID)
-			if ref, ok := strings.CutPrefix(trimmed, "lib:"); ok {
-				idx := strings.LastIndex(ref, ":")
-				if idx <= 0 || idx >= len(ref)-1 {
-					return errors.New("invalid library ref (expected lib:<selector>:<itemId>)")
-				}
-				itemID = ref[idx+1:]
-				if selector == "" {
-					selector = ref[:idx]
-				}
-			}
-			result, err := app.service.LibraryResolve(ctx, selector, itemID, includeSources)
+			result, err := app.service.LibraryResolve(ctx, selector, strings.TrimSpace(itemID), includeSources)
 			if err != nil {
 				return err
 			}
