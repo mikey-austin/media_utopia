@@ -1,8 +1,165 @@
 /* state.vala — Read-only state data structures parsed from MQTT state messages.
- * Ported from the Android app's Kotlin data classes.
+ * Mirrors the canonical pkg/mu wire types (LibraryItemRef, DisplayMetadata,
+ * ResolvedSource, queue entries with structured library_ref/resolved/display).
  */
 
 namespace Mu {
+
+    public const string LIBRARY_ITEM_KIND = "libraryItem";
+
+    /* ---- Library item reference ---- */
+
+    public class LibraryItemRef : GLib.Object {
+        public string kind { get; set; default = LIBRARY_ITEM_KIND; }
+        public string library_id { get; set; default = ""; }
+        public string item_id { get; set; default = ""; }
+
+        public LibraryItemRef () {
+            Object ();
+        }
+
+        public LibraryItemRef.with_ids (string library_id, string item_id) {
+            Object ();
+            this.library_id = library_id;
+            this.item_id = item_id;
+        }
+
+        public bool is_valid () {
+            return kind == LIBRARY_ITEM_KIND
+                && library_id.length > 0
+                && item_id.length > 0;
+        }
+
+        public static LibraryItemRef? from_json (Json.Object obj) {
+            var r = new LibraryItemRef ();
+            r.kind = obj.has_member ("kind") ? obj.get_string_member ("kind") : LIBRARY_ITEM_KIND;
+            r.library_id = obj.has_member ("libraryId")
+                ? obj.get_string_member ("libraryId") : "";
+            r.item_id = obj.has_member ("itemId")
+                ? obj.get_string_member ("itemId") : "";
+            if (!r.is_valid ()) return null;
+            return r;
+        }
+
+        public Json.Object to_json () {
+            var obj = new Json.Object ();
+            obj.set_string_member ("kind", LIBRARY_ITEM_KIND);
+            obj.set_string_member ("libraryId", library_id);
+            obj.set_string_member ("itemId", item_id);
+            return obj;
+        }
+    }
+
+    /* ---- Display metadata (denormalized UI snapshot) ---- */
+
+    public class DisplayMetadata : GLib.Object {
+        public string title { get; set; default = ""; }
+        public string artist { get; set; default = ""; }
+        public GenericArray<string>? artists { get; set; default = null; }
+        public string album { get; set; default = ""; }
+        public string artwork_url { get; set; default = ""; }
+        public int64 duration_ms { get; set; default = 0; }
+        public string media_type { get; set; default = ""; }
+
+        public DisplayMetadata () {
+            Object ();
+        }
+
+        public static DisplayMetadata from_json (Json.Object obj) {
+            var d = new DisplayMetadata ();
+            d.title = obj.has_member ("title") ? (obj.get_string_member ("title") ?? "") : "";
+            d.artist = obj.has_member ("artist") ? (obj.get_string_member ("artist") ?? "") : "";
+            if (obj.has_member ("artists") && !obj.get_null_member ("artists")) {
+                var arr = obj.get_array_member ("artists");
+                var list = new GenericArray<string> ();
+                for (uint i = 0; i < arr.get_length (); i++) {
+                    var node = arr.get_element (i);
+                    if (node.get_node_type () == Json.NodeType.VALUE) {
+                        var s = node.get_string ();
+                        if (s != null && s.length > 0) list.add (s);
+                    }
+                }
+                if (list.length > 0) d.artists = list;
+            }
+            d.album = obj.has_member ("album") ? (obj.get_string_member ("album") ?? "") : "";
+            d.artwork_url = obj.has_member ("artworkUrl")
+                ? (obj.get_string_member ("artworkUrl") ?? "") : "";
+            d.duration_ms = obj.has_member ("durationMs")
+                ? obj.get_int_member ("durationMs") : 0;
+            d.media_type = obj.has_member ("mediaType")
+                ? (obj.get_string_member ("mediaType") ?? "") : "";
+            return d;
+        }
+
+        public Json.Object to_json () {
+            var obj = new Json.Object ();
+            if (title.length > 0) obj.set_string_member ("title", title);
+            if (artist.length > 0) obj.set_string_member ("artist", artist);
+            if (artists != null && artists.length > 0) {
+                var arr = new Json.Array ();
+                for (uint i = 0; i < artists.length; i++) {
+                    arr.add_string_element (artists[i]);
+                }
+                obj.set_array_member ("artists", arr);
+            }
+            if (album.length > 0) obj.set_string_member ("album", album);
+            if (artwork_url.length > 0) obj.set_string_member ("artworkUrl", artwork_url);
+            if (duration_ms > 0) obj.set_int_member ("durationMs", duration_ms);
+            if (media_type.length > 0) obj.set_string_member ("mediaType", media_type);
+            return obj;
+        }
+
+        public string artist_display () {
+            if (artists != null && artists.length > 0) {
+                var sb = new StringBuilder ();
+                for (uint i = 0; i < artists.length; i++) {
+                    if (i > 0) sb.append (", ");
+                    sb.append (artists[i]);
+                }
+                return sb.str;
+            }
+            return artist;
+        }
+    }
+
+    /* ---- Resolved playable source ---- */
+
+    public class ResolvedSource : GLib.Object {
+        public string url { get; set; default = ""; }
+        public string mime { get; set; default = ""; }
+        public bool byte_range { get; set; default = false; }
+
+        public ResolvedSource () {
+            Object ();
+        }
+
+        public ResolvedSource.with_url (string url, string mime = "", bool byte_range = false) {
+            Object ();
+            this.url = url;
+            this.mime = mime;
+            this.byte_range = byte_range;
+        }
+
+        public static ResolvedSource? from_json (Json.Object obj) {
+            var r = new ResolvedSource ();
+            r.url = obj.has_member ("url") ? (obj.get_string_member ("url") ?? "") : "";
+            if (r.url.length == 0) return null;
+            r.mime = obj.has_member ("mime") ? (obj.get_string_member ("mime") ?? "") : "";
+            r.byte_range = obj.has_member ("byteRange")
+                ? obj.get_boolean_member ("byteRange") : false;
+            return r;
+        }
+
+        public Json.Object to_json () {
+            var obj = new Json.Object ();
+            obj.set_string_member ("url", url);
+            if (mime.length > 0) obj.set_string_member ("mime", mime);
+            obj.set_boolean_member ("byteRange", byte_range);
+            return obj;
+        }
+    }
+
+    /* ---- Session, playback, queue ---- */
 
     public class SessionState : GLib.Object {
         public string id { get; set; default = ""; }
@@ -81,8 +238,9 @@ namespace Mu {
 
     public class CurrentItemState : GLib.Object {
         public string queue_entry_id { get; set; default = ""; }
-        public string item_id { get; set; default = ""; }
-        public Json.Object? metadata { get; set; default = null; }
+        public LibraryItemRef? library_ref { get; set; default = null; }
+        public ResolvedSource? resolved { get; set; default = null; }
+        public DisplayMetadata? display { get; set; default = null; }
 
         public CurrentItemState () {
             Object ();
@@ -92,10 +250,14 @@ namespace Mu {
             var state = new CurrentItemState ();
             state.queue_entry_id = obj.has_member ("queueEntryId")
                 ? obj.get_string_member ("queueEntryId") : "";
-            state.item_id = obj.has_member ("itemId")
-                ? obj.get_string_member ("itemId") : "";
-            if (obj.has_member ("metadata") && !obj.get_null_member ("metadata")) {
-                state.metadata = obj.get_object_member ("metadata");
+            if (obj.has_member ("ref") && !obj.get_null_member ("ref")) {
+                state.library_ref = LibraryItemRef.from_json (obj.get_object_member ("ref"));
+            }
+            if (obj.has_member ("resolved") && !obj.get_null_member ("resolved")) {
+                state.resolved = ResolvedSource.from_json (obj.get_object_member ("resolved"));
+            }
+            if (obj.has_member ("display") && !obj.get_null_member ("display")) {
+                state.display = DisplayMetadata.from_json (obj.get_object_member ("display"));
             }
             return state;
         }

@@ -227,7 +227,7 @@ namespace Mu {
             }
 
             /* Metadata */
-            if (state.current != null && state.current.metadata != null) {
+            if (state.current != null && state.current.display != null) {
                 var new_meta = build_metadata (state.current);
                 if (!metadata_equal (new_meta, _metadata)) {
                     _metadata = new_meta;
@@ -257,53 +257,61 @@ namespace Mu {
         private HashTable<string, Variant> build_metadata (CurrentItemState current) {
             var meta = new HashTable<string, Variant> (str_hash, str_equal);
 
-            /* Track ID (required) */
+            /* Track ID (required). Build from the library library_ref's itemId, or
+             * fall back to the queue entry id, or "1". */
+            string raw_id = "";
+            if (current.library_ref != null && current.library_ref.is_valid ()) {
+                raw_id = current.library_ref.item_id;
+            } else if (current.queue_entry_id.length > 0) {
+                raw_id = current.queue_entry_id;
+            }
             var track_path = "/org/mpris/MediaPlayer2/Track/%s".printf (
-                current.item_id.length > 0
-                    ? sanitize_track_id (current.item_id)
-                    : "1"
+                raw_id.length > 0 ? sanitize_track_id (raw_id) : "1"
             );
             meta.insert ("mpris:trackid", new Variant.object_path (track_path));
 
-            if (current.metadata == null) return meta;
+            if (current.display == null) return meta;
 
-            var json_meta = current.metadata;
+            var display = current.display;
 
             /* Title */
-            if (json_meta.has_member ("title")) {
-                meta.insert ("xesam:title",
-                    new Variant.string (json_meta.get_string_member ("title")));
+            if (display.title.length > 0) {
+                meta.insert ("xesam:title", new Variant.string (display.title));
             }
 
-            /* Artist (MPRIS wants string array) */
-            if (json_meta.has_member ("artist")) {
-                string[] artists = { json_meta.get_string_member ("artist") };
+            /* Artist (MPRIS wants string array). Prefer the artists[] list. */
+            if (display.artists != null && display.artists.length > 0) {
+                var arr = new string[display.artists.length];
+                for (uint i = 0; i < display.artists.length; i++) {
+                    arr[i] = display.artists[i];
+                }
+                meta.insert ("xesam:artist", new Variant.strv (arr));
+            } else if (display.artist.length > 0) {
+                string[] artists = { display.artist };
                 meta.insert ("xesam:artist", new Variant.strv (artists));
             }
 
             /* Album */
-            if (json_meta.has_member ("album")) {
-                meta.insert ("xesam:album",
-                    new Variant.string (json_meta.get_string_member ("album")));
+            if (display.album.length > 0) {
+                meta.insert ("xesam:album", new Variant.string (display.album));
             }
 
             /* Duration (ms -> us) */
-            if (json_meta.has_member ("durationMs")) {
-                var dur_us = json_meta.get_int_member ("durationMs") * 1000;
+            if (display.duration_ms > 0) {
+                var dur_us = display.duration_ms * 1000;
                 meta.insert ("mpris:length", new Variant.int64 (dur_us));
             }
 
             /* Art URL */
-            if (json_meta.has_member ("artUrl")) {
-                meta.insert ("mpris:artUrl",
-                    new Variant.string (json_meta.get_string_member ("artUrl")));
+            if (display.artwork_url.length > 0) {
+                meta.insert ("mpris:artUrl", new Variant.string (display.artwork_url));
             }
 
             return meta;
         }
 
         /**
-         * Sanitize an item_id into a valid D-Bus object path element.
+         * Sanitize a track id into a valid D-Bus object path element.
          * Only allows [A-Za-z0-9_]; everything else becomes '_'.
          */
         private string sanitize_track_id (string id) {

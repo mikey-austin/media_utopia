@@ -8,7 +8,7 @@ namespace Mu {
 
         /* Service dependencies */
         private NodeRepository node_repo;
-        private RendererStateRepository state_repo;
+        private ZoneStateRepository zone_state_repo;
         private CommandCorrelator correlator;
 
         /* Layout widgets */
@@ -32,10 +32,10 @@ namespace Mu {
         private bool updating_slider = false;
 
         public ZonesView (NodeRepository node_repo,
-                          RendererStateRepository state_repo,
+                          ZoneStateRepository zone_state_repo,
                           CommandCorrelator correlator) {
             this.node_repo = node_repo;
-            this.state_repo = state_repo;
+            this.zone_state_repo = zone_state_repo;
             this.correlator = correlator;
 
             card_map = new HashTable<string, Gtk.Box> (str_hash, str_equal);
@@ -94,7 +94,7 @@ namespace Mu {
             node_added_id = node_repo.node_added.connect (on_node_added);
             node_removed_id = node_repo.node_removed.connect (on_node_removed);
             node_updated_id = node_repo.node_updated.connect (on_node_updated);
-            state_changed_id = state_repo.state_changed.connect (on_state_changed);
+            state_changed_id = zone_state_repo.state_changed.connect (on_state_changed);
         }
 
         private void populate_initial () {
@@ -138,10 +138,18 @@ namespace Mu {
                 update_count ();
                 return;
             }
-            update_zone_card (presence);
+
+            var existing = card_map.lookup (presence.node_id);
+            if (existing != null) {
+                zone_list_box.remove (existing);
+            }
+
+            var card = build_zone_card (presence);
+            zone_list_box.append (card);
+            card_map.set (presence.node_id, card);
         }
 
-        private void on_state_changed (string node_id, RendererState state) {
+        private void on_state_changed (string node_id, ZoneState state) {
             if (!card_map.contains (node_id)) return;
             update_zone_state (node_id, state);
         }
@@ -158,6 +166,9 @@ namespace Mu {
         private Gtk.Box build_zone_card (Presence presence) {
             var card = new Gtk.Box (Gtk.Orientation.VERTICAL, 10);
             card.add_css_class ("mu-card");
+            if (!get_zone_connected (presence.node_id)) {
+                card.add_css_class ("zone-card-offline");
+            }
             /* Store node_id via widget name for lookup */
             card.name = presence.node_id;
 
@@ -204,6 +215,7 @@ namespace Mu {
             vol_scale.hexpand = true;
             vol_scale.draw_value = false;
             vol_scale.set_value (get_zone_volume (presence.node_id) * 100.0);
+            vol_scale.sensitive = get_zone_connected (presence.node_id);
             vol_scale.value_changed.connect (() => {
                 if (updating_slider) return;
                 debounce_volume (presence.node_id, vol_scale.get_value () / 100.0);
@@ -217,10 +229,12 @@ namespace Mu {
             pct_label.xalign = 1.0f;
             vol_row.append (pct_label);
 
+            vol_row.sensitive = get_zone_connected (presence.node_id);
             card.append (vol_row);
 
             /* --- Source selector row (only if sources available) --- */
-            if (presence.sources != null && presence.sources.length > 0) {
+            var sources = get_zone_sources (presence);
+            if (sources != null && sources.length > 0) {
                 var source_row = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
                 source_row.valign = Gtk.Align.CENTER;
 
@@ -234,9 +248,10 @@ namespace Mu {
                 src_label.halign = Gtk.Align.START;
                 source_row.append (src_label);
 
-                var source_dropdown = build_source_dropdown (presence);
+                var source_dropdown = build_source_dropdown (presence, sources);
                 source_dropdown.hexpand = true;
                 source_dropdown.halign = Gtk.Align.END;
+                source_dropdown.sensitive = get_zone_connected (presence.node_id);
                 source_row.append (source_dropdown);
 
                 card.append (source_row);
@@ -245,16 +260,18 @@ namespace Mu {
             return card;
         }
 
-        private Gtk.DropDown build_source_dropdown (Presence presence) {
+        private Gtk.DropDown build_source_dropdown (Presence presence,
+                                                    GenericArray<PresenceSource> sources) {
             var string_list = new Gtk.StringList (null);
-            int active_idx = 0;
-            var current_source = presence.source ?? "";
+            string_list.append ("No source");
+            uint active_idx = 0;
+            var current_source = get_zone_source_id (presence.node_id);
 
-            for (uint i = 0; i < presence.sources.length; i++) {
-                var src = presence.sources[i];
+            for (uint i = 0; i < sources.length; i++) {
+                var src = sources[i];
                 string_list.append (src.name);
                 if (src.id == current_source) {
-                    active_idx = (int) i;
+                    active_idx = i + 1;
                 }
             }
 
@@ -262,47 +279,48 @@ namespace Mu {
             dropdown.selected = active_idx;
 
             /* Store sources reference for lookup in handler */
-            var sources_ref = presence.sources;
             var node_id = presence.node_id;
 
             dropdown.notify["selected"].connect (() => {
                 var idx = dropdown.selected;
-                if (idx < sources_ref.length) {
-                    var source_id = sources_ref[idx].id;
-                    send_source_command (node_id, source_id);
+                if (idx == Gtk.INVALID_LIST_POSITION) return;
+
+                if (idx == 0) {
+                    send_source_command (node_id, "");
+                    return;
+                }
+
+                var source_index = idx - 1;
+                if (source_index < sources.length) {
+                    send_source_command (node_id, sources[source_index].id);
                 }
             });
 
             return dropdown;
         }
 
-        private void update_zone_card (Presence presence) {
-            var card = card_map.lookup (presence.node_id);
-            if (card == null) return;
-
-            /* Find name label (first child -> top_row -> first child) */
-            var top_row = card.get_first_child () as Gtk.Box;
-            if (top_row == null) return;
-
-            var name_label = top_row.get_first_child () as Gtk.Label;
-            if (name_label != null) {
-                name_label.label = presence.name;
-            }
-
-            /* Update source label */
-            var source_label = name_label != null
-                ? name_label.get_next_sibling () as Gtk.Label : null;
-            if (source_label != null) {
-                source_label.label = get_current_source_name (presence);
-            }
-
-            /* Update source dropdown selection if sources changed */
-            update_source_dropdown (card, presence);
-        }
-
-        private void update_zone_state (string node_id, RendererState state) {
+        private void update_zone_state (string node_id, ZoneState state) {
             var card = card_map.lookup (node_id);
             if (card == null) return;
+
+            if (state.connected) {
+                card.remove_css_class ("zone-card-offline");
+            } else {
+                card.add_css_class ("zone-card-offline");
+            }
+
+            var presence = node_repo.get_node (node_id);
+            if (presence != null) {
+                var top_row = card.get_first_child () as Gtk.Box;
+                if (top_row != null) {
+                    var name_label = top_row.get_first_child () as Gtk.Label;
+                    var source_label = name_label != null
+                        ? name_label.get_next_sibling () as Gtk.Label : null;
+                    if (source_label != null) {
+                        source_label.label = get_current_source_name (presence);
+                    }
+                }
+            }
 
             /* Navigate to volume row (second child of card) */
             var top_row = card.get_first_child ();
@@ -311,19 +329,12 @@ namespace Mu {
             var vol_row = top_row.get_next_sibling () as Gtk.Box;
             if (vol_row == null) return;
 
-            double volume = 1.0;
-            bool muted = false;
-            if (state.playback != null) {
-                volume = state.playback.volume;
-                muted = state.playback.mute;
-            }
-
             /* Mute button (first child of vol_row) */
             var mute_btn = vol_row.get_first_child () as Gtk.Button;
             if (mute_btn != null) {
-                mute_btn.icon_name = muted
+                mute_btn.icon_name = state.mute
                     ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic";
-                mute_btn.tooltip_text = muted ? "Unmute" : "Mute";
+                mute_btn.tooltip_text = state.mute ? "Unmute" : "Mute";
             }
 
             /* Volume scale (second child) */
@@ -331,7 +342,7 @@ namespace Mu {
                 ? mute_btn.get_next_sibling () as Gtk.Scale : null;
             if (vol_scale != null) {
                 updating_slider = true;
-                vol_scale.set_value (volume * 100.0);
+                vol_scale.set_value (state.volume * 100.0);
                 updating_slider = false;
             }
 
@@ -339,12 +350,18 @@ namespace Mu {
             var pct_label = vol_scale != null
                 ? vol_scale.get_next_sibling () as Gtk.Label : null;
             if (pct_label != null) {
-                pct_label.label = "%d%%".printf ((int) (volume * 100.0));
+                pct_label.label = "%d%%".printf ((int) (state.volume * 100.0));
+            }
+
+            vol_row.sensitive = state.connected;
+            if (presence != null) {
+                update_source_dropdown (card, presence);
             }
         }
 
         private void update_source_dropdown (Gtk.Box card, Presence presence) {
-            if (presence.sources == null || presence.sources.length == 0) return;
+            var sources = get_zone_sources (presence);
+            if (sources == null || sources.length == 0) return;
 
             /* Source row is the third child of card (after top_row and vol_row) */
             var top_row = card.get_first_child ();
@@ -366,35 +383,52 @@ namespace Mu {
 
             if (dropdown == null) return;
 
-            var current_source = presence.source ?? "";
-            for (uint i = 0; i < presence.sources.length; i++) {
-                if (presence.sources[i].id == current_source) {
-                    if (dropdown.selected != i) {
-                        dropdown.selected = i;
-                    }
+            var current_source = get_zone_source_id (presence.node_id);
+            uint selected = 0;
+            for (uint i = 0; i < sources.length; i++) {
+                if (sources[i].id == current_source) {
+                    selected = i + 1;
                     break;
                 }
             }
+
+            if (dropdown.selected != selected) {
+                dropdown.selected = selected;
+            }
+
+            dropdown.sensitive = get_zone_connected (presence.node_id);
         }
 
         /* ---- Commands ---- */
 
         private void send_volume_command (string node_id, double volume) {
             var body = new Json.Object ();
+            body.set_string_member ("zoneId", node_id);
             body.set_double_member ("volume", volume);
-            correlator.send_fire_and_forget (node_id, "zone.setVolume", body);
+            send_zone_command (node_id, "zone.setVolume", body);
         }
 
         private void send_mute_command (string node_id, bool mute) {
             var body = new Json.Object ();
+            body.set_string_member ("zoneId", node_id);
             body.set_boolean_member ("mute", mute);
-            correlator.send_fire_and_forget (node_id, "zone.setMute", body);
+            send_zone_command (node_id, "zone.setMute", body);
         }
 
         private void send_source_command (string node_id, string source_id) {
             var body = new Json.Object ();
+            body.set_string_member ("zoneId", node_id);
             body.set_string_member ("sourceId", source_id);
-            correlator.send_fire_and_forget (node_id, "zone.setSource", body);
+            send_zone_command (node_id, "zone.selectSource", body);
+        }
+
+        private void send_zone_command (string zone_id, string cmd_type, Json.Object body) {
+            var controller_id = get_zone_controller_id (zone_id);
+            if (controller_id == null || controller_id.length == 0) {
+                warning ("ZonesView: no zone controller available for %s", zone_id);
+                return;
+            }
+            correlator.send_fire_and_forget (controller_id, cmd_type, body);
         }
 
         /* ---- Debounced volume ---- */
@@ -441,30 +475,77 @@ namespace Mu {
         }
 
         private string get_current_source_name (Presence presence) {
-            if (presence.source == null || presence.sources == null) return "";
+            var source_id = get_zone_source_id (presence.node_id);
+            if (source_id.length == 0) return "No source";
 
-            for (uint i = 0; i < presence.sources.length; i++) {
-                if (presence.sources[i].id == presence.source) {
-                    return presence.sources[i].name;
+            var sources = get_zone_sources (presence);
+            if (sources != null) {
+                for (uint i = 0; i < sources.length; i++) {
+                    if (sources[i].id == source_id) {
+                        return sources[i].name;
+                    }
                 }
             }
-            return presence.source;
+
+            if (source_id.contains (":")) {
+                return source_id.substring (source_id.last_index_of_char (':') + 1);
+            }
+            return source_id;
         }
 
         private double get_zone_volume (string node_id) {
-            var state = state_repo.get_state (node_id);
-            if (state != null && state.playback != null) {
-                return state.playback.volume;
-            }
-            return 1.0;
+            var state = zone_state_repo.get_state (node_id);
+            return state != null ? state.volume : 0.0;
         }
 
         private bool get_zone_muted (string node_id) {
-            var state = state_repo.get_state (node_id);
-            if (state != null && state.playback != null) {
-                return state.playback.mute;
+            var state = zone_state_repo.get_state (node_id);
+            return state != null ? state.mute : false;
+        }
+
+        private bool get_zone_connected (string node_id) {
+            var state = zone_state_repo.get_state (node_id);
+            return state != null ? state.connected : true;
+        }
+
+        private string get_zone_source_id (string node_id) {
+            var state = zone_state_repo.get_state (node_id);
+            return state != null ? state.source_id : "";
+        }
+
+        private GenericArray<PresenceSource>? get_zone_sources (Presence presence) {
+            if (presence.sources != null && presence.sources.length > 0) {
+                return presence.sources;
             }
-            return false;
+
+            if (presence.controller_id.length > 0) {
+                var controller = node_repo.get_node (presence.controller_id);
+                if (controller != null && controller.sources != null &&
+                    controller.sources.length > 0) {
+                    return controller.sources;
+                }
+            }
+
+            var controllers = node_repo.get_zone_controllers ();
+            if (controllers.length > 0 && controllers[0].sources != null &&
+                controllers[0].sources.length > 0) {
+                return controllers[0].sources;
+            }
+
+            return null;
+        }
+
+        private string? get_zone_controller_id (string zone_id) {
+            var zone = node_repo.get_node (zone_id);
+            if (zone != null && zone.controller_id.length > 0) {
+                return zone.controller_id;
+            }
+
+            var controllers = node_repo.get_zone_controllers ();
+            if (controllers.length > 0) {
+                return controllers[0].node_id;
+            }
+            return null;
         }
     }
 }

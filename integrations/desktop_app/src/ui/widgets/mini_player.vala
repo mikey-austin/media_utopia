@@ -212,14 +212,12 @@ namespace Mu {
         }
 
         private void apply_state (RendererState state) {
-            /* Update metadata from current item */
-            if (state.current != null && state.current.metadata != null) {
-                var meta = state.current.metadata;
+            /* Update display from current item */
+            if (state.current != null && state.current.display != null) {
+                var display = state.current.display;
 
-                var track_title = meta.has_member ("title")
-                    ? meta.get_string_member ("title") : "";
-                var artist = meta.has_member ("artist")
-                    ? meta.get_string_member ("artist") : "";
+                var track_title = display.title;
+                var artist = display.artist_display ();
 
                 if (track_title.length > 0) {
                     title_label.label = track_title;
@@ -230,11 +228,14 @@ namespace Mu {
                 }
 
                 /* Load artwork thumbnail */
-                var art_url = meta.has_member ("artworkUrl")
-                    ? meta.get_string_member ("artworkUrl") : "";
-                if (art_url != null && art_url.length > 0 && art_url != last_artwork_url) {
+                var art_url = display.artwork_url;
+                if (art_url.length > 0 && art_url != last_artwork_url) {
                     last_artwork_url = art_url;
+                    var requested_url = art_url;
                     artwork_loader.load_async (art_url, (texture) => {
+                        if (requested_url != last_artwork_url) {
+                            return;
+                        }
                         if (texture != null) {
                             art_picture.paintable = texture;
                             art_picture.visible = true;
@@ -244,7 +245,7 @@ namespace Mu {
                             art_icon.visible = true;
                         }
                     });
-                } else if (art_url == null || art_url.length == 0) {
+                } else if (art_url.length == 0) {
                     last_artwork_url = "";
                     art_picture.visible = false;
                     art_icon.visible = true;

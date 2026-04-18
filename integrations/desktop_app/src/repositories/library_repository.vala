@@ -1,4 +1,7 @@
-/* library_repository.vala — Queries library nodes for browsing, search, and metadata resolution. */
+/* library_repository.vala — Queries library nodes for browsing, search, catalog
+ * metadata (library.getItem(s)), and playable source resolution
+ * (library.resolveSources/Batch).
+ */
 
 namespace Mu {
 
@@ -6,20 +9,22 @@ namespace Mu {
         private CommandCorrelator correlator;
         private LeaseManager lease_mgr;
 
-        /* In-memory metadata cache: item_id -> Json.Object */
-        private HashTable<string, Json.Object> metadata_cache;
+        /* In-memory display cache keyed by "<libraryId>::<itemId>" so the
+         * same itemId in different libraries does not collide. */
+        private HashTable<string, DisplayMetadata> display_cache;
 
         private const int BATCH_SIZE = 20;
 
         public LibraryRepository (CommandCorrelator correlator, LeaseManager lease_mgr) {
             this.correlator = correlator;
             this.lease_mgr = lease_mgr;
-            this.metadata_cache = new HashTable<string, Json.Object> (str_hash, str_equal);
+            this.display_cache = new HashTable<string, DisplayMetadata> (str_hash, str_equal);
         }
 
         /**
          * Browse a container with pagination.
          * Returns the items array from the reply, or null on failure.
+         * Items are { library_ref, display?, attributes? } objects (or container objects).
          */
         public async Json.Array? browse (string library_id, string container_id,
                                           int64 start, int64 count) {
@@ -31,7 +36,7 @@ namespace Mu {
             if (reply.body.has_member ("items") &&
                 !reply.body.get_null_member ("items")) {
                 var items = reply.body.get_array_member ("items");
-                cache_items_from_array (items);
+                cache_display_from_items (items);
                 return items;
             }
 
@@ -39,8 +44,7 @@ namespace Mu {
         }
 
         /**
-         * Full-text search across a library.
-         * Returns the items array from the reply, or null on failure.
+         * Full-text search across a library. Reply shape matches browse.
          */
         public async Json.Array? search (string library_id, string query,
                                           int64 start, int64 count) {
@@ -52,7 +56,7 @@ namespace Mu {
             if (reply.body.has_member ("items") &&
                 !reply.body.get_null_member ("items")) {
                 var items = reply.body.get_array_member ("items");
-                cache_items_from_array (items);
+                cache_display_from_items (items);
                 return items;
             }
 
@@ -60,106 +64,187 @@ namespace Mu {
         }
 
         /**
-         * Resolve a single item's metadata and sources.
-         * Returns the full reply object, or null on failure.
+         * Fetch catalog metadata for a single library_ref. Returns the parsed reply or null.
          */
-        public async Json.Object? resolve (string library_id, string item_id,
-                                            bool metadata_only = false) {
-            var body = LibraryBodies.resolve (item_id, metadata_only);
-            var reply = yield correlator.send (library_id, "library.resolve", body);
-
+        public async LibraryItemReply? get_item (LibraryItemRef library_ref) {
+            if (!library_ref.is_valid ()) return null;
+            var body = LibraryBodies.get_item (library_ref);
+            var reply = yield correlator.send (library_ref.library_id, "library.getItem", body);
             if (reply == null || !reply.ok || reply.body == null) return null;
 
-            /* Cache metadata if present */
-            if (reply.body.has_member ("metadata") &&
-                !reply.body.get_null_member ("metadata")) {
-                metadata_cache.set (item_id, reply.body.get_object_member ("metadata"));
+            var parsed = LibraryItemReply.from_json (reply.body);
+            if (parsed.display != null) {
+                display_cache.set (cache_key (library_ref), parsed.display);
             }
-
-            return reply.body;
+            return parsed;
         }
 
         /**
-         * Resolve multiple items in batches of 20.
-         * Returns a map of itemId → result object so callers can pair
-         * results with their request IDs even when the library skips,
-         * reorders, or partially fails items in a batch. Returns null only if
-         * nothing was resolved at all.
+         * Batch-fetch catalog metadata. Refs are grouped by library and dispatched
+         * to each library node, with results keyed by "<libraryId>::<itemId>".
          */
-        public async HashTable<string, Json.Object>? resolve_batch (string library_id,
-                                                                      string[] item_ids,
-                                                                      bool metadata_only = false) {
-            var results = new HashTable<string, Json.Object> (str_hash, str_equal);
+        public async HashTable<string, LibraryItemReply>? get_items (LibraryItemRef[] refs) {
+            var results = new HashTable<string, LibraryItemReply> (str_hash, str_equal);
 
-            int offset = 0;
-            while (offset < item_ids.length) {
-                int chunk_end = int.min (offset + BATCH_SIZE, item_ids.length);
-                var chunk = new string[chunk_end - offset];
-                for (int i = 0; i < chunk.length; i++) {
-                    chunk[i] = item_ids[offset + i];
-                }
+            var by_library = group_refs_by_library (refs);
+            var lib_ids = new GenericArray<string> ();
+            by_library.foreach ((k, v) => { lib_ids.add (k); });
 
-                var body = LibraryBodies.resolve_batch (chunk, metadata_only);
-                var reply = yield correlator.send (
-                    library_id, "library.resolveBatch", body
-                );
+            for (uint l = 0; l < lib_ids.length; l++) {
+                var lib_id = lib_ids[l];
+                var lib_refs = by_library.lookup (lib_id);
+                if (lib_refs == null) continue;
 
-                if (reply == null || !reply.ok || reply.body == null) {
-                    /* Partial failure — return what we have so far, or null if nothing */
-                    return results.size () > 0 ? results : null;
-                }
+                int offset = 0;
+                while (offset < (int) lib_refs.length) {
+                    int chunk_end = int.min (offset + BATCH_SIZE, (int) lib_refs.length);
+                    var chunk = new LibraryItemRef[chunk_end - offset];
+                    for (int i = 0; i < chunk.length; i++) {
+                        chunk[i] = lib_refs[offset + i];
+                    }
 
-                if (reply.body.has_member ("items") &&
-                    !reply.body.get_null_member ("items")) {
-                    var items = reply.body.get_array_member ("items");
-                    for (uint i = 0; i < items.get_length (); i++) {
-                        var item = items.get_object_element (i);
-                        if (!item.has_member ("itemId")) continue;
-                        var iid = item.get_string_member ("itemId");
-                        if (iid == null || iid.length == 0) continue;
+                    var body = LibraryBodies.get_items (chunk);
+                    var reply = yield correlator.send (lib_id, "library.getItems", body);
+                    if (reply == null || !reply.ok || reply.body == null) {
+                        offset = chunk_end;
+                        continue;
+                    }
 
-                        results.set (iid, item);
-
-                        /* Cache metadata for each resolved item */
-                        if (item.has_member ("metadata") &&
-                            !item.get_null_member ("metadata")) {
-                            metadata_cache.set (iid, item.get_object_member ("metadata"));
+                    if (reply.body.has_member ("items") &&
+                        !reply.body.get_null_member ("items")) {
+                        var arr = reply.body.get_array_member ("items");
+                        for (uint i = 0; i < arr.get_length (); i++) {
+                            var item = LibraryItemReply.from_json (arr.get_object_element (i));
+                            if (item.library_ref == null) continue;
+                            var key = cache_key (item.library_ref);
+                            results.set (key, item);
+                            if (item.display != null) {
+                                display_cache.set (key, item.display);
+                            }
                         }
                     }
-                }
 
-                offset = chunk_end;
+                    offset = chunk_end;
+                }
             }
 
             return results.size () > 0 ? results : null;
         }
 
         /**
-         * Get cached metadata for an item (returns null if not cached).
+         * Resolve playable sources for a single library_ref.
          */
-        public Json.Object? get_cached_metadata (string item_id) {
-            return metadata_cache.lookup (item_id);
+        public async LibrarySourcesReply? resolve_sources (LibraryItemRef library_ref) {
+            if (!library_ref.is_valid ()) return null;
+            var body = LibraryBodies.resolve_sources (library_ref);
+            var reply = yield correlator.send (
+                library_ref.library_id, "library.resolveSources", body);
+            if (reply == null || !reply.ok || reply.body == null) return null;
+            return LibrarySourcesReply.from_json (reply.body);
         }
 
         /**
-         * Store metadata in the cache.
+         * Batch-resolve playable sources. Refs are grouped per library; results
+         * keyed by "<libraryId>::<itemId>".
          */
-        public void cache_metadata (string item_id, Json.Object metadata) {
-            metadata_cache.set (item_id, metadata);
+        public async HashTable<string, LibrarySourcesReply>? resolve_sources_batch (
+            LibraryItemRef[] refs) {
+
+            var results = new HashTable<string, LibrarySourcesReply> (str_hash, str_equal);
+
+            var by_library = group_refs_by_library (refs);
+            var lib_ids = new GenericArray<string> ();
+            by_library.foreach ((k, v) => { lib_ids.add (k); });
+
+            for (uint l = 0; l < lib_ids.length; l++) {
+                var lib_id = lib_ids[l];
+                var lib_refs = by_library.lookup (lib_id);
+                if (lib_refs == null) continue;
+
+                int offset = 0;
+                while (offset < (int) lib_refs.length) {
+                    int chunk_end = int.min (offset + BATCH_SIZE, (int) lib_refs.length);
+                    var chunk = new LibraryItemRef[chunk_end - offset];
+                    for (int i = 0; i < chunk.length; i++) {
+                        chunk[i] = lib_refs[offset + i];
+                    }
+
+                    var body = LibraryBodies.resolve_sources_batch (chunk);
+                    var reply = yield correlator.send (
+                        lib_id, "library.resolveSourcesBatch", body);
+                    if (reply == null || !reply.ok || reply.body == null) {
+                        offset = chunk_end;
+                        continue;
+                    }
+
+                    if (reply.body.has_member ("items") &&
+                        !reply.body.get_null_member ("items")) {
+                        var arr = reply.body.get_array_member ("items");
+                        for (uint i = 0; i < arr.get_length (); i++) {
+                            var item = LibrarySourcesReply.from_json (
+                                arr.get_object_element (i));
+                            if (item.library_ref == null) continue;
+                            results.set (cache_key (item.library_ref), item);
+                        }
+                    }
+
+                    offset = chunk_end;
+                }
+            }
+
+            return results.size () > 0 ? results : null;
+        }
+
+        /**
+         * Get cached display metadata for a library_ref.
+         */
+        public DisplayMetadata? get_cached_display (LibraryItemRef library_ref) {
+            if (!library_ref.is_valid ()) return null;
+            return display_cache.lookup (cache_key (library_ref));
+        }
+
+        public void cache_display (LibraryItemRef library_ref, DisplayMetadata display) {
+            if (!library_ref.is_valid ()) return;
+            display_cache.set (cache_key (library_ref), display);
         }
 
         /* ---- Internal ---- */
 
+        private static string cache_key (LibraryItemRef library_ref) {
+            return "%s::%s".printf (library_ref.library_id, library_ref.item_id);
+        }
+
+        private HashTable<string, GenericArray<LibraryItemRef>> group_refs_by_library (
+            LibraryItemRef[] refs) {
+            var grouped = new HashTable<string, GenericArray<LibraryItemRef>> (
+                str_hash, str_equal);
+            foreach (var r in refs) {
+                if (r == null || !r.is_valid ()) continue;
+                var bucket = grouped.lookup (r.library_id);
+                if (bucket == null) {
+                    bucket = new GenericArray<LibraryItemRef> ();
+                    grouped.insert (r.library_id, bucket);
+                }
+                bucket.add (r);
+            }
+            return grouped;
+        }
+
         /**
-         * Cache metadata from browse/search result items that include it inline.
+         * Cache display metadata from browse/search items that include a library_ref + display.
          */
-        private void cache_items_from_array (Json.Array items) {
+        private void cache_display_from_items (Json.Array items) {
             for (uint i = 0; i < items.get_length (); i++) {
                 var item = items.get_object_element (i);
-                if (item.has_member ("itemId") && item.has_member ("metadata") &&
-                    !item.get_null_member ("metadata")) {
-                    var item_id = item.get_string_member ("itemId");
-                    metadata_cache.set (item_id, item.get_object_member ("metadata"));
+                LibraryItemRef? library_ref = null;
+                if (item.has_member ("ref") && !item.get_null_member ("ref")) {
+                    library_ref = LibraryItemRef.from_json (item.get_object_member ("ref"));
+                }
+                if (library_ref == null || !library_ref.is_valid ()) continue;
+                if (item.has_member ("display") && !item.get_null_member ("display")) {
+                    var display = DisplayMetadata.from_json (
+                        item.get_object_member ("display"));
+                    display_cache.set (cache_key (library_ref), display);
                 }
             }
         }

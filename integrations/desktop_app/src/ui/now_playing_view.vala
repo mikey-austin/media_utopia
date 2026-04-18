@@ -8,6 +8,8 @@ namespace Mu {
 
         /* Service dependencies */
         private RendererStateRepository state_repo;
+        private ZoneStateRepository zone_state_repo;
+        private NodeRepository node_repo;
         private ActiveRendererRepository active_repo;
         private CommandCorrelator correlator;
         private LeaseManager lease_mgr;
@@ -24,6 +26,11 @@ namespace Mu {
         private AudioVisualizer visualizer;
         private SeekBar seek_bar;
         private TransportControls transport;
+        private Gtk.Label route_renderer_label;
+        private Gtk.Label route_session_label;
+        private Gtk.Label route_hint_label;
+        private Gtk.Label route_zone_count_label;
+        private Gtk.Box route_zone_list;
 
         /* Placeholder shown when nothing is playing */
         private Gtk.Box placeholder_box;
@@ -33,25 +40,35 @@ namespace Mu {
         private ulong state_changed_id = 0;
         private ulong active_changed_id = 0;
         private ulong spectrum_handler_id = 0;
+        private ulong node_added_id = 0;
+        private ulong node_removed_id = 0;
+        private ulong node_updated_id = 0;
+        private ulong zone_state_changed_id = 0;
 
         /* Volume debounce */
         private uint volume_debounce_id = 0;
+        private HashTable<string, uint> zone_volume_timers;
 
         /* Track last loaded artwork URL to avoid redundant loads */
         private string last_artwork_url = "";
 
         public NowPlayingView (RendererStateRepository state_repo,
+                               ZoneStateRepository zone_state_repo,
+                               NodeRepository node_repo,
                                ActiveRendererRepository active_repo,
                                CommandCorrelator correlator,
                                LeaseManager lease_mgr,
                                ArtworkLoader artwork_loader,
                                LocalRenderer? local_renderer = null) {
             this.state_repo = state_repo;
+            this.zone_state_repo = zone_state_repo;
+            this.node_repo = node_repo;
             this.active_repo = active_repo;
             this.correlator = correlator;
             this.lease_mgr = lease_mgr;
             this.artwork_loader = artwork_loader;
             this.local_renderer = local_renderer;
+            this.zone_volume_timers = new HashTable<string, uint> (str_hash, str_equal);
 
             build_ui ();
             connect_signals ();
@@ -63,12 +80,12 @@ namespace Mu {
         private void build_ui () {
             add_css_class ("now-playing-view");
 
-            /* Main horizontal layout: artwork | info */
+            /* Main horizontal layout: artwork | info | routing */
             var hbox = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 32);
             hbox.hexpand = true;
             hbox.vexpand = true;
-            hbox.valign = Gtk.Align.CENTER;
-            hbox.halign = Gtk.Align.CENTER;
+            hbox.valign = Gtk.Align.FILL;
+            hbox.halign = Gtk.Align.FILL;
             hbox.margin_start = 40;
             hbox.margin_end = 40;
             hbox.margin_top = 24;
@@ -126,7 +143,7 @@ namespace Mu {
             var right_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
             right_box.hexpand = true;
             right_box.valign = Gtk.Align.CENTER;
-            right_box.width_request = 300;
+            right_box.width_request = 380;
 
             /* Placeholder for when nothing is playing */
             placeholder_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 12);
@@ -212,6 +229,70 @@ namespace Mu {
             right_box.append (metadata_box);
             hbox.append (right_box);
 
+            /* --- Desktop routing panel --- */
+            var route_panel = new Gtk.Box (Gtk.Orientation.VERTICAL, 12);
+            route_panel.add_css_class ("now-playing-side-panel");
+            route_panel.width_request = 320;
+            route_panel.valign = Gtk.Align.FILL;
+
+            var route_title = new Gtk.Label ("Playback Routing");
+            route_title.add_css_class ("heading-medium");
+            route_title.halign = Gtk.Align.START;
+            route_panel.append (route_title);
+
+            var route_card = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
+            route_card.add_css_class ("mu-card");
+            route_card.add_css_class ("now-playing-side-card");
+
+            route_renderer_label = new Gtk.Label ("No renderer selected");
+            route_renderer_label.add_css_class ("renderer-name");
+            route_renderer_label.halign = Gtk.Align.START;
+            route_renderer_label.ellipsize = Pango.EllipsizeMode.END;
+            route_card.append (route_renderer_label);
+
+            route_session_label = new Gtk.Label ("");
+            route_session_label.add_css_class ("renderer-status");
+            route_session_label.halign = Gtk.Align.START;
+            route_session_label.wrap = true;
+            route_card.append (route_session_label);
+
+            route_hint_label = new Gtk.Label ("");
+            route_hint_label.add_css_class ("meta-label");
+            route_hint_label.halign = Gtk.Align.START;
+            route_hint_label.wrap = true;
+            route_card.append (route_hint_label);
+
+            route_panel.append (route_card);
+
+            var zones_title_box = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
+
+            var zones_title = new Gtk.Label ("Zones");
+            zones_title.add_css_class ("heading-small");
+            zones_title.halign = Gtk.Align.START;
+            zones_title.hexpand = true;
+            zones_title_box.append (zones_title);
+
+            route_zone_count_label = new Gtk.Label ("");
+            route_zone_count_label.add_css_class ("meta-label");
+            route_zone_count_label.halign = Gtk.Align.END;
+            zones_title_box.append (route_zone_count_label);
+
+            route_panel.append (zones_title_box);
+
+            var zones_scroll = new Gtk.ScrolledWindow ();
+            zones_scroll.hscrollbar_policy = Gtk.PolicyType.NEVER;
+            zones_scroll.vscrollbar_policy = Gtk.PolicyType.AUTOMATIC;
+            zones_scroll.hexpand = true;
+            zones_scroll.vexpand = true;
+            zones_scroll.min_content_height = 260;
+
+            route_zone_list = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
+            route_zone_list.add_css_class ("now-playing-zone-list");
+            zones_scroll.child = route_zone_list;
+            route_panel.append (zones_scroll);
+
+            hbox.append (route_panel);
+
             this.child = hbox;
         }
 
@@ -219,11 +300,40 @@ namespace Mu {
             state_changed_id = state_repo.state_changed.connect ((node_id, state) => {
                 if (node_id == active_repo.active_renderer_id) {
                     apply_state (state);
+                    refresh_route_summary (state);
                 }
             });
 
             active_changed_id = active_repo.active_renderer_changed.connect ((node_id) => {
                 refresh_from_state ();
+                rebuild_route_panel ();
+            });
+
+            node_added_id = node_repo.node_added.connect ((presence) => {
+                if (presence.kind == "zone" || presence.node_id == active_repo.active_renderer_id) {
+                    rebuild_route_panel ();
+                }
+            });
+
+            node_removed_id = node_repo.node_removed.connect ((node_id) => {
+                if (node_id == active_repo.active_renderer_id) {
+                    refresh_route_summary (null);
+                }
+                rebuild_route_panel ();
+            });
+
+            node_updated_id = node_repo.node_updated.connect ((presence) => {
+                if (presence.kind == "zone" || presence.node_id == active_repo.active_renderer_id ||
+                    presence.kind == "zone_controller") {
+                    rebuild_route_panel ();
+                }
+            });
+
+            zone_state_changed_id = zone_state_repo.state_changed.connect ((node_id, state) => {
+                var presence = node_repo.get_node (node_id);
+                if (presence != null && presence.kind == "zone") {
+                    rebuild_route_zone_list ();
+                }
             });
 
             /* Wire spectrum data from local renderer to visualizer */
@@ -235,6 +345,9 @@ namespace Mu {
                     }
                 });
             }
+
+            refresh_route_summary (null);
+            rebuild_route_zone_list ();
         }
 
         /* ---- State application ---- */
@@ -243,16 +356,19 @@ namespace Mu {
             var renderer_id = active_repo.active_renderer_id;
             if (renderer_id.length == 0) {
                 show_placeholder ();
+                refresh_route_summary (null);
                 return;
             }
 
             var state = state_repo.get_state (renderer_id);
             if (state == null) {
                 show_placeholder ();
+                refresh_route_summary (null);
                 return;
             }
 
             apply_state (state);
+            refresh_route_summary (state);
         }
 
         private void show_placeholder () {
@@ -262,19 +378,17 @@ namespace Mu {
             last_artwork_url = "";
             artwork.visible = false;
             art_placeholder.visible = true;
+            refresh_route_summary (null);
         }
 
         private void apply_state (RendererState state) {
-            /* Update metadata from current item */
-            if (state.current != null && state.current.metadata != null) {
-                var meta = state.current.metadata;
+            /* Update display metadata from current item */
+            if (state.current != null && state.current.display != null) {
+                var display = state.current.display;
 
-                var track_title = meta.has_member ("title")
-                    ? meta.get_string_member ("title") : "";
-                var artist = meta.has_member ("artist")
-                    ? meta.get_string_member ("artist") : "";
-                var album = meta.has_member ("album")
-                    ? meta.get_string_member ("album") : "";
+                var track_title = display.title;
+                var artist = display.artist_display ();
+                var album = display.album;
 
                 if (track_title.length > 0) {
                     title_label.label = track_title;
@@ -288,15 +402,19 @@ namespace Mu {
                     return;
                 }
 
-                /* HiRes badge */
-                hires_badge.update_from_metadata (meta);
+                /* HiRes badge — display block doesn't carry sample/bit info,
+                 * so the badge stays collapsed for now. */
+                hires_badge.update_from_metadata (null);
 
                 /* Load artwork */
-                var art_url = meta.has_member ("artworkUrl")
-                    ? meta.get_string_member ("artworkUrl") : "";
-                if (art_url != null && art_url.length > 0 && art_url != last_artwork_url) {
+                var art_url = display.artwork_url;
+                if (art_url.length > 0 && art_url != last_artwork_url) {
                     last_artwork_url = art_url;
+                    var requested_url = art_url;
                     artwork_loader.load_async (art_url, (texture) => {
+                        if (requested_url != last_artwork_url) {
+                            return;
+                        }
                         if (texture != null) {
                             artwork.paintable = texture;
                             artwork.visible = true;
@@ -306,7 +424,7 @@ namespace Mu {
                             art_placeholder.visible = true;
                         }
                     });
-                } else if (art_url == null || art_url.length == 0) {
+                } else if (art_url.length == 0) {
                     last_artwork_url = "";
                     artwork.visible = false;
                     art_placeholder.visible = true;
@@ -342,6 +460,319 @@ namespace Mu {
                 transport.shuffle = state.queue.shuffle;
                 transport.repeat_mode = state.queue.repeat_mode;
             }
+        }
+
+        /* ---- Routing panel ---- */
+
+        private void rebuild_route_panel () {
+            refresh_route_summary (state_repo.get_state (active_repo.active_renderer_id));
+            rebuild_route_zone_list ();
+        }
+
+        private void refresh_route_summary (RendererState? state) {
+            if (route_renderer_label == null) return;
+
+            var renderer_name = get_active_renderer_name ();
+            route_renderer_label.label = renderer_name;
+
+            if (state != null && state.session != null && state.session.owner.length > 0) {
+                route_session_label.label = "Session owner: %s".printf (state.session.owner);
+                route_session_label.visible = true;
+            } else {
+                route_session_label.label = "Ready to take control";
+                route_session_label.visible = true;
+            }
+
+            var renderer_source_id = get_active_renderer_source_id ();
+            if (renderer_source_id.length > 0) {
+                route_hint_label.label = "Zone assignment enabled for source %s"
+                    .printf (humanize_source_id (renderer_source_id).up ());
+            } else {
+                route_hint_label.label = "Zone assignment unavailable for this renderer";
+            }
+        }
+
+        private void rebuild_route_zone_list () {
+            if (route_zone_list == null) return;
+
+            Gtk.Widget? child = route_zone_list.get_first_child ();
+            while (child != null) {
+                var next = child.get_next_sibling ();
+                route_zone_list.remove (child);
+                child = next;
+            }
+
+            var zones = node_repo.get_zones ();
+            uint zone_count = 0;
+            for (uint i = 0; i < zones.length; i++) {
+                var zone = zones[i];
+                if (zone.kind != "zone") continue;
+                zone_count++;
+                route_zone_list.append (build_route_zone_row (zone));
+            }
+
+            route_zone_count_label.label = zone_count == 0
+                ? "No zones" : "%u discovered".printf (zone_count);
+
+            if (zone_count == 0) {
+                var empty = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
+                empty.add_css_class ("mu-card");
+                empty.add_css_class ("now-playing-side-card");
+
+                var title = new Gtk.Label ("No zones discovered");
+                title.add_css_class ("heading-small");
+                title.halign = Gtk.Align.START;
+                empty.append (title);
+
+                var subtitle = new Gtk.Label (
+                    "Zone controls appear here when a zone controller is online.");
+                subtitle.add_css_class ("meta-label");
+                subtitle.halign = Gtk.Align.START;
+                subtitle.wrap = true;
+                empty.append (subtitle);
+
+                route_zone_list.append (empty);
+            }
+        }
+
+        private Gtk.Box build_route_zone_row (Presence zone) {
+            var connected = get_zone_connected (zone.node_id);
+            var renderer_source_id = get_active_renderer_source_id ();
+            var assignment_supported = renderer_source_id.length > 0;
+            var zone_source_id = get_zone_source_id (zone.node_id);
+            var assigned = assignment_supported && zone_source_id == renderer_source_id;
+
+            var card = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
+            card.add_css_class ("mu-card");
+            card.add_css_class ("now-playing-zone-row");
+            if (assigned) {
+                card.add_css_class ("active");
+            }
+            if (!connected) {
+                card.add_css_class ("zone-card-offline");
+            }
+
+            var header = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
+
+            if (assignment_supported) {
+                var toggle = new Gtk.CheckButton ();
+                toggle.active = assigned;
+                toggle.sensitive = connected;
+                toggle.valign = Gtk.Align.START;
+                toggle.toggled.connect (() => {
+                    send_zone_source_command (zone.node_id, toggle.active
+                        ? renderer_source_id : "");
+                });
+                header.append (toggle);
+            }
+
+            var text_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 2);
+            text_box.hexpand = true;
+
+            var name_label = new Gtk.Label (zone.name);
+            name_label.add_css_class ("heading-small");
+            name_label.halign = Gtk.Align.START;
+            name_label.ellipsize = Pango.EllipsizeMode.END;
+            text_box.append (name_label);
+
+            var source_label = new Gtk.Label (get_zone_current_source_name (zone));
+            source_label.add_css_class ("meta-label");
+            source_label.halign = Gtk.Align.START;
+            source_label.ellipsize = Pango.EllipsizeMode.END;
+            text_box.append (source_label);
+
+            header.append (text_box);
+
+            var status_label = new Gtk.Label (connected
+                ? "%d%%".printf ((int) (get_zone_volume (zone.node_id) * 100.0))
+                : "OFFLINE");
+            status_label.add_css_class ("meta-label");
+            status_label.halign = Gtk.Align.END;
+            header.append (status_label);
+
+            card.append (header);
+
+            var controls = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
+            controls.sensitive = connected;
+
+            var mute_btn = new Gtk.Button ();
+            mute_btn.add_css_class ("flat");
+            mute_btn.icon_name = get_zone_muted (zone.node_id)
+                ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic";
+            mute_btn.tooltip_text = get_zone_muted (zone.node_id) ? "Unmute" : "Mute";
+            mute_btn.clicked.connect (() => {
+                send_zone_mute_command (zone.node_id, !get_zone_muted (zone.node_id));
+            });
+            controls.append (mute_btn);
+
+            var scale = new Gtk.Scale.with_range (
+                Gtk.Orientation.HORIZONTAL, 0.0, 100.0, 1.0);
+            scale.hexpand = true;
+            scale.draw_value = false;
+            scale.add_css_class ("volume-scale");
+            scale.set_value (get_zone_volume (zone.node_id) * 100.0);
+            scale.value_changed.connect (() => {
+                debounce_zone_volume (zone.node_id, scale.get_value () / 100.0);
+                status_label.label = "%d%%".printf ((int) scale.get_value ());
+            });
+            controls.append (scale);
+
+            card.append (controls);
+
+            return card;
+        }
+
+        private void debounce_zone_volume (string zone_id, double volume) {
+            var existing = zone_volume_timers.lookup (zone_id);
+            if (existing != 0) {
+                Source.remove (existing);
+            }
+
+            var timer_id = Timeout.add (150, () => {
+                zone_volume_timers.remove (zone_id);
+                send_zone_volume_command (zone_id, volume);
+                return Source.REMOVE;
+            });
+            zone_volume_timers.set (zone_id, timer_id);
+        }
+
+        private void send_zone_volume_command (string zone_id, double volume) {
+            var body = new Json.Object ();
+            body.set_string_member ("zoneId", zone_id);
+            body.set_double_member ("volume", volume);
+            send_zone_command ("zone.setVolume", zone_id, body);
+        }
+
+        private void send_zone_mute_command (string zone_id, bool mute) {
+            var body = new Json.Object ();
+            body.set_string_member ("zoneId", zone_id);
+            body.set_boolean_member ("mute", mute);
+            send_zone_command ("zone.setMute", zone_id, body);
+        }
+
+        private void send_zone_source_command (string zone_id, string source_id) {
+            var body = new Json.Object ();
+            body.set_string_member ("zoneId", zone_id);
+            body.set_string_member ("sourceId", source_id);
+            send_zone_command ("zone.selectSource", zone_id, body);
+        }
+
+        private void send_zone_command (string cmd_type, string zone_id, Json.Object body) {
+            var controller_id = get_zone_controller_id (zone_id);
+            if (controller_id == null || controller_id.length == 0) {
+                warning ("NowPlayingView: no zone controller available for %s", zone_id);
+                return;
+            }
+            correlator.send_fire_and_forget (controller_id, cmd_type, body);
+        }
+
+        private string get_active_renderer_name () {
+            var renderer_id = active_repo.active_renderer_id;
+            if (renderer_id.length == 0) {
+                return "No renderer selected";
+            }
+
+            if (local_renderer != null && renderer_id == local_renderer.node_id) {
+                return local_renderer.name;
+            }
+
+            var presence = node_repo.get_node (renderer_id);
+            if (presence != null && presence.name.length > 0) {
+                return presence.name;
+            }
+
+            return renderer_id;
+        }
+
+        private string get_active_renderer_source_id () {
+            var renderer_id = active_repo.active_renderer_id;
+            if (renderer_id.length == 0) return "";
+
+            var presence = node_repo.get_node (renderer_id);
+            if (presence != null && presence.source != null) {
+                return presence.source ?? "";
+            }
+
+            return "";
+        }
+
+        private bool get_zone_connected (string zone_id) {
+            var state = zone_state_repo.get_state (zone_id);
+            return state != null ? state.connected : true;
+        }
+
+        private double get_zone_volume (string zone_id) {
+            var state = zone_state_repo.get_state (zone_id);
+            return state != null ? state.volume : 0.0;
+        }
+
+        private bool get_zone_muted (string zone_id) {
+            var state = zone_state_repo.get_state (zone_id);
+            return state != null ? state.mute : false;
+        }
+
+        private string get_zone_source_id (string zone_id) {
+            var state = zone_state_repo.get_state (zone_id);
+            return state != null ? state.source_id : "";
+        }
+
+        private string get_zone_current_source_name (Presence zone) {
+            var source_id = get_zone_source_id (zone.node_id);
+            if (source_id.length == 0) return "No source selected";
+
+            var sources = get_zone_sources (zone);
+            if (sources != null) {
+                for (uint i = 0; i < sources.length; i++) {
+                    if (sources[i].id == source_id) {
+                        return sources[i].name;
+                    }
+                }
+            }
+
+            return humanize_source_id (source_id);
+        }
+
+        private GenericArray<PresenceSource>? get_zone_sources (Presence zone) {
+            if (zone.sources != null && zone.sources.length > 0) {
+                return zone.sources;
+            }
+
+            if (zone.controller_id.length > 0) {
+                var controller = node_repo.get_node (zone.controller_id);
+                if (controller != null && controller.sources != null &&
+                    controller.sources.length > 0) {
+                    return controller.sources;
+                }
+            }
+
+            var controllers = node_repo.get_zone_controllers ();
+            if (controllers.length > 0 && controllers[0].sources != null &&
+                controllers[0].sources.length > 0) {
+                return controllers[0].sources;
+            }
+
+            return null;
+        }
+
+        private string? get_zone_controller_id (string zone_id) {
+            var zone = node_repo.get_node (zone_id);
+            if (zone != null && zone.controller_id.length > 0) {
+                return zone.controller_id;
+            }
+
+            var controllers = node_repo.get_zone_controllers ();
+            if (controllers.length > 0) {
+                return controllers[0].node_id;
+            }
+
+            return null;
+        }
+
+        private string humanize_source_id (string source_id) {
+            if (source_id.contains (":")) {
+                return source_id.substring (source_id.last_index_of_char (':') + 1);
+            }
+            return source_id;
         }
 
         /* ---- Command dispatch ---- */

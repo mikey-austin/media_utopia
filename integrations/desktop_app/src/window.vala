@@ -15,6 +15,7 @@ namespace Mu {
         private LeaseManager lease_mgr;
         private NodeRepository node_repo;
         private RendererStateRepository state_repo;
+        private ZoneStateRepository zone_state_repo;
         private ActiveRendererRepository active_renderer_repo;
         private LibraryRepository library_repo;
         private PlaylistRepository playlist_repo;
@@ -45,6 +46,7 @@ namespace Mu {
                         LeaseManager lease_mgr,
                         NodeRepository node_repo,
                         RendererStateRepository state_repo,
+                        ZoneStateRepository zone_state_repo,
                         ActiveRendererRepository active_renderer_repo,
                         LibraryRepository library_repo,
                         PlaylistRepository playlist_repo,
@@ -59,6 +61,7 @@ namespace Mu {
             this.lease_mgr = lease_mgr;
             this.node_repo = node_repo;
             this.state_repo = state_repo;
+            this.zone_state_repo = zone_state_repo;
             this.active_renderer_repo = active_renderer_repo;
             this.library_repo = library_repo;
             this.playlist_repo = playlist_repo;
@@ -247,8 +250,9 @@ namespace Mu {
 
             /* Add view stubs */
             content_stack.add_named (
-                new Mu.NowPlayingView (state_repo, active_renderer_repo,
-                    correlator, lease_mgr, artwork_loader, local_renderer),
+                new Mu.NowPlayingView (state_repo, zone_state_repo, node_repo,
+                    active_renderer_repo, correlator, lease_mgr,
+                    artwork_loader, local_renderer),
                 "now-playing");
             content_stack.add_named (
                 new Mu.QueueView (state_repo, active_renderer_repo,
@@ -263,7 +267,7 @@ namespace Mu {
                     active_renderer_repo, lease_mgr, mqtt),
                 "renderers");
             content_stack.add_named (
-                new Mu.ZonesView (node_repo, state_repo, correlator),
+                new Mu.ZonesView (node_repo, zone_state_repo, correlator),
                 "zones");
             content_stack.add_named (
                 new Mu.SettingsView (settings, mqtt), "settings");

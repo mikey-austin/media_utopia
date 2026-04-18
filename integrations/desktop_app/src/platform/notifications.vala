@@ -12,7 +12,7 @@ namespace Mu {
         private ActiveRendererRepository active_repo;
 
         /* Tracking for dedup / debounce */
-        private string? last_item_id = null;
+        private string? last_entry_key = null;
         private int64 last_notify_time = 0;  /* microseconds (GLib.get_real_time) */
 
         private const int64 DEBOUNCE_US = 2000000;  /* 2 seconds in microseconds */
@@ -43,15 +43,25 @@ namespace Mu {
             /* Only react to the active renderer */
             if (node_id != active_repo.active_renderer_id) return;
 
-            /* Must have a current item with metadata */
-            if (state.current == null || state.current.metadata == null) return;
-            if (state.current.item_id.length == 0) return;
+            /* Must have a current item with display metadata */
+            if (state.current == null || state.current.display == null) return;
+
+            /* Build a stable key for dedup: prefer the library library_ref, fall back
+             * to the queue entry id. */
+            string entry_key = "";
+            if (state.current.library_ref != null && state.current.library_ref.is_valid ()) {
+                entry_key = "%s::%s".printf (
+                    state.current.library_ref.library_id, state.current.library_ref.item_id);
+            } else if (state.current.queue_entry_id.length > 0) {
+                entry_key = state.current.queue_entry_id;
+            }
+            if (entry_key.length == 0) return;
 
             /* Only notify when actually playing */
             if (state.playback == null || state.playback.status != "playing") return;
 
             /* Track must have changed */
-            if (state.current.item_id == last_item_id) return;
+            if (entry_key == last_entry_key) return;
 
             /* Check if the window is focused — skip notification if so */
             var window = app.active_window;
@@ -62,16 +72,13 @@ namespace Mu {
             if ((now - last_notify_time) < DEBOUNCE_US) return;
 
             /* All checks passed — send notification */
-            last_item_id = state.current.item_id;
+            last_entry_key = entry_key;
             last_notify_time = now;
 
-            var meta = state.current.metadata;
-            var title = meta.has_member ("title")
-                ? meta.get_string_member ("title") : "Unknown Track";
-            var artist = meta.has_member ("artist")
-                ? meta.get_string_member ("artist") : "";
-            var album = meta.has_member ("album")
-                ? meta.get_string_member ("album") : "";
+            var display = state.current.display;
+            var title = display.title.length > 0 ? display.title : "Unknown Track";
+            var artist = display.artist_display ();
+            var album = display.album;
 
             /* Build body: "Artist — Album" or just "Artist" or "Album" */
             string body;

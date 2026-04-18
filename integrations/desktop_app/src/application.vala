@@ -11,6 +11,7 @@ namespace Mu {
         private LeaseManager lease_mgr;
         private NodeRepository node_repo;
         private RendererStateRepository state_repo;
+        private ZoneStateRepository zone_state_repo;
         private ActiveRendererRepository active_renderer_repo;
         private LibraryRepository library_repo;
         private PlaylistRepository playlist_repo;
@@ -52,6 +53,7 @@ namespace Mu {
                     lease_mgr,
                     node_repo,
                     state_repo,
+                    zone_state_repo,
                     active_renderer_repo,
                     library_repo,
                     playlist_repo,
@@ -73,6 +75,7 @@ namespace Mu {
             correlator.cleanup ();
             node_repo.stop ();
             state_repo.stop ();
+            zone_state_repo.stop ();
             mqtt.disconnect_from_broker ();
 
             base.shutdown ();
@@ -109,20 +112,30 @@ namespace Mu {
             state_repo = new RendererStateRepository (mqtt);
             state_repo.start ();
 
-            /* 7. Active renderer repository */
+            /* 7. Zone state repository */
+            zone_state_repo = new ZoneStateRepository (mqtt);
+            zone_state_repo.start ();
+
+            /* 8. Active renderer repository */
             active_renderer_repo = new ActiveRendererRepository (app_settings, local_renderer_id);
 
-            /* 8. Library repository */
+            /* 9. Library repository */
             library_repo = new LibraryRepository (correlator, lease_mgr);
 
-            /* 9. Playlist repository */
+            /* 10. Playlist repository */
             playlist_repo = new PlaylistRepository (correlator, lease_mgr);
 
-            /* 10. Local GStreamer renderer */
+            /* 11. Local GStreamer renderer */
             local_renderer = new LocalRenderer (mqtt, local_renderer_id, identity);
             state_repo.register_local_source (local_renderer_id);
             local_renderer.state_updated.connect ((state) => {
                 state_repo.update_local_state (state);
+            });
+
+            node_repo.node_removed.connect ((node_id) => {
+                if (node_id == active_renderer_repo.active_renderer_id) {
+                    active_renderer_repo.set_active_renderer (local_renderer_id);
+                }
             });
 
             /* Temporary logging for MQTT discovery verification */
@@ -132,36 +145,26 @@ namespace Mu {
             });
             mqtt.connection_changed.connect ((conn_state) => {
                 message ("MQTT connection state: %s", conn_state.to_string ());
-                if (conn_state == ConnectionState.CONNECTED && !local_renderer_started) {
-                    local_renderer_started = true;
+                if (conn_state == ConnectionState.CONNECTED) {
+                    if (!local_renderer_started) {
+                        local_renderer_started = true;
+                        local_renderer.start ();
+                    }
 
-                    /* Start local renderer and register presence on first connect */
-                    local_renderer.start ();
-
-                    /* Register local renderer presence with node repo (bypasses MQTT) */
-                    var local_presence = new Presence ();
-                    local_presence.node_id = local_renderer_id;
-                    local_presence.kind = "renderer";
-                    local_presence.name = identity;
-                    local_presence.source = "desktop_app";
-                    var caps = new Json.Object ();
-                    caps.set_boolean_member ("seek", true);
-                    caps.set_boolean_member ("volume", true);
-                    local_presence.caps = caps;
-                    local_presence.ts = GLib.get_real_time () / 1000;
-                    node_repo.register_local (local_presence);
+                    local_renderer.on_broker_connected ();
+                    register_local_renderer_presence ();
                 }
             });
 
-            /* 11. MPRIS2 D-Bus media player interface */
+            /* 12. MPRIS2 D-Bus media player interface */
             mpris2 = new Mpris2 (this, state_repo, active_renderer_repo,
                 correlator, lease_mgr);
             mpris2.start ();
 
-            /* 12. Tray manager (keep-alive when window hidden) */
+            /* 13. Tray manager (keep-alive when window hidden) */
             tray_mgr = new TrayManager (this, app_settings);
 
-            /* 13. Desktop notifications on track change */
+            /* 14. Desktop notifications on track change */
             notifications = new Notifications (this, state_repo, active_renderer_repo);
 
             /* Connect to MQTT broker */
@@ -198,6 +201,22 @@ namespace Mu {
 
             message ("Connecting to MQTT broker at %s:%d (controller=%s)", host, port, controller_id);
             mqtt.connect_to_broker (host, port);
+        }
+
+        private void register_local_renderer_presence () {
+            var local_presence = new Presence ();
+            local_presence.node_id = local_renderer_id;
+            local_presence.kind = "renderer";
+            local_presence.name = identity;
+            var caps = new Json.Object ();
+            caps.set_boolean_member ("seek", true);
+            caps.set_boolean_member ("volume", true);
+            caps.set_boolean_member ("queue", true);
+            caps.set_boolean_member ("shuffle", true);
+            caps.set_boolean_member ("repeat", true);
+            local_presence.caps = caps;
+            local_presence.ts = GLib.get_real_time () / 1000;
+            node_repo.register_local (local_presence);
         }
 
         /**

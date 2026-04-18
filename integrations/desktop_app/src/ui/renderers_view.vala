@@ -425,13 +425,11 @@ namespace Mu {
             var status = state.playback.status;
 
             if (status == "playing" || status == "paused") {
-                /* Try to get title/artist from current item metadata */
-                if (state.current != null && state.current.metadata != null) {
-                    var meta = state.current.metadata;
-                    var track_title = meta.has_member ("title")
-                        ? meta.get_string_member ("title") : "";
-                    var artist = meta.has_member ("artist")
-                        ? meta.get_string_member ("artist") : "";
+                /* Try to get title/artist from current item display block */
+                if (state.current != null && state.current.display != null) {
+                    var display = state.current.display;
+                    var track_title = display.title;
+                    var artist = display.artist_display ();
 
                     if (track_title.length > 0) {
                         var playing_prefix = (status == "playing") ? "Playing" : "Paused";
@@ -451,18 +449,9 @@ namespace Mu {
         }
 
         private bool check_hires (RendererState state) {
-            if (state.current == null || state.current.metadata == null) return false;
-            var meta = state.current.metadata;
-
-            /* Check for high sample rate (> 44100) or high bit depth (> 16) */
-            if (meta.has_member ("sampleRate")) {
-                var sr = meta.get_int_member ("sampleRate");
-                if (sr > 44100) return true;
-            }
-            if (meta.has_member ("bitDepth")) {
-                var bd = meta.get_int_member ("bitDepth");
-                if (bd > 16) return true;
-            }
+            /* Display block does not carry sample rate / bit depth, so the
+             * hi-res indicator is unavailable until the protocol surfaces
+             * those fields again (e.g. via attributes on library.getItem). */
             return false;
         }
 

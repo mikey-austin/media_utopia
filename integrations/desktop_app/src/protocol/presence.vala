@@ -27,6 +27,7 @@ namespace Mu {
         public Json.Object? caps { get; set; default = null; }
         public Json.Object? endpoints { get; set; default = null; }
         public string? source { get; set; default = null; }
+        public string controller_id { get; set; default = ""; }
         public GenericArray<PresenceSource>? sources { get; set; default = null; }
         public int64 ts { get; set; default = 0; }
 
@@ -51,6 +52,9 @@ namespace Mu {
             }
             if (obj.has_member ("source") && !obj.get_null_member ("source")) {
                 presence.source = obj.get_string_member ("source");
+            }
+            if (obj.has_member ("controllerId") && !obj.get_null_member ("controllerId")) {
+                presence.controller_id = obj.get_string_member ("controllerId");
             }
 
             if (obj.has_member ("sources") && !obj.get_null_member ("sources")) {

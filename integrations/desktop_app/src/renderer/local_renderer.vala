@@ -71,6 +71,14 @@ namespace Mu {
             publish_presence ();
         }
 
+        /**
+         * Re-announce retained state after a broker reconnect.
+         */
+        public void on_broker_connected () {
+            publish_presence ();
+            do_publish_state ();
+        }
+
         public void stop () {
             /* Flush a final queue snapshot before shutdown */
             if (persist_source_id != 0) {
@@ -138,8 +146,12 @@ namespace Mu {
             if (current != null) {
                 var ci = new CurrentItemState ();
                 ci.queue_entry_id = current.queue_entry_id;
-                ci.item_id = current.item_id;
-                ci.metadata = current.metadata;
+                ci.library_ref = current.library_ref;
+                if (current.url.length > 0) {
+                    ci.resolved = new ResolvedSource.with_url (
+                        current.url, current.mime, current.byte_range);
+                }
+                ci.display = current.display;
                 state.current = ci;
             }
 
@@ -472,14 +484,7 @@ namespace Mu {
 
             var entries_arr = new Json.Array ();
             for (uint i = 0; i < snap.entries.length; i++) {
-                var item = snap.entries[i];
-                var item_obj = new Json.Object ();
-                item_obj.set_string_member ("queueEntryId", item.queue_entry_id);
-                item_obj.set_string_member ("itemId", item.item_id);
-                if (item.metadata != null) {
-                    item_obj.set_object_member ("metadata", item.metadata);
-                }
-                entries_arr.add_object_element (item_obj);
+                entries_arr.add_object_element (snap.entries[i].to_json ());
             }
             reply_body.set_array_member ("entries", entries_arr);
 
@@ -541,40 +546,34 @@ namespace Mu {
             for (uint i = 0; i < arr.get_length (); i++) {
                 var entry_obj = arr.get_object_element (i);
 
-                var item_id = "";
+                LibraryItemRef? library_ref = null;
                 if (entry_obj.has_member ("ref") && !entry_obj.get_null_member ("ref")) {
-                    /* Canonical wire format is ref: {id: "..."} (set by
-                     * QueueEntryBuilder.build); accept legacy ref as a
-                     * bare string too. Reading the wrong shape with
-                     * get_string_member fires a Json-CRITICAL and returns
-                     * NULL, which then trips LocalQueueEntry's non-null
-                     * item_id precondition and segfaults. */
-                    var ref_node = entry_obj.get_member ("ref");
-                    if (ref_node.get_node_type () == Json.NodeType.OBJECT) {
-                        var ref_obj = entry_obj.get_object_member ("ref");
-                        if (ref_obj.has_member ("id") &&
-                            !ref_obj.get_null_member ("id")) {
-                            item_id = ref_obj.get_string_member ("id");
-                        }
-                    } else if (ref_node.get_node_type () == Json.NodeType.VALUE) {
-                        item_id = entry_obj.get_string_member ("ref");
-                    }
+                    library_ref = LibraryItemRef.from_json (entry_obj.get_object_member ("ref"));
                 }
 
-                var url = "";
-                var mime = "";
+                string url = "";
+                string mime = "";
+                bool byte_range = false;
                 if (entry_obj.has_member ("resolved") && !entry_obj.get_null_member ("resolved")) {
                     var resolved = entry_obj.get_object_member ("resolved");
-                    url = resolved.has_member ("url") ? resolved.get_string_member ("url") : "";
-                    mime = resolved.has_member ("mime") ? resolved.get_string_member ("mime") : "";
+                    url = resolved.has_member ("url")
+                        ? (resolved.get_string_member ("url") ?? "") : "";
+                    mime = resolved.has_member ("mime")
+                        ? (resolved.get_string_member ("mime") ?? "") : "";
+                    byte_range = resolved.has_member ("byteRange")
+                        ? resolved.get_boolean_member ("byteRange") : false;
                 }
 
-                Json.Object? metadata = null;
-                if (entry_obj.has_member ("metadata") && !entry_obj.get_null_member ("metadata")) {
-                    metadata = entry_obj.get_object_member ("metadata");
+                DisplayMetadata? display = null;
+                if (entry_obj.has_member ("display") && !entry_obj.get_null_member ("display")) {
+                    display = DisplayMetadata.from_json (
+                        entry_obj.get_object_member ("display"));
                 }
 
-                result.add (new LocalQueueEntry (item_id, url, mime, metadata));
+                /* Skip entries that have neither a library_ref nor a playable URL. */
+                if (library_ref == null && url.length == 0) continue;
+
+                result.add (new LocalQueueEntry (library_ref, url, mime, byte_range, display));
             }
 
             return result;
@@ -759,9 +758,11 @@ namespace Mu {
             var caps = new Json.Object ();
             caps.set_boolean_member ("seek", true);
             caps.set_boolean_member ("volume", true);
+            caps.set_boolean_member ("queue", true);
+            caps.set_boolean_member ("shuffle", true);
+            caps.set_boolean_member ("repeat", true);
             obj.set_object_member ("caps", caps);
 
-            obj.set_string_member ("source", "desktop_app");
             obj.set_int_member ("ts", now_ms ());
 
             var json = json_obj_to_string (obj);
@@ -812,9 +813,16 @@ namespace Mu {
             if (state.current != null) {
                 var ci = new Json.Object ();
                 ci.set_string_member ("queueEntryId", state.current.queue_entry_id);
-                ci.set_string_member ("itemId", state.current.item_id);
-                if (state.current.metadata != null) {
-                    ci.set_object_member ("metadata", state.current.metadata);
+                if (state.current.library_ref != null && state.current.library_ref.is_valid ()) {
+                    ci.set_object_member ("ref", state.current.library_ref.to_json ());
+                }
+                if (state.current.resolved != null &&
+                    state.current.resolved.url.length > 0) {
+                    ci.set_object_member ("resolved",
+                        state.current.resolved.to_json ());
+                }
+                if (state.current.display != null) {
+                    ci.set_object_member ("display", state.current.display.to_json ());
                 }
                 obj.set_object_member ("current", ci);
             } else {
@@ -860,11 +868,16 @@ namespace Mu {
                 var entry = queue.entries[i];
                 var entry_obj = new Json.Object ();
                 entry_obj.set_string_member ("queueEntryId", entry.queue_entry_id);
-                entry_obj.set_string_member ("itemId", entry.item_id);
-                entry_obj.set_string_member ("url", entry.url);
-                entry_obj.set_string_member ("mime", entry.mime);
-                if (entry.metadata != null) {
-                    entry_obj.set_object_member ("metadata", entry.metadata);
+                if (entry.library_ref != null && entry.library_ref.is_valid ()) {
+                    entry_obj.set_object_member ("ref", entry.library_ref.to_json ());
+                }
+                if (entry.url.length > 0) {
+                    var resolved = new ResolvedSource.with_url (
+                        entry.url, entry.mime, entry.byte_range);
+                    entry_obj.set_object_member ("resolved", resolved.to_json ());
+                }
+                if (entry.display != null) {
+                    entry_obj.set_object_member ("display", entry.display.to_json ());
                 }
                 entries_arr.add_object_element (entry_obj);
             }
@@ -912,17 +925,38 @@ namespace Mu {
                     var entry_obj = arr.get_object_element (i);
                     var qeid = entry_obj.has_member ("queueEntryId")
                         ? entry_obj.get_string_member ("queueEntryId") : "";
-                    var item_id = entry_obj.has_member ("itemId")
-                        ? entry_obj.get_string_member ("itemId") : "";
-                    var url = entry_obj.has_member ("url")
-                        ? entry_obj.get_string_member ("url") : "";
-                    var mime = entry_obj.has_member ("mime")
-                        ? entry_obj.get_string_member ("mime") : "";
-                    Json.Object? metadata = null;
-                    if (entry_obj.has_member ("metadata") && !entry_obj.get_null_member ("metadata")) {
-                        metadata = entry_obj.get_object_member ("metadata");
+
+                    LibraryItemRef? library_ref = null;
+                    if (entry_obj.has_member ("ref") && !entry_obj.get_null_member ("ref")) {
+                        library_ref = LibraryItemRef.from_json (
+                            entry_obj.get_object_member ("ref"));
                     }
-                    restored_entries.add (new LocalQueueEntry.with_id (qeid, item_id, url, mime, metadata));
+
+                    string url = "";
+                    string mime = "";
+                    bool byte_range = false;
+                    if (entry_obj.has_member ("resolved") &&
+                        !entry_obj.get_null_member ("resolved")) {
+                        var resolved = entry_obj.get_object_member ("resolved");
+                        url = resolved.has_member ("url")
+                            ? (resolved.get_string_member ("url") ?? "") : "";
+                        mime = resolved.has_member ("mime")
+                            ? (resolved.get_string_member ("mime") ?? "") : "";
+                        byte_range = resolved.has_member ("byteRange")
+                            ? resolved.get_boolean_member ("byteRange") : false;
+                    }
+
+                    DisplayMetadata? display = null;
+                    if (entry_obj.has_member ("display") &&
+                        !entry_obj.get_null_member ("display")) {
+                        display = DisplayMetadata.from_json (
+                            entry_obj.get_object_member ("display"));
+                    }
+
+                    if (library_ref == null && url.length == 0) continue;
+
+                    restored_entries.add (new LocalQueueEntry.with_id (
+                        qeid, library_ref, url, mime, byte_range, display));
                 }
             }
 

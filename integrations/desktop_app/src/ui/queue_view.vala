@@ -25,7 +25,7 @@ namespace Mu {
         private Gtk.ScrolledWindow scroll;
 
         /* Cached queue data */
-        private GenericArray<QueueItem> items;
+        private GenericArray<QueueEntry> items;
         private int64 current_index = -1;
         private int64 last_revision = -1;
         private bool shuffle_on = false;
@@ -48,7 +48,7 @@ namespace Mu {
             this.correlator = correlator;
             this.lease_mgr = lease_mgr;
             this.artwork_loader = artwork_loader;
-            this.items = new GenericArray<QueueItem> ();
+            this.items = new GenericArray<QueueEntry> ();
 
             build_ui ();
             connect_signals ();
@@ -239,7 +239,7 @@ namespace Mu {
         }
 
         private void clear_list () {
-            items = new GenericArray<QueueItem> ();
+            items = new GenericArray<QueueEntry> ();
             current_index = -1;
             last_revision = -1;
             rebuild_list ();
@@ -251,13 +251,13 @@ namespace Mu {
                 return;
             }
 
-            /* Calculate total duration from metadata if available */
+            /* Calculate total duration from display if available */
             int64 total_ms = 0;
             bool has_duration = false;
             for (uint i = 0; i < items.length; i++) {
-                var meta = items[i].metadata;
-                if (meta != null && meta.has_member ("durationMs")) {
-                    total_ms += meta.get_int_member ("durationMs");
+                var display = items[i].display;
+                if (display != null && display.duration_ms > 0) {
+                    total_ms += display.duration_ms;
                     has_duration = true;
                 }
             }
@@ -273,7 +273,7 @@ namespace Mu {
             }
         }
 
-        private Gtk.ListBoxRow build_queue_row (int index, QueueItem item) {
+        private Gtk.ListBoxRow build_queue_row (int index, QueueEntry item) {
             var row = new Gtk.ListBoxRow ();
             row.name = index.to_string ();
             row.focusable = true;
@@ -324,18 +324,16 @@ namespace Mu {
             art_picture.visible = false;
             art.append (art_picture);
 
-            /* Load artwork from metadata */
-            if (item.metadata != null && item.metadata.has_member ("artworkUrl")) {
-                var art_url = item.metadata.get_string_member ("artworkUrl");
-                if (art_url != null && art_url.length > 0) {
-                    artwork_loader.load_async (art_url, (texture) => {
-                        if (texture != null && art_picture.get_parent () != null) {
-                            art_picture.paintable = texture;
-                            art_picture.visible = true;
-                            art_icon.visible = false;
-                        }
-                    });
-                }
+            /* Load artwork from display */
+            if (item.display != null && item.display.artwork_url.length > 0) {
+                var art_url = item.display.artwork_url;
+                artwork_loader.load_async (art_url, (texture) => {
+                    if (texture != null && art_picture.get_parent () != null) {
+                        art_picture.paintable = texture;
+                        art_picture.visible = true;
+                        art_icon.visible = false;
+                    }
+                });
             }
 
             card.append (art);
@@ -345,7 +343,7 @@ namespace Mu {
             text_box.hexpand = true;
             text_box.valign = Gtk.Align.CENTER;
 
-            var track_title = get_metadata_string (item, "title", "Unknown Track");
+            var track_title = get_display_title (item, "Unknown Track");
             var title_label = new Gtk.Label (track_title);
             title_label.add_css_class ("queue-track-title");
             title_label.halign = Gtk.Align.START;
@@ -356,7 +354,7 @@ namespace Mu {
             }
             text_box.append (title_label);
 
-            var artist = get_metadata_string (item, "artist", "Unknown Artist");
+            var artist = get_display_artist (item, "Unknown Artist");
             var artist_label = new Gtk.Label (artist);
             artist_label.add_css_class ("queue-track-artist");
             artist_label.halign = Gtk.Align.START;
@@ -503,7 +501,7 @@ namespace Mu {
             });
         }
 
-        private void on_remove_track (int index, QueueItem item) {
+        private void on_remove_track (int index, QueueEntry item) {
             /* Optimistic: remove from local list immediately */
             if (index >= 0 && index < (int) items.length) {
                 items.remove_index ((uint) index);
@@ -623,10 +621,17 @@ namespace Mu {
             }
         }
 
-        private string get_metadata_string (QueueItem item, string key, string fallback) {
-            if (item.metadata != null && item.metadata.has_member (key)) {
-                var val = item.metadata.get_string_member (key);
-                if (val != null && val.length > 0) return val;
+        private string get_display_title (QueueEntry item, string fallback) {
+            if (item.display != null && item.display.title.length > 0) {
+                return item.display.title;
+            }
+            return fallback;
+        }
+
+        private string get_display_artist (QueueEntry item, string fallback) {
+            if (item.display != null) {
+                var artist = item.display.artist_display ();
+                if (artist.length > 0) return artist;
             }
             return fallback;
         }

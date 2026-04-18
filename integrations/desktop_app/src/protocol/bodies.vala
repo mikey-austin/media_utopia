@@ -1,6 +1,4 @@
-/* bodies.vala — Command body builders and reply parsers for the MU protocol.
- * Ported from the Android app's Kotlin body classes.
- */
+/* bodies.vala — Command body builders and reply parsers for the MU protocol. */
 
 namespace Mu {
 
@@ -161,21 +159,35 @@ namespace Mu {
             return obj;
         }
 
-        public Json.Object resolve (string item_id, bool metadata_only = false) {
+        public Json.Object get_item (LibraryItemRef library_ref) {
             var obj = new Json.Object ();
-            obj.set_string_member ("itemId", item_id);
-            obj.set_boolean_member ("metadataOnly", metadata_only);
+            obj.set_object_member ("ref", library_ref.to_json ());
             return obj;
         }
 
-        public Json.Object resolve_batch (string[] item_ids, bool metadata_only = false) {
+        public Json.Object get_items (LibraryItemRef[] refs) {
             var obj = new Json.Object ();
             var arr = new Json.Array ();
-            foreach (var item_id in item_ids) {
-                arr.add_string_element (item_id);
+            foreach (var r in refs) {
+                arr.add_object_element (r.to_json ());
             }
-            obj.set_array_member ("itemIds", arr);
-            obj.set_boolean_member ("metadataOnly", metadata_only);
+            obj.set_array_member ("refs", arr);
+            return obj;
+        }
+
+        public Json.Object resolve_sources (LibraryItemRef library_ref) {
+            var obj = new Json.Object ();
+            obj.set_object_member ("ref", library_ref.to_json ());
+            return obj;
+        }
+
+        public Json.Object resolve_sources_batch (LibraryItemRef[] refs) {
+            var obj = new Json.Object ();
+            var arr = new Json.Array ();
+            foreach (var r in refs) {
+                arr.add_object_element (r.to_json ());
+            }
+            obj.set_array_member ("refs", arr);
             return obj;
         }
     }
@@ -201,69 +213,84 @@ namespace Mu {
 
     namespace QueueEntryBuilder {
 
-        public Json.Object build (string? ref_id, string? url, string? mime,
-                                   bool byte_range, Json.Object? metadata) {
+        /**
+         * Build a canonical queue entry: { library_ref?, resolved?, display? }.
+         * At least one of library_ref/resolved must be supplied; display is optional.
+         */
+        public Json.Object build (LibraryItemRef? library_ref, ResolvedSource? resolved,
+                                   DisplayMetadata? display) {
             var entry = new Json.Object ();
 
-            if (ref_id != null && ref_id.length > 0) {
-                var ref_obj = new Json.Object ();
-                ref_obj.set_string_member ("id", ref_id);
-                entry.set_object_member ("ref", ref_obj);
+            if (library_ref != null && library_ref.is_valid ()) {
+                entry.set_object_member ("ref", library_ref.to_json ());
             }
 
-            if (url != null && url.length > 0) {
-                var resolved = new Json.Object ();
-                if (ref_id != null && ref_id.length > 0) {
-                    resolved.set_string_member ("itemId", ref_id);
-                }
-                resolved.set_string_member ("url", url);
-                if (mime != null && mime.length > 0) {
-                    resolved.set_string_member ("mime", mime);
-                }
-                resolved.set_boolean_member ("byteRange", byte_range);
-                entry.set_object_member ("resolved", resolved);
+            if (resolved != null && resolved.url.length > 0) {
+                entry.set_object_member ("resolved", resolved.to_json ());
             }
 
-            if (metadata != null) {
-                entry.set_object_member ("metadata", metadata);
+            if (display != null) {
+                entry.set_object_member ("display", display.to_json ());
             }
 
             return entry;
         }
     }
 
-    /* ---- Reply parsers ---- */
+    /* ---- Reply / queue entry parsing ---- */
 
-    public class QueueItem : GLib.Object {
+    public class QueueEntry : GLib.Object {
         public string queue_entry_id { get; set; default = ""; }
-        public string item_id { get; set; default = ""; }
-        public Json.Object? metadata { get; set; default = null; }
+        public LibraryItemRef? library_ref { get; set; default = null; }
+        public ResolvedSource? resolved { get; set; default = null; }
+        public DisplayMetadata? display { get; set; default = null; }
 
-        public QueueItem () {
+        public QueueEntry () {
             Object ();
         }
 
-        public static QueueItem from_json (Json.Object obj) {
-            var item = new QueueItem ();
+        public static QueueEntry from_json (Json.Object obj) {
+            var item = new QueueEntry ();
             item.queue_entry_id = obj.has_member ("queueEntryId")
                 ? obj.get_string_member ("queueEntryId") : "";
-            item.item_id = obj.has_member ("itemId")
-                ? obj.get_string_member ("itemId") : "";
-            if (obj.has_member ("metadata") && !obj.get_null_member ("metadata")) {
-                item.metadata = obj.get_object_member ("metadata");
+            if (obj.has_member ("ref") && !obj.get_null_member ("ref")) {
+                item.library_ref = LibraryItemRef.from_json (obj.get_object_member ("ref"));
+            }
+            if (obj.has_member ("resolved") && !obj.get_null_member ("resolved")) {
+                item.resolved = ResolvedSource.from_json (obj.get_object_member ("resolved"));
+            }
+            if (obj.has_member ("display") && !obj.get_null_member ("display")) {
+                item.display = DisplayMetadata.from_json (obj.get_object_member ("display"));
             }
             return item;
+        }
+
+        public Json.Object to_json () {
+            var obj = new Json.Object ();
+            if (queue_entry_id.length > 0) {
+                obj.set_string_member ("queueEntryId", queue_entry_id);
+            }
+            if (library_ref != null && library_ref.is_valid ()) {
+                obj.set_object_member ("ref", library_ref.to_json ());
+            }
+            if (resolved != null && resolved.url.length > 0) {
+                obj.set_object_member ("resolved", resolved.to_json ());
+            }
+            if (display != null) {
+                obj.set_object_member ("display", display.to_json ());
+            }
+            return obj;
         }
     }
 
     public class QueueGetReply : GLib.Object {
         public int64 revision { get; set; default = 0; }
         public int64 index { get; set; default = -1; }
-        public GenericArray<QueueItem> entries { get; set; }
+        public GenericArray<QueueEntry> entries { get; set; }
 
         public QueueGetReply () {
             Object ();
-            entries = new GenericArray<QueueItem> ();
+            entries = new GenericArray<QueueEntry> ();
         }
 
         public static QueueGetReply from_json (Json.Object obj) {
@@ -276,7 +303,7 @@ namespace Mu {
             if (obj.has_member ("entries") && !obj.get_null_member ("entries")) {
                 var arr = obj.get_array_member ("entries");
                 for (uint i = 0; i < arr.get_length (); i++) {
-                    reply.entries.add (QueueItem.from_json (arr.get_object_element (i)));
+                    reply.entries.add (QueueEntry.from_json (arr.get_object_element (i)));
                 }
             }
 
@@ -326,6 +353,75 @@ namespace Mu {
             }
 
             return reply;
+        }
+    }
+
+    /* ---- Library reply parsers ---- */
+
+    public class LibraryItemReply : GLib.Object {
+        public LibraryItemRef? library_ref { get; set; default = null; }
+        public DisplayMetadata? display { get; set; default = null; }
+        public Json.Object? attributes { get; set; default = null; }
+        public string err_code { get; set; default = ""; }
+        public string err_message { get; set; default = ""; }
+
+        public LibraryItemReply () {
+            Object ();
+        }
+
+        public static LibraryItemReply from_json (Json.Object obj) {
+            var item = new LibraryItemReply ();
+            if (obj.has_member ("ref") && !obj.get_null_member ("ref")) {
+                item.library_ref = LibraryItemRef.from_json (obj.get_object_member ("ref"));
+            }
+            if (obj.has_member ("display") && !obj.get_null_member ("display")) {
+                item.display = DisplayMetadata.from_json (obj.get_object_member ("display"));
+            }
+            if (obj.has_member ("attributes") && !obj.get_null_member ("attributes")) {
+                item.attributes = obj.get_object_member ("attributes");
+            }
+            if (obj.has_member ("err") && !obj.get_null_member ("err")) {
+                var err = obj.get_object_member ("err");
+                item.err_code = err.has_member ("code")
+                    ? (err.get_string_member ("code") ?? "") : "";
+                item.err_message = err.has_member ("message")
+                    ? (err.get_string_member ("message") ?? "") : "";
+            }
+            return item;
+        }
+    }
+
+    public class LibrarySourcesReply : GLib.Object {
+        public LibraryItemRef? library_ref { get; set; default = null; }
+        public GenericArray<ResolvedSource> sources { get; set; }
+        public string err_code { get; set; default = ""; }
+        public string err_message { get; set; default = ""; }
+
+        public LibrarySourcesReply () {
+            Object ();
+            sources = new GenericArray<ResolvedSource> ();
+        }
+
+        public static LibrarySourcesReply from_json (Json.Object obj) {
+            var item = new LibrarySourcesReply ();
+            if (obj.has_member ("ref") && !obj.get_null_member ("ref")) {
+                item.library_ref = LibraryItemRef.from_json (obj.get_object_member ("ref"));
+            }
+            if (obj.has_member ("sources") && !obj.get_null_member ("sources")) {
+                var arr = obj.get_array_member ("sources");
+                for (uint i = 0; i < arr.get_length (); i++) {
+                    var src = ResolvedSource.from_json (arr.get_object_element (i));
+                    if (src != null) item.sources.add (src);
+                }
+            }
+            if (obj.has_member ("err") && !obj.get_null_member ("err")) {
+                var err = obj.get_object_member ("err");
+                item.err_code = err.has_member ("code")
+                    ? (err.get_string_member ("code") ?? "") : "";
+                item.err_message = err.has_member ("message")
+                    ? (err.get_string_member ("message") ?? "") : "";
+            }
+            return item;
         }
     }
 }

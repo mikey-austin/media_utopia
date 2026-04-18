@@ -1,33 +1,43 @@
-/* local_queue.vala — In-memory queue state machine for the local GStreamer renderer.
- * Translation of Android's LocalQueue.kt.
- */
+/* local_queue.vala — In-memory queue state machine for the local GStreamer renderer. */
 
 namespace Mu {
 
     public class LocalQueueEntry {
         public string queue_entry_id;
-        public string item_id;
+        public LibraryItemRef? library_ref;
         public string url;
         public string mime;
-        public Json.Object? metadata;
+        public bool byte_range;
+        public DisplayMetadata? display;
 
-        public LocalQueueEntry (string item_id, string url = "", string mime = "",
-                                 Json.Object? metadata = null) {
+        public LocalQueueEntry (LibraryItemRef? library_ref, string url = "", string mime = "",
+                                 bool byte_range = false, DisplayMetadata? display = null) {
             this.queue_entry_id = "mu:queueentry:renderer:R:" + GLib.Uuid.string_random ();
-            this.item_id = item_id;
+            this.library_ref = library_ref;
             this.url = url;
             this.mime = mime;
-            this.metadata = metadata;
+            this.byte_range = byte_range;
+            this.display = display;
         }
 
-        public LocalQueueEntry.with_id (string queue_entry_id, string item_id,
+        public LocalQueueEntry.with_id (string queue_entry_id, LibraryItemRef? library_ref,
                                          string url = "", string mime = "",
-                                         Json.Object? metadata = null) {
+                                         bool byte_range = false,
+                                         DisplayMetadata? display = null) {
             this.queue_entry_id = queue_entry_id;
-            this.item_id = item_id;
+            this.library_ref = library_ref;
             this.url = url;
             this.mime = mime;
-            this.metadata = metadata;
+            this.byte_range = byte_range;
+            this.display = display;
+        }
+
+        /**
+         * Stable identity for cache lookups, dedup, etc. Returns "" if no library_ref.
+         */
+        public string identity_key () {
+            if (library_ref == null || !library_ref.is_valid ()) return "";
+            return "%s::%s".printf (library_ref.library_id, library_ref.item_id);
         }
     }
 
@@ -58,7 +68,6 @@ namespace Mu {
         public void add (string position, GenericArray<LocalQueueEntry> new_entries,
                           int64 at_index = -1) {
             if (position == "next") {
-                /* Insert after current index */
                 var insert_at = (int) (index + 1);
                 for (uint i = 0; i < new_entries.length; i++) {
                     if (insert_at <= (int) entries.length) {
@@ -68,17 +77,14 @@ namespace Mu {
                     }
                 }
             } else if (position == "at" && at_index >= 0) {
-                /* Insert at specific position */
                 var insert_at = int64.min (at_index, (int64) entries.length);
                 for (uint i = 0; i < new_entries.length; i++) {
                     entries.insert ((int) insert_at + (int) i, new_entries[i]);
                 }
-                /* Adjust current index if items were inserted before it */
                 if (insert_at <= index) {
                     index += (int64) new_entries.length;
                 }
             } else {
-                /* "end" or default: append */
                 for (uint i = 0; i < new_entries.length; i++) {
                     entries.add (new_entries[i]);
                 }
@@ -104,7 +110,6 @@ namespace Mu {
 
             entries.remove_index ((uint) target);
 
-            /* Adjust index if the removed entry was before or at current */
             if ((int64) target < index) {
                 index--;
             } else if ((int64) target == index && index >= (int64) entries.length) {
@@ -123,7 +128,6 @@ namespace Mu {
             entries.remove_index ((uint) from_index);
             entries.insert ((int) to_index, entry);
 
-            /* Adjust current index */
             if (index == from_index) {
                 index = to_index;
             } else {
@@ -153,10 +157,8 @@ namespace Mu {
         public void shuffle_entries (int64 seed) {
             if (entries.length <= 1) return;
 
-            /* Save the current entry */
             var current = current_entry ();
 
-            /* Simple Fisher-Yates shuffle using the seed */
             var rng = new Rand.with_seed ((uint32) seed);
             for (int i = (int) entries.length - 1; i > 0; i--) {
                 var j = (int) rng.int_range (0, i + 1);
@@ -167,7 +169,6 @@ namespace Mu {
                 }
             }
 
-            /* Move the previously-current entry to index 0, put current index at 0 */
             if (current != null) {
                 for (uint i = 0; i < entries.length; i++) {
                     if (entries[i].queue_entry_id == current.queue_entry_id) {
@@ -208,7 +209,6 @@ namespace Mu {
             if (entries.length == 0) return null;
 
             if (repeat_mode == "one") {
-                /* Repeat the current track */
                 return current_entry ();
             }
 
@@ -262,10 +262,14 @@ namespace Mu {
             var end = int64.min (from + count, (int64) entries.length);
             for (int64 i = from; i < end; i++) {
                 var entry = entries[(uint) i];
-                var item = new QueueItem ();
+                var item = new QueueEntry ();
                 item.queue_entry_id = entry.queue_entry_id;
-                item.item_id = entry.item_id;
-                item.metadata = entry.metadata;
+                item.library_ref = entry.library_ref;
+                if (entry.url.length > 0) {
+                    item.resolved = new ResolvedSource.with_url (
+                        entry.url, entry.mime, entry.byte_range);
+                }
+                item.display = entry.display;
                 reply.entries.add (item);
             }
 

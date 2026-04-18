@@ -442,6 +442,22 @@ switch:checked slider {
     color: @mu_on_surface_variant;
 }
 
+.now-playing-side-panel {
+    min-width: 300px;
+}
+
+.now-playing-side-card {
+    background-color: @mu_surface_container_high;
+}
+
+.now-playing-zone-list {
+    padding-bottom: 4px;
+}
+
+.now-playing-zone-row {
+    padding: 12px 14px;
+}
+
 /* === Connection Status === */
 .connection-status {
     padding: 4px 8px;
@@ -530,6 +546,10 @@ row > box > box > label.subtitle {
 
 .mu-card.active:hover {
     background-color: shade(@mu_primary_container, 1.1);
+}
+
+.zone-card-offline {
+    opacity: 0.55;
 }
 
 .device-chip {

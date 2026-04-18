@@ -84,6 +84,13 @@ namespace Mu {
         }
 
         /**
+         * Get all nodes with kind == "zone_controller".
+         */
+        public GenericArray<Presence> get_zone_controllers () {
+            return filter_by_kind ("zone_controller");
+        }
+
+        /**
          * Look up a single node by ID.
          */
         public Presence? get_node (string node_id) {
