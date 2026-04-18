@@ -1378,19 +1378,20 @@ class MuPanel extends LitElement {
   }
 
   async _queueJump(idx) {
+    // Single click on a queue row: jump and start playing. The retained
+    // renderer state fan-out will refresh the UI on its own, so don't
+    // `await _loadRendererState` here — blocking on that round trip was
+    // what made clicks feel laggy and "not working" until a second click.
+    // The previous gate + dblclick fallback meant users had to double-click
+    // whenever `leaseOwned` was briefly stale; the server is the real
+    // authority on the lease and will reject with a toast-worthy error
+    // if we don't own it.
     if (!this.selectedRenderer) return;
-    if (!this.leaseOwned) {
-      this._showToast('Acquire control first');
-      return;
-    }
-    await this._callWS('mu/queue_jump', { renderer_id: this.selectedRenderer, index: idx });
-    await this._loadRendererState();
-  }
-
-  async _jumpToTrack(idx) {
-    if (!this.selectedRenderer) return;
-    await this._callWS('mu/queue_jump', { renderer_id: this.selectedRenderer, index: idx });
-    this._showToast(`Playing track ${idx + 1}`);
+    this._callWS('mu/queue_jump', { renderer_id: this.selectedRenderer, index: idx })
+      .catch(err => {
+        console.warn('[MU] queue_jump failed:', err);
+        this._showToast(err?.message || 'Jump failed');
+      });
   }
 
   async _queueRemove(id) {
@@ -1399,8 +1400,13 @@ class MuPanel extends LitElement {
       this._showToast('Acquire control first');
       return;
     }
-    await this._callWS('mu/queue_remove', { renderer_id: this.selectedRenderer, queue_entry_id: id });
-    await this._loadQueue();
+    // Fire and forget; renderer state push bumps revision and the
+    // state-event handler auto-refreshes the queue list.
+    this._callWS('mu/queue_remove', { renderer_id: this.selectedRenderer, queue_entry_id: id })
+      .catch(err => {
+        console.warn('[MU] queue_remove failed:', err);
+        this._showToast(err?.message || 'Remove failed');
+      });
   }
 
   async _queueClear() {
@@ -1409,9 +1415,12 @@ class MuPanel extends LitElement {
       this._showToast('Acquire control first');
       return;
     }
-    await this._callWS('mu/queue_clear', { renderer_id: this.selectedRenderer });
-    await this._loadQueue();
-    this._showToast('Cleared');
+    this._callWS('mu/queue_clear', { renderer_id: this.selectedRenderer })
+      .then(() => this._showToast('Cleared'))
+      .catch(err => {
+        console.warn('[MU] queue_clear failed:', err);
+        this._showToast(err?.message || 'Clear failed');
+      });
   }
 
   async _saveQueueToPlaylist(e) {
@@ -1498,7 +1507,6 @@ class MuPanel extends LitElement {
     }
 
     await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
-    await this._loadQueue();
     this._showToast(mode === 'replace' ? `Playing folder (${items.length})` : `Added folder (${items.length})`);
   }
 
@@ -1506,10 +1514,9 @@ class MuPanel extends LitElement {
     if (!this.selectedRenderer || !item.itemId) return;
     const libId = this.browserPath[0]?.id;
     if (!libId) return;
-    // Diagnostic: prevent double-click from firing twice
+    // Prevent double-click from firing twice during the in-flight WS calls.
     if (this._addInProgress) { console.warn('[MU] _addToQueue blocked: already in progress'); return; }
     this._addInProgress = true;
-    this.queueLoading = true;
     try {
       if (item.isContainer) {
         // Containers (albums, etc.) can't be resolved directly — browse to get children
@@ -1521,8 +1528,10 @@ class MuPanel extends LitElement {
           .map(child => ({ kind: 'libraryItem', libraryId: libId, itemId: child.itemId }));
         if (!children.length) { this._showToast('No playable items'); return; }
         await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
-        await this._loadQueue();
         this._showToast(mode === 'replace' ? `Playing (${children.length})` : mode === 'next' ? `Next (${children.length})` : `Added (${children.length})`);
+        // The renderer's state push will bump queue.revision and trigger
+        // _loadQueue on its own; awaiting an explicit reload here just
+        // doubles the round-trip and makes the click feel laggy.
         return;
       }
 
@@ -1531,10 +1540,8 @@ class MuPanel extends LitElement {
         mode,
         items: [{ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }],
       });
-      await this._loadQueue();
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
     } finally {
-      this.queueLoading = false;
       this._addInProgress = false;
     }
   }
@@ -1582,7 +1589,6 @@ class MuPanel extends LitElement {
   async _addSearchResultToQueue(item, mode) {
     if (!this.selectedRenderer || !item.itemId || !this.searchLibraryId) return;
     const libId = this.searchLibraryId;
-    this.queueLoading = true;
     try {
       if (item.isContainer) {
         const r = await this._callWS('mu/library_browse', {
@@ -1593,7 +1599,6 @@ class MuPanel extends LitElement {
           .map(child => ({ kind: 'libraryItem', libraryId: libId, itemId: child.itemId }));
         if (!children.length) { this._showToast('No playable items'); return; }
         await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
-        await this._loadQueue();
         this._showToast(mode === 'replace' ? `Playing (${children.length})` : mode === 'next' ? `Next (${children.length})` : `Added (${children.length})`);
         return;
       }
@@ -1603,10 +1608,10 @@ class MuPanel extends LitElement {
         mode,
         items: [{ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }],
       });
-      await this._loadQueue();
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
-    } finally {
-      this.queueLoading = false;
+    } catch (err) {
+      console.warn('[MU] add search result failed:', err);
+      this._showToast(err?.message || 'Add failed');
     }
   }
 
@@ -1618,7 +1623,6 @@ class MuPanel extends LitElement {
       .map(item => ({ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }));
     if (!items.length) { this._showToast('No playable items'); return; }
     await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
-    await this._loadQueue();
     this._showToast(mode === 'replace' ? `Playing (${items.length})` : `Added (${items.length})`);
   }
 
@@ -2521,7 +2525,7 @@ class MuPanel extends LitElement {
 
   _renderQueueItem(entry, idx, curIdx) {
     return html`
-      <div class="queue-item ${idx === curIdx ? 'playing' : ''} ${this.dragIndex === idx ? 'dragging' : ''} ${this.dragOverIndex === idx ? 'drag-over' : ''}" data-index="${idx}" @click=${() => this._queueJump(idx)} @dblclick=${() => this._jumpToTrack(idx)}>
+      <div class="queue-item ${idx === curIdx ? 'playing' : ''} ${this.dragIndex === idx ? 'dragging' : ''} ${this.dragOverIndex === idx ? 'drag-over' : ''}" data-index="${idx}" @click=${() => this._queueJump(idx)}>
         <div class="queue-drag-handle"
            @touchstart=${e => { e.stopPropagation(); this._onTouchStart(e, idx); }}
            @touchmove=${e => this._onTouchMove(e)}
