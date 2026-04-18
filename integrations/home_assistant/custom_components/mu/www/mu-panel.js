@@ -1490,7 +1490,7 @@ class MuPanel extends LitElement {
     // Filter for playable items only
     const items = this.browserItems
       .filter(item => !item.isContainer && !item.isLibrary && item.itemId)
-      .map(item => `lib:${libId}:${item.itemId}`);
+      .map(item => ({ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }));
 
     if (!items.length) {
       this._showToast('No playable items');
@@ -1518,7 +1518,7 @@ class MuPanel extends LitElement {
         });
         const children = (r?.items || [])
           .filter(child => child.itemId && !child.isContainer && !child.isLibrary)
-          .map(child => `lib:${libId}:${child.itemId}`);
+          .map(child => ({ kind: 'libraryItem', libraryId: libId, itemId: child.itemId }));
         if (!children.length) { this._showToast('No playable items'); return; }
         await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
         await this._loadQueue();
@@ -1526,10 +1526,12 @@ class MuPanel extends LitElement {
         return;
       }
 
-      console.warn('[MU] queue_add: mode=%s items=1 itemId=%s', mode, item.itemId);
-      await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: [`lib:${libId}:${item.itemId}`] });
+      await this._callWS('mu/queue_add', {
+        renderer_id: this.selectedRenderer,
+        mode,
+        items: [{ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }],
+      });
       await this._loadQueue();
-      console.warn('[MU] queue_add done: queueLen=%d', this.queue?.length);
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
     } finally {
       this.queueLoading = false;
@@ -1588,7 +1590,7 @@ class MuPanel extends LitElement {
         });
         const children = (r?.items || [])
           .filter(child => child.itemId && !child.isContainer && !child.isLibrary)
-          .map(child => `lib:${libId}:${child.itemId}`);
+          .map(child => ({ kind: 'libraryItem', libraryId: libId, itemId: child.itemId }));
         if (!children.length) { this._showToast('No playable items'); return; }
         await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
         await this._loadQueue();
@@ -1596,7 +1598,11 @@ class MuPanel extends LitElement {
         return;
       }
 
-      await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: [`lib:${libId}:${item.itemId}`] });
+      await this._callWS('mu/queue_add', {
+        renderer_id: this.selectedRenderer,
+        mode,
+        items: [{ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }],
+      });
       await this._loadQueue();
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
     } finally {
@@ -1609,7 +1615,7 @@ class MuPanel extends LitElement {
     const libId = this.searchLibraryId;
     const items = this.searchResults
       .filter(item => item.isPlayable && item.itemId)
-      .map(item => `lib:${libId}:${item.itemId}`);
+      .map(item => ({ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }));
     if (!items.length) { this._showToast('No playable items'); return; }
     await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
     await this._loadQueue();

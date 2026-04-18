@@ -79,13 +79,21 @@ def test_platforms_constant():
         tree = ast.parse(f.read())
 
     for node in ast.walk(tree):
+        value_node = None
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == 'PLATFORMS':
-                    platforms = [elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)]
-                    # Verify all platform modules exist
-                    for platform in platforms:
-                        platform_file = os.path.join(src, f"{platform}.py")
-                        assert os.path.isfile(platform_file), f"Platform file {platform}.py not found"
-                    return
+                    value_node = node.value
+                    break
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            if isinstance(target, ast.Name) and target.id == 'PLATFORMS':
+                value_node = node.value
+        if value_node is None:
+            continue
+        platforms = [elt.value for elt in value_node.elts if isinstance(elt, ast.Constant)]
+        for platform in platforms:
+            platform_file = os.path.join(src, f"{platform}.py")
+            assert os.path.isfile(platform_file), f"Platform file {platform}.py not found"
+        return
     assert False, "PLATFORMS constant not found"

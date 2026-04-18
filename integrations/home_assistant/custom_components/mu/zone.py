@@ -228,56 +228,37 @@ class MuZoneEntity(MediaPlayerEntity):
                 return renderer_id
         return None
 
-    @property
-    def media_title(self) -> str | None:
-        """Return the title of current playing media from matched renderer."""
+    def _matched_display(self) -> dict[str, Any]:
         renderer_id = self._get_matching_renderer()
         if not renderer_id:
-            return None
+            return {}
         state = self._bridge.get_renderer_state(renderer_id)
         current = state.get("current") or {}
-        metadata = current.get("metadata") or {}
-        return metadata.get("title")
+        return self._bridge._current_display(current) or {}
+
+    @property
+    def media_title(self) -> str | None:
+        return self._matched_display().get("title")
 
     @property
     def media_artist(self) -> str | None:
-        """Return the artist of current playing media from matched renderer."""
-        renderer_id = self._get_matching_renderer()
-        if not renderer_id:
-            return None
-        state = self._bridge.get_renderer_state(renderer_id)
-        current = state.get("current") or {}
-        metadata = current.get("metadata") or {}
-        artist = metadata.get("artist")
+        display = self._matched_display()
+        artist = display.get("artist")
         if artist:
             return artist
-        artists = metadata.get("artists")
+        artists = display.get("artists")
         if isinstance(artists, list) and artists:
             return ", ".join(str(a) for a in artists if a)
         return None
 
     @property
     def media_album_name(self) -> str | None:
-        """Return the album name of current playing media from matched renderer."""
-        renderer_id = self._get_matching_renderer()
-        if not renderer_id:
-            return None
-        state = self._bridge.get_renderer_state(renderer_id)
-        current = state.get("current") or {}
-        metadata = current.get("metadata") or {}
-        return metadata.get("album")
+        return self._matched_display().get("album")
 
     @property
     def media_image_url(self) -> str | None:
-        """Return the image URL of current playing media from matched renderer."""
-        renderer_id = self._get_matching_renderer()
-        if not renderer_id:
-            return None
-        state = self._bridge.get_renderer_state(renderer_id)
-        current = state.get("current") or {}
-        metadata = current.get("metadata") or {}
-        # Use for_internal=True so HA fetches directly from upstream
-        return self._bridge.rewrite_artwork_url(metadata.get("artworkUrl"), for_internal=True)
+        url = self._matched_display().get("artworkUrl")
+        return self._bridge.rewrite_artwork_url(url, for_internal=True) if url else None
 
     @property
     def media_duration(self) -> int | None:

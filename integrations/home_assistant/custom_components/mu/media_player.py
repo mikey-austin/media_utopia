@@ -210,7 +210,8 @@ class MuRendererEntity(MediaPlayerEntity):
     def media_content_id(self) -> str | None:
         state = self._bridge.get_renderer_state(self._node_id)
         current = state.get("current") or {}
-        return current.get("itemId")
+        ref = current.get("ref")
+        return self._content_id_for_ref(ref) if isinstance(ref, dict) else None
 
     @property
     def media_content_type(self) -> str | None:
@@ -315,7 +316,6 @@ class MuRendererEntity(MediaPlayerEntity):
     ) -> None:
         _ = media_type
         _LOGGER.debug("play_media %s %s", self._node_id, media_id)
-        # Handle queue jump requests (from Current Queue browser)
         if str(media_id).startswith("queue_jump:"):
             try:
                 index = int(str(media_id)[len("queue_jump:"):])
@@ -323,7 +323,16 @@ class MuRendererEntity(MediaPlayerEntity):
                 return
             except ValueError:
                 pass
-        await self._bridge.async_play_media(self._node_id, media_id)
+        if str(media_id).startswith("lib:"):
+            raise ValueError(
+                "Legacy 'lib:' media_content_id is no longer supported. "
+                "Update your automation to a structured library ref or use "
+                "the new 'mu:item:' browse content id."
+            )
+        try:
+            await self._bridge.async_play_media(self._node_id, media_id)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
     async def async_browse_media(self, media_content_type=None, media_content_id=None):
         root = BrowseMedia(
@@ -459,38 +468,56 @@ class MuRendererEntity(MediaPlayerEntity):
         slice_entries = entries[start:end]
         children = []
 
-        item_ids = []
+        # Each playlist entry now carries its own display block (title/artist/
+        # album/artworkUrl).  Only fall back to library.getItems for entries
+        # that arrived without one — this is the slow path, not the hot path.
+        rendered: list[tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+        missing_refs: list[dict[str, Any]] = []
         for entry in slice_entries:
-            ref = (entry or {}).get("ref") or {}
-            resolved = (entry or {}).get("resolved") or {}
-            item_id = ref.get("id") or resolved.get("url")
-            if not item_id:
+            ref = (entry or {}).get("ref") if isinstance(entry, dict) else None
+            if not isinstance(ref, dict):
+                ref = {}
+            resolved = (entry or {}).get("resolved") if isinstance(entry, dict) else None
+            if not isinstance(resolved, dict):
+                resolved = {}
+            display = self._bridge.display_for_entry(entry) or {}
+            rendered.append((entry, ref, resolved, dict(display)))
+            if not display.get("title") and ref.get("libraryId") and ref.get("itemId"):
+                missing_refs.append({
+                    "kind": "libraryItem",
+                    "libraryId": ref["libraryId"],
+                    "itemId": ref["itemId"],
+                })
+        if missing_refs:
+            backfill = await self._bridge.async_get_item_displays(missing_refs)
+            for _entry, ref, _resolved, display in rendered:
+                if display.get("title"):
+                    continue
+                key = f"{ref.get('libraryId')}|{ref.get('itemId')}"
+                cached = backfill.get(key)
+                if cached:
+                    display.update(cached)
+
+        for _entry, ref, resolved, display in rendered:
+            content_id = self._content_id_for_ref(ref) or resolved.get("url") or ""
+            if not content_id:
                 continue
-            item_ids.append(item_id)
-
-        lib_ids = [item_id for item_id in item_ids if str(item_id).startswith("lib:")]
-        meta_map = {}
-        if lib_ids:
-            meta_map = await self._bridge.async_fetch_metadata_batch(lib_ids)
-
-        for item_id in item_ids:
-            meta = meta_map.get(item_id, {})
-            title = meta.get("title") or item_id
-            artist = meta.get("artist")
-            album = meta.get("album")
-            artwork = self._bridge.rewrite_artwork_url(meta.get("artworkUrl"))
+            title = display.get("title") or content_id
+            artist = display.get("artist")
+            album = display.get("album")
+            artwork = self._bridge.rewrite_artwork_url(display.get("artworkUrl"))
             if artist and album:
-                display = f"{title} — {artist} ({album})"
+                label = f"{title} — {artist} ({album})"
             elif artist:
-                display = f"{title} — {artist}"
+                label = f"{title} — {artist}"
             else:
-                display = title
+                label = title
             children.append(
                 BrowseMedia(
                     media_class=MEDIA_CLASS_MUSIC,
-                    media_content_id=item_id,
+                    media_content_id=content_id,
                     media_content_type=MEDIA_TYPE_MUSIC,
-                    title=display,
+                    title=label,
                     thumbnail=artwork,
                     can_play=True,
                     can_expand=False,
@@ -552,38 +579,61 @@ class MuRendererEntity(MediaPlayerEntity):
                 children=[],
             )
 
-        items = snapshot.get("items") or []
+        entries = snapshot.get("entries") or []
         page_size = 25
-        total = len(items)
+        total = len(entries)
         start = max(0, (page - 1) * page_size)
         end = min(total, start + page_size)
-        slice_items = items[start:end]
+        slice_entries = entries[start:end]
 
-        lib_ids = [item for item in slice_items if str(item).startswith("lib:")]
-        meta_map = {}
-        if lib_ids:
-            meta_map = await self._bridge.async_fetch_metadata_batch(lib_ids)
+        rendered: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+        missing_refs: list[dict[str, Any]] = []
+        for entry in slice_entries:
+            ref = entry.get("ref") if isinstance(entry, dict) else None
+            if not isinstance(ref, dict):
+                ref = {}
+            resolved = entry.get("resolved") if isinstance(entry, dict) else None
+            if not isinstance(resolved, dict):
+                resolved = {}
+            display = self._bridge.display_for_entry(entry) or {}
+            rendered.append((entry, ref, resolved, dict(display)))
+            if not display.get("title") and ref.get("libraryId") and ref.get("itemId"):
+                missing_refs.append({
+                    "kind": "libraryItem",
+                    "libraryId": ref["libraryId"],
+                    "itemId": ref["itemId"],
+                })
+        if missing_refs:
+            backfill = await self._bridge.async_get_item_displays(missing_refs)
+            for _entry, ref, _resolved, display in rendered:
+                if display.get("title"):
+                    continue
+                key = f"{ref.get('libraryId')}|{ref.get('itemId')}"
+                cached = backfill.get(key)
+                if cached:
+                    display.update(cached)
 
         children = []
-
-        for item_id in slice_items:
-            meta = meta_map.get(item_id, {})
-            title = meta.get("title") or item_id
-            artist = meta.get("artist")
-            album = meta.get("album")
-            artwork = self._bridge.rewrite_artwork_url(meta.get("artworkUrl"))
+        for _entry, ref, resolved, display in rendered:
+            content_id = self._content_id_for_ref(ref) or resolved.get("url") or ""
+            if not content_id:
+                continue
+            title = display.get("title") or content_id
+            artist = display.get("artist")
+            album = display.get("album")
+            artwork = self._bridge.rewrite_artwork_url(display.get("artworkUrl"))
             if artist and album:
-                display = f"{title} — {artist} ({album})"
+                label = f"{title} — {artist} ({album})"
             elif artist:
-                display = f"{title} — {artist}"
+                label = f"{title} — {artist}"
             else:
-                display = title
+                label = title
             children.append(
                 BrowseMedia(
                     media_class=MEDIA_CLASS_MUSIC,
-                    media_content_id=item_id,
+                    media_content_id=content_id,
                     media_content_type=MEDIA_TYPE_MUSIC,
-                    title=display,
+                    title=label,
                     thumbnail=artwork,
                     can_play=True,
                     can_expand=False,
@@ -643,33 +693,40 @@ class MuRendererEntity(MediaPlayerEntity):
         end = min(total, start + page_size)
         page_entries = entries[start:end]
 
-        # Collect item IDs that need metadata lookup (those without embedded metadata)
-        items_needing_meta = []
+        # The renderer attaches a `display` block to each queue entry now.
+        # Backfill missing displays via library.getItems only as a slow fallback.
+        rendered: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+        missing_refs: list[dict[str, Any]] = []
         for entry in page_entries:
-            item_id = entry.get("itemId")
-            embedded_meta = entry.get("metadata") or {}
-            if item_id and not embedded_meta.get("title") and str(item_id).startswith("lib:"):
-                items_needing_meta.append(item_id)
-
-        # Fetch metadata in batch for items that need it
-        meta_map = {}
-        if items_needing_meta:
-            meta_map = await self._bridge.async_fetch_metadata_fresh(items_needing_meta)
+            ref = entry.get("ref") if isinstance(entry, dict) else None
+            if not isinstance(ref, dict):
+                ref = {}
+            display = self._bridge.display_for_entry(entry) or {}
+            rendered.append((entry, ref, dict(display)))
+            if not display.get("title") and ref.get("libraryId") and ref.get("itemId"):
+                missing_refs.append({
+                    "kind": "libraryItem",
+                    "libraryId": ref["libraryId"],
+                    "itemId": ref["itemId"],
+                })
+        if missing_refs:
+            backfill = await self._bridge.async_get_item_displays(missing_refs)
+            for _entry, ref, display in rendered:
+                if display.get("title"):
+                    continue
+                key = f"{ref.get('libraryId')}|{ref.get('itemId')}"
+                cached = backfill.get(key)
+                if cached:
+                    display.update(cached)
 
         children = []
-        for idx, entry in enumerate(page_entries):
-            global_idx = start + idx  # Actual queue index for jumping
-            item_id = entry.get("itemId") or ""
+        for idx, (entry, ref, meta) in enumerate(rendered):
+            global_idx = start + idx
             resolved = entry.get("resolved") or {}
             url = resolved.get("url") or ""
+            ref_label = self._content_id_for_ref(ref) or ""
 
-            # Try metadata sources in order: embedded, fetched, resolved
-            embedded_meta = entry.get("metadata") or {}
-            fetched_meta = meta_map.get(item_id, {})
-            resolved_meta = resolved.get("metadata") or {}
-            meta = {**resolved_meta, **fetched_meta, **embedded_meta}
-
-            title = meta.get("title") or item_id or url or f"Track {global_idx + 1}"
+            title = meta.get("title") or ref_label or url or f"Track {global_idx + 1}"
             artist = meta.get("artist")
             album = meta.get("album")
             artwork = self._bridge.rewrite_artwork_url(meta.get("artworkUrl"))
@@ -804,7 +861,7 @@ class MuRendererEntity(MediaPlayerEntity):
                 children.append(
                     BrowseMedia(
                         media_class=MEDIA_CLASS_MUSIC,
-                        media_content_id=f"lib:{node_id}:{item_id}",
+                        media_content_id=f"mu:item:{node_id}:{item_id}",
                         media_content_type=MEDIA_TYPE_MUSIC,
                         title=display,
                         thumbnail=artwork,
@@ -860,7 +917,18 @@ class MuRendererEntity(MediaPlayerEntity):
     def _metadata(self) -> dict[str, Any]:
         state = self._bridge.get_renderer_state(self._node_id)
         current = state.get("current") or {}
-        return current.get("metadata") or {}
+        return self._bridge._current_display(current) or {}
+
+    @staticmethod
+    def _content_id_for_ref(ref: dict[str, Any] | None) -> str | None:
+        """Build the integration's internal browse content_id for a library ref."""
+        if not isinstance(ref, dict):
+            return None
+        library_id = ref.get("libraryId")
+        item_id = ref.get("itemId")
+        if not library_id or not item_id:
+            return None
+        return f"mu:item:{library_id}:{item_id}"
 
     def _queue(self) -> dict[str, Any]:
         state = self._bridge.get_renderer_state(self._node_id)
@@ -880,17 +948,18 @@ class MuRendererEntity(MediaPlayerEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         state = self._bridge.get_renderer_state(self._node_id)
         current = state.get("current") or {}
-        metadata = current.get("metadata") or {}
+        display = self._bridge._current_display(current) or {}
+        ref = current.get("ref") if isinstance(current.get("ref"), dict) else None
         session = state.get("session") or {}
         queue = state.get("queue") or {}
         return {
             "artist": self._artist(),
-            "album": metadata.get("album"),
-            "media_type": metadata.get("mediaType"),
-            "item_type": metadata.get("type"),
-            "duration_ms": metadata.get("durationMs"),
+            "album": display.get("album"),
+            "media_type": display.get("mediaType"),
+            "item_type": display.get("type"),
+            "duration_ms": display.get("durationMs"),
             "position_ms": (state.get("playback") or {}).get("positionMs"),
-            "item_id": current.get("itemId"),
+            "item_ref": ref,
             "lease_owner": session.get("owner"),
             "lease_id": session.get("id"),
             "lease_expires_at": session.get("leaseExpiresAt"),

@@ -12,17 +12,29 @@ def test_platforms_defined():
         tree = ast.parse(f.read())
 
     for node in ast.walk(tree):
+        target_id = None
+        value_node = None
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == 'PLATFORMS':
-                    assert isinstance(node.value, ast.List)
-                    platforms = [elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)]
-                    assert 'media_player' in platforms
-                    assert 'button' in platforms
-                    assert 'sensor' in platforms
-                    assert 'select' in platforms
-                    assert 'text' in platforms
-                    return
+                    target_id = target.id
+                    value_node = node.value
+                    break
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            if isinstance(target, ast.Name) and target.id == 'PLATFORMS':
+                target_id = target.id
+                value_node = node.value
+        if target_id != 'PLATFORMS' or value_node is None:
+            continue
+        assert isinstance(value_node, ast.List)
+        platforms = [elt.value for elt in value_node.elts if isinstance(elt, ast.Constant)]
+        assert 'media_player' in platforms
+        assert 'button' in platforms
+        assert 'sensor' in platforms
+        assert 'select' in platforms
+        assert 'text' in platforms
+        return
     assert False, "PLATFORMS not found"
 
 

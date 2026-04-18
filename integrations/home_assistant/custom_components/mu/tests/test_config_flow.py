@@ -88,7 +88,10 @@ def test_config_flow_imports_from_const():
 
     imported_names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.module.endswith('.const'):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        if module == "const" or module.endswith(".const"):
             for alias in node.names:
                 imported_names.add(alias.name)
 

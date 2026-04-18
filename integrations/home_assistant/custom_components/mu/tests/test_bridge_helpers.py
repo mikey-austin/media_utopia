@@ -96,52 +96,59 @@ def test_lease_different():
 
 
 # ---------------------------------------------------------------------------
-# _split_lib_ref
+# Structured library refs
 # ---------------------------------------------------------------------------
 
-def test_split_lib_ref_valid():
+def test_make_library_ref_canonical():
     bridge = _make_bridge()
-    lib_id, item_id = bridge._split_lib_ref(
-        "lib:mu:library:upnp:mud@office:default:uuid::base64"
+    ref = bridge._make_library_ref("mu:library:jellyfin:mud@home:default", "track-1")
+    assert ref == {
+        "kind": "libraryItem",
+        "libraryId": "mu:library:jellyfin:mud@home:default",
+        "itemId": "track-1",
+    }
+
+
+def test_ref_from_anything_canonical_dict():
+    bridge = _make_bridge()
+    ref = bridge._ref_from_anything(
+        {"kind": "libraryItem", "libraryId": "lib-1", "itemId": "track-1"}
     )
-    assert lib_id == "mu:library:upnp:mud@office:default"
-    assert item_id == "uuid::base64"
+    assert ref == {"kind": "libraryItem", "libraryId": "lib-1", "itemId": "track-1"}
 
 
-def test_split_lib_ref_no_prefix():
+def test_ref_from_anything_partial_dict_fills_kind():
     bridge = _make_bridge()
-    lib_id, item_id = bridge._split_lib_ref("no_lib_prefix")
-    assert lib_id is None
-    assert item_id is None
+    ref = bridge._ref_from_anything({"libraryId": "lib-1", "itemId": "track-1"})
+    assert ref == {"kind": "libraryItem", "libraryId": "lib-1", "itemId": "track-1"}
 
 
-def test_split_lib_ref_too_few_parts():
+def test_ref_from_anything_rejects_legacy_string():
     bridge = _make_bridge()
-    lib_id, item_id = bridge._split_lib_ref("lib:a:b:c:d")
-    assert lib_id is None
-    assert item_id is None
+    assert bridge._ref_from_anything("lib:mu:library:fs:mud@home:default:abc") is None
 
 
-def test_split_lib_ref_empty_item():
+def test_ref_from_anything_rejects_missing_fields():
     bridge = _make_bridge()
-    lib_id, item_id = bridge._split_lib_ref("lib:a:b:c:d:e:")
-    assert lib_id is None
-    assert item_id is None
+    assert bridge._ref_from_anything({"libraryId": "lib-1"}) is None
+    assert bridge._ref_from_anything({"itemId": "track-1"}) is None
+    assert bridge._ref_from_anything({}) is None
 
 
-def test_split_lib_ref_exact_six_parts():
+def test_ref_cache_key():
     bridge = _make_bridge()
-    lib_id, item_id = bridge._split_lib_ref("lib:a:b:c:d:e:f")
-    assert lib_id == "a:b:c:d:e"
-    assert item_id == "f"
+    key = bridge._ref_cache_key(
+        {"kind": "libraryItem", "libraryId": "lib-1", "itemId": "track-1"}
+    )
+    assert key == "lib-1|track-1"
+    assert bridge._ref_cache_key(None) is None
+    assert bridge._ref_cache_key({"libraryId": "lib-1"}) is None
 
 
-def test_split_lib_ref_item_with_colons():
-    """Item IDs may themselves contain colons; everything after the 5th colon is the item."""
+def test_split_lib_ref_helper_removed():
+    """The legacy _split_lib_ref helper must be gone after the protocol reset."""
     bridge = _make_bridge()
-    lib_id, item_id = bridge._split_lib_ref("lib:a:b:c:d:e:x:y:z")
-    assert lib_id == "a:b:c:d:e"
-    assert item_id == "x:y:z"
+    assert not hasattr(bridge, "_split_lib_ref")
 
 
 # ---------------------------------------------------------------------------

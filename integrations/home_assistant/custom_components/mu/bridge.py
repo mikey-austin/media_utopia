@@ -91,7 +91,6 @@ class MudBridge:
         self._renderer_listeners: list[Callable] = []
         self._renderer_state_listeners: list[Callable] = []
         self._metadata_cache: dict[str, dict[str, Any]] = {}
-        self._metadata_inflight: set[str] = set()
         self._metadata_failures: dict[str, float] = {}
         self._request_sema = asyncio.Semaphore(4)
         self._metadata_sema = asyncio.Semaphore(2)
@@ -355,11 +354,10 @@ class MudBridge:
         Called when a library re-announces presence (e.g. after restart),
         since its HTTP port may have changed making cached artwork URLs stale.
         """
-        prefix = f"lib:{library_id}:"
+        prefix = f"{library_id}|"
         stale = [k for k in self._metadata_cache if k.startswith(prefix)]
         for k in stale:
             del self._metadata_cache[k]
-        # Also clear failure tracking so items are retried immediately
         stale_failures = [k for k in self._metadata_failures if k.startswith(prefix)]
         for k in stale_failures:
             del self._metadata_failures[k]
@@ -614,268 +612,235 @@ class MudBridge:
         """Return list of (playlist_id, info_dict)."""
         return list(self._playlists.items())
 
-    async def _maybe_resolve_metadata(self, node_id: str, payload: dict[str, Any]) -> None:
-        current = payload.get("current") or {}
-        item_id = current.get("itemId")
-        if not item_id or not str(item_id).startswith("lib:"):
-            return
-        metadata = current.get("metadata") or {}
-        if metadata.get("title") and (
-            metadata.get("artist")
-            or metadata.get("album")
-            or metadata.get("artworkUrl")
-        ):
-            return
-        cached = self._metadata_cache.get(item_id)
-        if cached:
-            current["metadata"] = cached
-            return
-        if item_id in self._metadata_inflight:
-            return
-        self._metadata_inflight.add(item_id)
-        self.hass.async_create_task(self._resolve_metadata(node_id, item_id))
+    @staticmethod
+    def _make_library_ref(library_id: str, item_id: str) -> dict[str, str]:
+        return {"kind": "libraryItem", "libraryId": library_id, "itemId": item_id}
 
-    async def _resolve_metadata(self, node_id: str, item_id: str) -> None:
-        try:
-            metadata = await self._fetch_metadata(item_id)
-            if not metadata:
-                return
-            state = self._renderers.get(node_id, {}).get("state")
-            if not state:
-                return
-            current = state.get("current") or {}
-            current["metadata"] = metadata
-            state["current"] = current
-            self._renderers[node_id]["state"] = state
-            self._notify_renderer_state_listeners(node_id, state)
-        finally:
-            self._metadata_inflight.discard(item_id)
+    def _current_display(self, current: dict[str, Any] | None) -> dict[str, Any]:
+        """Read the renderer-published display block off `current`.
 
-    async def _fetch_metadata(self, item_id: str) -> dict[str, Any]:
-        cached = self._metadata_cache.get(item_id)
-        if cached:
-            return self._normalize_metadata(cached)
-        last_fail = self._metadata_failures.get(item_id)
-        if last_fail and time.time()-last_fail < 60:
-            return {}
-        library_id, raw_id = self._split_lib_ref(item_id)
-        if not library_id or not raw_id:
-            return {}
-        body = {"itemId": raw_id, "metadataOnly": True}
-        async with self._metadata_sema:
-            reply = await self._request(
-                library_id,
-                "library.resolve",
-                body,
-                need_lease=False,
-                timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
-            )
-        if reply is None or reply.get("type") != "ack":
-            _LOGGER.debug("resolve metadata failed %s reply=%s", item_id, reply)
-            self._metadata_failures[item_id] = time.time()
-            return {}
-        metadata = (reply.get("body") or {}).get("metadata") or {}
-        if metadata:
-            metadata = self._normalize_metadata(metadata)
-            self._cache_metadata(item_id, metadata)
-        return metadata
-
-    async def _fetch_metadata_batch(
-        self, item_ids: list[str]
-    ) -> dict[str, dict[str, Any]]:
-        results: dict[str, dict[str, Any]] = {}
-        if not item_ids:
-            return results
-        groups: dict[str, list[str]] = {}
-        ref_map: dict[str, dict[str, str]] = {}
-        for ref in item_ids:
-            cached = self._metadata_cache.get(ref)
-            if cached:
-                results[ref] = self._normalize_metadata(cached)
-                continue
-            last_fail = self._metadata_failures.get(ref)
-            if last_fail and time.time()-last_fail < 60:
-                continue
-            library_id, raw_id = self._split_lib_ref(ref)
-            if not library_id or not raw_id:
-                continue
-            groups.setdefault(library_id, []).append(raw_id)
-            ref_map.setdefault(library_id, {})[raw_id] = ref
-
-        for library_id, raw_ids in groups.items():
-            async with self._metadata_sema:
-                reply = await self._request(
-                    library_id,
-                    "library.resolveBatch",
-                    {"itemIds": raw_ids, "metadataOnly": True},
-                    need_lease=False,
-                    timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
-                )
-            if reply is None or reply.get("type") != "ack":
-                err = (reply or {}).get("err") or {}
-                message = str(err.get("message") or "")
-                if "unsupported command" in message.lower():
-                    for raw_id in raw_ids:
-                        ref = ref_map[library_id].get(raw_id)
-                        if not ref:
-                            continue
-                        meta = await self._fetch_metadata(ref)
-                        if meta:
-                            results[ref] = meta
-                    continue
-                for raw_id in raw_ids:
-                    ref = ref_map[library_id].get(raw_id)
-                    if ref:
-                        self._metadata_failures[ref] = time.time()
-                continue
-            items = (reply.get("body") or {}).get("items") or []
-            for item in items:
-                raw_id = item.get("itemId")
-                metadata = item.get("metadata") or {}
-                if not raw_id or not metadata:
-                    continue
-                ref = ref_map[library_id].get(raw_id)
-                if not ref:
-                    continue
-                metadata = self._normalize_metadata(metadata)
-                self._cache_metadata(ref, metadata)
-                results[ref] = metadata
-        return results
-
-    async def async_fetch_metadata_fresh(
-        self, item_ids: list[str]
-    ) -> dict[str, dict[str, Any]]:
-        """Fetch metadata for items, bypassing cache (for queue browser)."""
-        results: dict[str, dict[str, Any]] = {}
-        if not item_ids:
-            return results
-        groups: dict[str, list[str]] = {}
-        ref_map: dict[str, dict[str, str]] = {}
-        for ref in item_ids:
-            library_id, raw_id = self._split_lib_ref(ref)
-            if not library_id or not raw_id:
-                continue
-            groups.setdefault(library_id, []).append(raw_id)
-            ref_map.setdefault(library_id, {})[raw_id] = ref
-
-        for library_id, raw_ids in groups.items():
-            async with self._metadata_sema:
-                reply = await self._request(
-                    library_id,
-                    "library.resolveBatch",
-                    {"itemIds": raw_ids, "metadataOnly": True},
-                    need_lease=False,
-                    timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
-                )
-            if reply is None or reply.get("type") != "ack":
-                # Fallback to individual requests
-                for raw_id in raw_ids:
-                    ref = ref_map[library_id].get(raw_id)
-                    if not ref:
-                        continue
-                    body = {"itemId": raw_id, "metadataOnly": True}
-                    reply2 = await self._request(
-                        library_id,
-                        "library.resolve",
-                        body,
-                        need_lease=False,
-                        timeout_seconds=max(10, REPLY_TIMEOUT_SECONDS),
-                    )
-                    if reply2 and reply2.get("type") == "ack":
-                        metadata = (reply2.get("body") or {}).get("metadata") or {}
-                        if metadata:
-                            results[ref] = self._normalize_metadata(metadata)
-                continue
-            items = (reply.get("body") or {}).get("items") or []
-            for item in items:
-                raw_id = item.get("itemId")
-                metadata = item.get("metadata") or {}
-                if not raw_id or not metadata:
-                    continue
-                ref = ref_map[library_id].get(raw_id)
-                if not ref:
-                    continue
-                results[ref] = self._normalize_metadata(metadata)
-        return results
-
-    def _normalize_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        """Normalize metadata, applying base URL rewriting to artwork.
-
-        Note: This only applies base URL rewriting, not proxying.
-        Callers should use rewrite_artwork_url() to apply proxying as needed.
+        Prefers the wire `display` field; falls back to the legacy `metadata`
+        slot when the renderer hasn't sent display (and we may have already
+        folded a cached display into metadata via `_maybe_resolve_metadata`).
         """
-        if not metadata:
-            return metadata
-        result = dict(metadata)
-        # Handle artists array -> artist string (fs_library returns "artists")
+        if not isinstance(current, dict):
+            return {}
+        display = current.get("display")
+        if isinstance(display, dict) and display:
+            return self._normalize_display(display)
+        legacy = current.get("metadata")
+        if isinstance(legacy, dict) and legacy:
+            return legacy
+        return {}
+
+    def display_for_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Public helper: read the display block off a queue/playlist entry."""
+        if not isinstance(entry, dict):
+            return {}
+        display = entry.get("display")
+        if isinstance(display, dict) and display:
+            return self._normalize_display(display)
+        return {}
+
+    @staticmethod
+    def _ref_cache_key(ref: dict[str, Any] | None) -> str | None:
+        if not isinstance(ref, dict):
+            return None
+        library_id = ref.get("libraryId")
+        item_id = ref.get("itemId")
+        if not library_id or not item_id:
+            return None
+        return f"{library_id}|{item_id}"
+
+    @staticmethod
+    def _ref_from_anything(value: Any) -> dict[str, str] | None:
+        """Build a structured library ref from a dict input.
+
+        Accepts {kind, libraryId, itemId} (canonical) or {libraryId, itemId}.
+        Returns None for anything else (including legacy `lib:` strings).
+        """
+        if not isinstance(value, dict):
+            return None
+        library_id = value.get("libraryId")
+        item_id = value.get("itemId")
+        if not library_id or not item_id:
+            return None
+        return {
+            "kind": value.get("kind") or "libraryItem",
+            "libraryId": str(library_id),
+            "itemId": str(item_id),
+        }
+
+    def _maybe_resolve_metadata(self, node_id: str, payload: dict[str, Any]) -> None:
+        """Hot path: copy structured display into metadata for legacy consumers.
+
+        After the protocol reset the renderer publishes display fields inline on
+        `current.display`.  No catalog lookups happen here.
+        """
+        current = payload.get("current") or {}
+        if not isinstance(current, dict):
+            return
+        display = current.get("display")
+        if isinstance(display, dict) and display:
+            normalized = self._normalize_display(display)
+            current["metadata"] = normalized
+            ref = current.get("ref")
+            cache_key = self._ref_cache_key(ref)
+            if cache_key:
+                self._cache_metadata(cache_key, normalized)
+            return
+        # Display absent — leave metadata alone; the renderer is the source of
+        # truth for what's playing and we do NOT issue follow-up library calls
+        # from the state listener.
+        cache_key = self._ref_cache_key(current.get("ref"))
+        if cache_key:
+            cached = self._metadata_cache.get(cache_key)
+            if cached:
+                current["metadata"] = cached
+
+    async def async_get_item_displays(
+        self, refs: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Slow-path display backfill via library.getItems.
+
+        Keyed by `<libraryId>|<itemId>`.  Use only for explicit "refresh details"
+        UX flows; do NOT call from the state listener.
+        """
+        results: dict[str, dict[str, Any]] = {}
+        if not refs:
+            return results
+        groups: dict[str, list[dict[str, str]]] = {}
+        for raw in refs:
+            ref = self._ref_from_anything(raw)
+            if not ref:
+                continue
+            key = self._ref_cache_key(ref)
+            if not key:
+                continue
+            cached = self._metadata_cache.get(key)
+            if cached:
+                results[key] = self._normalize_display(cached)
+                continue
+            last_fail = self._metadata_failures.get(key)
+            if last_fail and time.time() - last_fail < 60:
+                continue
+            groups.setdefault(ref["libraryId"], []).append(ref)
+
+        for library_id, library_refs in groups.items():
+            async with self._metadata_sema:
+                reply = await self._request(
+                    library_id,
+                    "library.getItems",
+                    {"refs": library_refs},
+                    need_lease=False,
+                    timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
+                )
+            if reply is None or reply.get("type") != "ack":
+                for ref in library_refs:
+                    key = self._ref_cache_key(ref)
+                    if key:
+                        self._metadata_failures[key] = time.time()
+                continue
+            items = (reply.get("body") or {}).get("items") or []
+            for item in items:
+                ref = item.get("ref") or {}
+                key = self._ref_cache_key(ref)
+                if not key:
+                    continue
+                if item.get("err"):
+                    self._metadata_failures[key] = time.time()
+                    continue
+                display = item.get("display") or {}
+                if not display:
+                    continue
+                normalized = self._normalize_display(display)
+                self._cache_metadata(key, normalized)
+                results[key] = normalized
+        return results
+
+    def _normalize_display(self, display: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a display block.
+
+        Folds `artists` into `artist`, normalizes duration field name, and
+        rewrites the artwork URL via the configured base.  Used both for
+        renderer-published display blocks and for backfill from
+        `library.getItems`.
+        """
+        if not display:
+            return display
+        result = dict(display)
         if "artists" in result and "artist" not in result:
             artists = result.get("artists", [])
             if isinstance(artists, list) and artists:
                 result["artist"] = ", ".join(str(a) for a in artists)
-        # Handle durationMs from various formats
         if "durationMs" not in result and "duration_ms" in result:
             result["durationMs"] = result.pop("duration_ms")
-        # Rewrite artwork URL
         art = result.get("artworkUrl")
         if art:
-            # Only apply base URL rewriting, not proxying
-            # Callers will apply proxying based on context (internal vs browser)
             result["artworkUrl"] = self._rewrite_artwork_base(art)
         return result
 
-    async def _resolve_sources_batch(
-        self, library_id: str, item_ids: list[str]
+    # Back-compat shim — older callers still use `_normalize_metadata`.  The
+    # display block and the legacy metadata block share field names so the
+    # implementation is identical.
+    _normalize_metadata = _normalize_display
+
+    async def _resolve_sources_for_refs(
+        self, refs: list[dict[str, Any]]
     ) -> dict[str, list[dict[str, Any]]]:
+        """Resolve playback sources for a list of structured refs.
+
+        Returns a mapping `<libraryId>|<itemId>` -> list of source dicts.
+        """
         results: dict[str, list[dict[str, Any]]] = {}
-        if not item_ids:
+        if not refs:
             return results
-        reply = await self._request(
-            library_id,
-            "library.resolveBatch",
-            {"itemIds": item_ids},
-            need_lease=False,
-            timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
-        )
-        if reply is None or reply.get("type") != "ack":
-            err = (reply or {}).get("err") or {}
-            message = str(err.get("message") or "")
-            if "unsupported command" in message.lower():
-                for item_id in item_ids:
-                    reply = await self._request(
-                        library_id,
-                        "library.resolve",
-                        {"itemId": item_id},
-                        need_lease=False,
-                        timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
-                    )
-                    if reply is None or reply.get("type") != "ack":
-                        continue
-                    sources = (reply.get("body") or {}).get("sources") or []
-                    if sources:
-                        results[item_id] = sources
-            return results
-        items = (reply.get("body") or {}).get("items") or []
-        for item in items:
-            item_id = item.get("itemId")
-            sources = item.get("sources") or []
-            if item_id and sources:
-                results[item_id] = sources
-        if results:
-            return results
-        for item_id in item_ids:
+        groups: dict[str, list[dict[str, str]]] = {}
+        for raw in refs:
+            ref = self._ref_from_anything(raw)
+            if not ref:
+                continue
+            groups.setdefault(ref["libraryId"], []).append(ref)
+
+        for library_id, library_refs in groups.items():
             reply = await self._request(
                 library_id,
-                "library.resolve",
-                {"itemId": item_id},
+                "library.resolveSourcesBatch",
+                {"refs": library_refs},
                 need_lease=False,
                 timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
             )
             if reply is None or reply.get("type") != "ack":
                 continue
-            sources = (reply.get("body") or {}).get("sources") or []
-            if sources:
-                results[item_id] = sources
+            items = (reply.get("body") or {}).get("items") or []
+            for item in items:
+                ref = item.get("ref") or {}
+                key = self._ref_cache_key(ref)
+                if not key:
+                    continue
+                if item.get("err"):
+                    continue
+                sources = item.get("sources") or []
+                if sources:
+                    results[key] = sources
         return results
+
+    async def _resolve_sources_for_ref(
+        self, ref: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        canonical = self._ref_from_anything(ref)
+        if not canonical:
+            return []
+        reply = await self._request(
+            canonical["libraryId"],
+            "library.resolveSources",
+            {"ref": canonical},
+            need_lease=False,
+            timeout_seconds=max(20, REPLY_TIMEOUT_SECONDS),
+        )
+        if reply is None or reply.get("type") != "ack":
+            return []
+        return (reply.get("body") or {}).get("sources") or []
 
     async def _publish_renderer_state(self, node_id: str, state: dict[str, Any]) -> None:
         topics = self._renderer_topics.get(node_id)
@@ -883,16 +848,16 @@ class MudBridge:
             return
         playback = state.get("playback") or {}
         current = state.get("current") or {}
-        metadata = current.get("metadata") or {}
+        display = self._current_display(current)
 
         status = playback.get("status") or "idle"
         if status == "stopped":
             status = "idle"
 
-        title = metadata.get("title")
-        artist = metadata.get("artist")
-        album = metadata.get("album")
-        artwork = self.rewrite_artwork_url(metadata.get("artworkUrl"))
+        title = display.get("title")
+        artist = display.get("artist")
+        album = display.get("album")
+        artwork = self.rewrite_artwork_url(display.get("artworkUrl"))
 
         payload = {
             "state": status,
@@ -1086,10 +1051,14 @@ class MudBridge:
             data = json.loads(payload)
         except Exception:
             return
-        media_id = data.get("media_content_id")
+        media_id = data.get("media_content_id") or data.get("ref")
         if not media_id:
             return
-        entries = await self._resolve_media_entries(media_id)
+        try:
+            entries = await self._resolve_media_entries(media_id)
+        except ValueError as exc:
+            _LOGGER.warning("play_media rejected: %s", exc)
+            return
         await self._queue_set_and_fill(node_id, entries)
 
     async def async_play(self, node_id: str) -> None:
@@ -1135,7 +1104,12 @@ class MudBridge:
         )
 
     async def async_get_queue(self, node_id: str) -> list[dict[str, Any]]:
-        """Fetch the current queue entries for a renderer with metadata."""
+        """Fetch the current queue entries for a renderer.
+
+        Each entry carries its own `display` block (and optional `ref`/
+        `resolved`) — controllers do NOT need to follow up with library
+        lookups for ordinary rendering.
+        """
         state = self.get_renderer_state(node_id)
         queue = state.get("queue") or {}
         length = queue.get("length") or 0
@@ -1148,7 +1122,7 @@ class MudBridge:
             reply = await self._request(
                 node_id,
                 "queue.get",
-                {"from": from_index, "count": page_size, "resolve": "metadata"},
+                {"from": from_index, "count": page_size},
                 need_lease=False,
             )
             if reply is None or reply.get("type") != "ack":
@@ -1164,24 +1138,49 @@ class MudBridge:
         await self._send_renderer_command(node_id, "playback.play", {"index": index})
 
     async def async_queue_add(
-        self, node_id: str, items: list[str], mode: str = "append"
+        self, node_id: str, items: list[Any], mode: str = "append"
     ) -> bool:
-        """Add items to queue with mode: replace, next, or append."""
+        """Add items to queue with mode: replace, next, or append.
+
+        Each item must be either a structured library ref dict
+        (`{kind, libraryId, itemId}` or `{libraryId, itemId}`) or one of the
+        recognised string forms (a `mu:item:` internal browse id, a direct
+        http(s):// URL, or a `playlist:`/`snapshot:` selector handled
+        elsewhere).  Legacy `lib:` strings are rejected.
+        """
         if not items:
             return True
-        entries = []
-        for item_id in items:
-            resolved = await self._resolve_media_entries(item_id)
-            _LOGGER.warning(
-                "DIAG queue_add resolve %s -> %d entries", item_id, len(resolved)
-            )
+        # Bulk-resolve all structured refs with one batch call before falling
+        # back to per-item resolution for non-ref forms.
+        ref_inputs: list[dict[str, Any]] = []
+        misc_inputs: list[Any] = []
+        for raw in items:
+            if isinstance(raw, str) and raw.startswith(self.LEGACY_LIB_PREFIX):
+                raise ValueError(
+                    "legacy 'lib:' item IDs are no longer supported; pass "
+                    "structured refs to mu/queue_add"
+                )
+            ref = self._ref_from_anything(raw)
+            if ref is not None:
+                ref_inputs.append(ref)
+            else:
+                misc_inputs.append(raw)
+
+        entries: list[dict[str, Any]] = []
+        if ref_inputs:
+            entries.extend(await self._entries_for_refs(ref_inputs))
+        for raw in misc_inputs:
+            resolved = await self._resolve_media_entries(raw)
             entries.extend(resolved)
-        _LOGGER.warning(
-            "DIAG queue_add total: node=%s mode=%s items=%d entries=%d",
-            node_id, mode, len(items), len(entries),
+        _LOGGER.debug(
+            "queue_add: node=%s mode=%s items=%d entries=%d",
+            node_id,
+            mode,
+            len(items),
+            len(entries),
         )
         if not entries:
-            _LOGGER.warning("DIAG queue_add SKIPPED: no entries resolved")
+            _LOGGER.warning("queue_add: no entries resolved")
             return False
 
         if mode == "replace":
@@ -1287,14 +1286,22 @@ class MudBridge:
         return success
 
     async def async_playlist_add_item(
-        self, playlist_id: str, item_id: str, mode: str = "append", at_index: int | None = None
+        self,
+        playlist_id: str,
+        ref: dict[str, Any],
+        mode: str = "append",
+        at_index: int | None = None,
     ) -> bool:
-        """Add an item to a playlist."""
+        """Add a single library item to a playlist using a structured ref."""
         if self._playlist_server is None:
+            return False
+        canonical = self._ref_from_anything(ref)
+        if canonical is None:
+            _LOGGER.warning("playlist.addItems rejected: invalid ref %r", ref)
             return False
         body: dict[str, Any] = {
             "playlistId": playlist_id,
-            "entries": [{"ref": {"id": item_id}}],
+            "entries": [{"ref": canonical}],
         }
         if mode == "insert" and at_index is not None:
             body["atIndex"] = at_index
@@ -1306,14 +1313,20 @@ class MudBridge:
         return reply is not None and reply.get("type") == "ack"
 
     async def async_playlist_add_items(
-        self, playlist_id: str, items: list[str]
+        self, playlist_id: str, refs: list[dict[str, Any]]
     ) -> bool:
-        """Add items to an existing playlist."""
-        if self._playlist_server is None or not items:
+        """Add items to an existing playlist via structured refs."""
+        if self._playlist_server is None or not refs:
             return False
-        entries = []
-        for item_id in items:
-            entries.append({"ref": {"id": item_id}})
+        entries: list[dict[str, Any]] = []
+        for raw in refs:
+            canonical = self._ref_from_anything(raw)
+            if canonical is None:
+                _LOGGER.warning("playlist.addItems skip invalid ref %r", raw)
+                continue
+            entries.append({"ref": canonical})
+        if not entries:
+            return False
         reply = await self._request(
             self._playlist_server["nodeId"],
             "playlist.addItems",
@@ -1333,20 +1346,24 @@ class MudBridge:
         return reply is not None and reply.get("type") == "ack"
 
     async def async_playlist_replace_items(
-        self, playlist_id: str, item_ids: list[str]
+        self, playlist_id: str, entries: list[dict[str, Any]]
     ) -> bool:
-        """Replace all items in a playlist with new items."""
+        """Replace all items in a playlist with the given queue-shape entries."""
         if self._playlist_server is None:
             return False
+        normalized: list[dict[str, Any]] = []
+        for raw in entries:
+            entry = self._normalize_queue_entry_for_save(raw)
+            if entry is not None:
+                normalized.append(entry)
         reply = await self._request(
             self._playlist_server["nodeId"],
             "playlist.replaceItems",
-            {"playlistId": playlist_id, "items": item_ids},
+            {"playlistId": playlist_id, "entries": normalized},
         )
         if reply is not None and reply.get("type") == "ack":
-            # Update cached playlist size
             if playlist_id in self._playlists:
-                self._playlists[playlist_id]["size"] = len(item_ids)
+                self._playlists[playlist_id]["size"] = len(normalized)
             return True
         return False
 
@@ -1389,27 +1406,37 @@ class MudBridge:
             {"repeat": repeat, "mode": mode},
         )
 
-    async def async_play_media(self, node_id: str, media_id: str) -> None:
-        if str(media_id).startswith("playlist:"):
-            playlist_id = str(media_id)[len("playlist:") :]
+    async def async_play_media(self, node_id: str, media_id: Any) -> None:
+        if isinstance(media_id, dict):
+            entries = await self._resolve_media_entries(media_id)
+            await self._queue_set_and_fill(node_id, entries)
+            return
+        text = str(media_id)
+        if text.startswith("playlist:"):
+            playlist_id = text[len("playlist:") :]
             if "?page=" in playlist_id:
                 playlist_id = playlist_id.split("?page=", 1)[0]
             playlist_id = playlist_id.strip()
             if playlist_id:
                 await self.async_load_playlist(node_id, playlist_id)
             return
-        if str(media_id).startswith("snapshot:"):
-            snapshot_id = str(media_id)[len("snapshot:") :]
+        if text.startswith("snapshot:"):
+            snapshot_id = text[len("snapshot:") :]
             if "?page=" in snapshot_id:
                 snapshot_id = snapshot_id.split("?page=", 1)[0]
             snapshot_id = snapshot_id.strip()
             if snapshot_id:
                 await self.async_load_snapshot(node_id, snapshot_id)
             return
-        if str(media_id).startswith("library:"):
-            await self.async_play_library_container(node_id, str(media_id))
+        if text.startswith("library:"):
+            await self.async_play_library_container(node_id, text)
             return
-        entries = await self._resolve_media_entries(media_id)
+        if text.startswith(self.LEGACY_LIB_PREFIX):
+            raise ValueError(
+                "legacy 'lib:' media IDs are no longer supported; pass a "
+                "structured library ref or use a 'mu:item:' browse content_id"
+            )
+        entries = await self._resolve_media_entries(text)
         await self._queue_set_and_fill(node_id, entries)
 
     async def async_fetch_playlist(self, playlist_id: str) -> dict[str, Any] | None:
@@ -1469,20 +1496,29 @@ class MudBridge:
         return bool(reply and reply.get("type") == "ack")
 
     async def async_load_snapshot(self, renderer_id: str, snapshot_id: str) -> None:
+        # Fetch + hydrate client-side rather than going through queue.loadSnapshot,
+        # so legacy snapshots that lack `display` get backfilled here. The
+        # renderer's own queue.loadSnapshot handler resolves sources but cannot
+        # fetch catalog metadata, which is the controller's responsibility.
         if self._playlist_server is None:
             return
-        body = {
-            "playlistServerId": self._playlist_server["nodeId"],
-            "snapshotId": snapshot_id,
-            "mode": "replace",
-            "resolve": "auto",
-        }
-        reply = await self._request_with_lease(
-            renderer_id, "queue.loadSnapshot", body, timeout_seconds=RENDERER_LOAD_TIMEOUT_SECONDS
+        snapshot = await self._request(
+            self._playlist_server["nodeId"],
+            "snapshot.get",
+            {"snapshotId": snapshot_id},
+            need_lease=False,
         )
-        if reply is None or reply.get("type") != "ack":
+        if snapshot is None or snapshot.get("type") != "ack":
             return
-        await self._send_renderer_command(renderer_id, "playback.play", {"index": 0})
+        body = snapshot.get("body") or {}
+        entries = body.get("entries") or []
+        playable: list[dict[str, Any]] = []
+        for entry in entries:
+            normalized = self._normalize_queue_entry_for_save(entry)
+            if normalized is not None:
+                playable.append(normalized)
+        playable = await self._hydrate_entries(playable)
+        await self._queue_set_and_fill_from_playlist_entries(renderer_id, playable)
 
     async def async_save_snapshot(self, renderer_id: str, name: str) -> bool:
         name = (name or "").strip()
@@ -1498,25 +1534,12 @@ class MudBridge:
         queue = state.get("queue") or {}
         playback = state.get("playback") or {}
         session = state.get("session") or {}
-        length = queue.get("length") or 0
-        items: list[str] = []
-        from_index = 0
-        page_size = 100
-        while from_index < length:
-            reply = await self._request(
-                renderer_id,
-                "queue.get",
-                {"from": from_index, "count": page_size},
-                need_lease=False,
-            )
-            if reply is None or reply.get("type") != "ack":
-                break
-            body = reply.get("body") or {}
-            for entry in body.get("entries") or []:
-                item_id = entry.get("itemId")
-                if item_id:
-                    items.append(item_id)
-            from_index += page_size
+        entries = await self.async_get_queue(renderer_id)
+        snapshot_entries: list[dict[str, Any]] = []
+        for entry in entries:
+            normalized = self._normalize_queue_entry_for_save(entry)
+            if normalized is not None:
+                snapshot_entries.append(normalized)
         capture = {
             "queueRevision": queue.get("revision", 0),
             "index": queue.get("index", 0),
@@ -1533,10 +1556,33 @@ class MudBridge:
                 "rendererId": renderer_id,
                 "sessionId": session.get("id"),
                 "capture": capture,
-                "items": items,
+                "entries": snapshot_entries,
             },
         )
         return bool(reply and reply.get("type") == "ack")
+
+    @staticmethod
+    def _normalize_queue_entry_for_save(entry: dict[str, Any]) -> dict[str, Any] | None:
+        """Strip a runtime queue entry down to the persisted-entry shape."""
+        if not isinstance(entry, dict):
+            return None
+        out: dict[str, Any] = {}
+        ref = entry.get("ref")
+        if isinstance(ref, dict) and ref.get("libraryId") and ref.get("itemId"):
+            out["ref"] = {
+                "kind": ref.get("kind") or "libraryItem",
+                "libraryId": ref["libraryId"],
+                "itemId": ref["itemId"],
+            }
+        resolved = entry.get("resolved")
+        if isinstance(resolved, dict) and resolved.get("url"):
+            out["resolved"] = resolved
+        display = entry.get("display")
+        if isinstance(display, dict) and display:
+            out["display"] = display
+        if not out.get("ref") and not out.get("resolved"):
+            return None
+        return out
 
     async def async_browse_library(
         self, library_id: str, container_id: str, start: int, count: int
@@ -1617,13 +1663,77 @@ class MudBridge:
                 page = 1
         return node_id.strip(), container_id, page
 
-    async def async_fetch_metadata(self, item_id: str) -> dict[str, Any]:
-        return await self._fetch_metadata(item_id)
-
-    async def async_fetch_metadata_batch(
-        self, item_ids: list[str]
+    async def async_fetch_displays(
+        self, refs: list[dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
-        return await self._fetch_metadata_batch(item_ids)
+        """Slow-path display backfill keyed by `<libraryId>|<itemId>`."""
+        return await self.async_get_item_displays(refs)
+
+    async def _hydrate_entries(
+        self, entries: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Backfill `display` and `resolved` on queue entries that have only `ref`.
+
+        Renderers preserve display when supplied but cannot fetch it themselves
+        (per the protocol contract).  `playCurrent` also needs a resolved source
+        URL.  Doing this once at the controller before queue.set/add means the
+        renderer never sees a ref-only entry on its hot path.
+        """
+        if not entries:
+            return entries
+        refs_for_display: list[dict[str, Any]] = []
+        refs_for_sources: list[dict[str, Any]] = []
+        for entry in entries:
+            ref = entry.get("ref") if isinstance(entry, dict) else None
+            if not isinstance(ref, dict):
+                continue
+            canonical = self._ref_from_anything(ref)
+            if canonical is None:
+                continue
+            if not entry.get("display"):
+                refs_for_display.append(canonical)
+            if not entry.get("resolved"):
+                refs_for_sources.append(canonical)
+        if not refs_for_display and not refs_for_sources:
+            return entries
+        displays_task = (
+            self.async_get_item_displays(refs_for_display)
+            if refs_for_display
+            else None
+        )
+        sources_task = (
+            self._resolve_sources_for_refs(refs_for_sources)
+            if refs_for_sources
+            else None
+        )
+        displays: dict[str, dict[str, Any]] = {}
+        sources: dict[str, list[dict[str, Any]]] = {}
+        if displays_task and sources_task:
+            displays, sources = await asyncio.gather(displays_task, sources_task)
+        elif displays_task:
+            displays = await displays_task
+        elif sources_task:
+            sources = await sources_task
+        out: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            ref = entry.get("ref")
+            if not isinstance(ref, dict):
+                out.append(entry)
+                continue
+            canonical = self._ref_from_anything(ref)
+            if canonical is None:
+                out.append(entry)
+                continue
+            key = self._ref_cache_key(canonical)
+            merged = dict(entry)
+            if not merged.get("display") and key in displays:
+                merged["display"] = displays[key]
+            if not merged.get("resolved") and key in sources and sources[key]:
+                merged["resolved"] = sources[key][0]
+            out.append(merged)
+        return out
 
     async def async_load_playlist(
         self, renderer_id: str, playlist_id: str, mode: str = "replace", resolve: str = "auto"
@@ -1656,12 +1766,13 @@ class MudBridge:
         if playlist is None or playlist.get("type") != "ack":
             return
         entries = (playlist.get("body") or {}).get("entries") or []
-        refs: list[str] = []
+        playable_entries: list[dict[str, Any]] = []
         for entry in entries:
-            ref_id = ((entry.get("ref") or {}).get("id") or "").strip()
-            if ref_id:
-                refs.append(ref_id)
-        await self._queue_set_and_fill_from_refs(renderer_id, refs)
+            normalized = self._normalize_queue_entry_for_save(entry)
+            if normalized is not None:
+                playable_entries.append(normalized)
+        playable_entries = await self._hydrate_entries(playable_entries)
+        await self._queue_set_and_fill_from_playlist_entries(renderer_id, playable_entries)
 
     async def _queue_set_and_fill(self, node_id: str, entries: list[dict[str, Any]]) -> None:
         if not entries:
@@ -1680,6 +1791,7 @@ class MudBridge:
         chunk_size = 50
         for start in range(0, len(entries), chunk_size):
             chunk = entries[start : start + chunk_size]
+            chunk = await self._hydrate_entries(chunk)
             reply = await self._request_with_lease(
                 node_id, "queue.add", {"position": "end", "entries": chunk}
             )
@@ -1692,37 +1804,12 @@ class MudBridge:
     ) -> None:
         if not item_ids:
             return
-        first_entries = await self._entries_for_library_items(library_id, item_ids[:1])
-        if not first_entries:
-            return
-        reply = await self._request_with_lease(
-            node_id, "queue.set", {"startIndex": 0, "entries": first_entries}
-        )
-        if reply is None or reply.get("type") != "ack":
-            return
-        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
-        if len(item_ids) > 1:
-            self.hass.async_create_task(
-                self._queue_add_library_items(node_id, library_id, item_ids[1:])
-            )
+        refs = [self._make_library_ref(library_id, item_id) for item_id in item_ids]
+        await self._queue_set_and_fill_from_refs(node_id, refs)
 
-    async def _queue_add_library_items(
-        self, node_id: str, library_id: str, item_ids: list[str]
+    async def _queue_set_and_fill_from_refs(
+        self, node_id: str, refs: list[dict[str, Any]]
     ) -> None:
-        chunk_size = 50
-        for start in range(0, len(item_ids), chunk_size):
-            chunk = item_ids[start : start + chunk_size]
-            entries = await self._entries_for_library_items(library_id, chunk)
-            if not entries:
-                continue
-            reply = await self._request_with_lease(
-                node_id, "queue.add", {"position": "end", "entries": entries}
-            )
-            if reply is None or reply.get("type") != "ack":
-                _LOGGER.warning("queue.add failed for %s", node_id)
-                return
-
-    async def _queue_set_and_fill_from_refs(self, node_id: str, refs: list[str]) -> None:
         if not refs:
             return
         first_entries = await self._entries_for_refs(refs[:1])
@@ -1737,14 +1824,36 @@ class MudBridge:
         if len(refs) > 1:
             self.hass.async_create_task(self._queue_add_refs(node_id, refs[1:]))
 
-    async def _queue_add_refs(self, node_id: str, refs: list[str]) -> None:
+    async def _queue_set_and_fill_from_playlist_entries(
+        self, node_id: str, entries: list[dict[str, Any]]
+    ) -> None:
+        if not entries:
+            return
+        reply = await self._request_with_lease(
+            node_id, "queue.set", {"startIndex": 0, "entries": entries[:1]}
+        )
+        if reply is None or reply.get("type") != "ack":
+            return
+        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        if len(entries) > 1:
+            self.hass.async_create_task(
+                self._queue_add_entries(node_id, entries[1:])
+            )
+
+    async def _queue_add_refs(
+        self, node_id: str, refs: list[dict[str, Any]]
+    ) -> None:
         chunk_size = 50
         for start in range(0, len(refs), chunk_size):
             chunk = refs[start : start + chunk_size]
             try:
                 entries = await self._entries_for_refs(chunk)
                 if not entries:
-                    _LOGGER.warning("queue_add_refs: no entries resolved for chunk start=%d count=%d", start, len(chunk))
+                    _LOGGER.warning(
+                        "queue_add_refs: no entries resolved for chunk start=%d count=%d",
+                        start,
+                        len(chunk),
+                    )
                     continue
                 reply = await self._request_with_lease(
                     node_id, "queue.add", {"position": "end", "entries": entries}
@@ -1754,46 +1863,33 @@ class MudBridge:
             except Exception as e:
                 _LOGGER.exception("queue_add_refs failed: %s", e)
 
-    async def _entries_for_library_items(
-        self, library_id: str, item_ids: list[str]
+    async def _entries_for_refs(
+        self, refs: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        if not item_ids:
-            return []
-        sources_map = await self._resolve_sources_batch(library_id, item_ids)
-        entries: list[dict[str, Any]] = []
-        for item_id in item_ids:
-            sources = sources_map.get(item_id)
-            if not sources:
-                continue
-            ref_id = f"lib:{library_id}:{item_id}"
-            entries.append({"ref": {"id": ref_id}, "resolved": sources[0]})
-        return entries
-
-    async def _entries_for_refs(self, refs: list[str]) -> list[dict[str, Any]]:
         if not refs:
             return []
-        order: list[tuple[str, str, str]] = []
-        grouped: dict[str, list[str]] = {}
-        for ref in refs:
-            selector, item_id = self._split_lib_ref(ref)
-            if selector is None:
-                continue
-            library_id = self._resolve_library(selector)
-            if library_id is None:
-                continue
-            order.append((ref, library_id, item_id))
-            grouped.setdefault(library_id, []).append(item_id)
-        sources_by_library: dict[str, dict[str, list[dict[str, Any]]]] = {}
-        for library_id, item_ids in grouped.items():
-            sources_by_library[library_id] = await self._resolve_sources_batch(
-                library_id, item_ids
-            )
+        canonical: list[dict[str, str]] = []
+        for raw in refs:
+            ref = self._ref_from_anything(raw)
+            if ref is not None:
+                canonical.append(ref)
+        sources_by_key, displays_by_key = await asyncio.gather(
+            self._resolve_sources_for_refs(canonical),
+            self.async_get_item_displays(canonical),
+        )
         entries: list[dict[str, Any]] = []
-        for ref, library_id, item_id in order:
-            sources = sources_by_library.get(library_id, {}).get(item_id)
+        for ref in canonical:
+            key = self._ref_cache_key(ref)
+            if not key:
+                continue
+            sources = sources_by_key.get(key)
             if not sources:
                 continue
-            entries.append({"ref": {"id": ref}, "resolved": sources[0]})
+            entry: dict[str, Any] = {"ref": ref, "resolved": sources[0]}
+            display = displays_by_key.get(key)
+            if display:
+                entry["display"] = display
+            entries.append(entry)
         return entries
 
     async def async_acquire_lease(self, node_id: str) -> bool:
@@ -1822,48 +1918,73 @@ class MudBridge:
         return False
 
 
-    async def _resolve_media_entries(self, media_id: str) -> list[dict[str, Any]]:
-        media_id = str(media_id).strip()
-        if media_id.startswith("http://") or media_id.startswith("https://"):
-            return [{"resolved": {"url": media_id, "byteRange": False}}]
-        if media_id.startswith("lib:"):
-            selector, item_id = self._split_lib_ref(media_id)
-            if selector is None:
+    LEGACY_LIB_PREFIX = "lib:"
+
+    INTERNAL_ITEM_PREFIX = "mu:item:"
+
+    def _parse_internal_item_ref(
+        self, media_id: str
+    ) -> tuple[str | None, str | None]:
+        """Parse the internal browse-tree content_id `mu:item:<libId>:<itemId>`.
+
+        This is NOT a wire format and not user-facing — it is only emitted by
+        the integration's own BrowseMedia tree.  The library ID here uses the
+        canonical `mu:library:<provider>:<namespace>:<resource>` form, so we
+        slice off the first six colon parts.
+        """
+        if not media_id.startswith(self.INTERNAL_ITEM_PREFIX):
+            return None, None
+        rest = media_id[len(self.INTERNAL_ITEM_PREFIX):]
+        parts = rest.split(":", 5)
+        if len(parts) < 6:
+            return None, None
+        library_id = ":".join(parts[:5])
+        item_id = parts[5]
+        if not library_id or not item_id:
+            return None, None
+        return library_id, item_id
+
+    async def _resolve_media_entries(self, media_id: Any) -> list[dict[str, Any]]:
+        # Structured ref dict — preferred path from new callers.
+        if isinstance(media_id, dict):
+            ref = self._ref_from_anything(media_id)
+            if ref is None:
                 return []
-            library_id = self._resolve_library(selector)
-            if library_id is None:
-                return []
-            reply = await self._request(
-                library_id, "library.resolve", {"itemId": item_id}
+            return await self._entries_for_refs([ref])
+        text = str(media_id).strip()
+        if text.startswith("http://") or text.startswith("https://"):
+            return [{"resolved": {"url": text, "byteRange": False}}]
+        if text.startswith(self.LEGACY_LIB_PREFIX):
+            raise ValueError(
+                "legacy 'lib:' media IDs are no longer supported; pass a "
+                "structured library ref {kind, libraryId, itemId} or use the "
+                "new mu:item: browse content_id"
             )
-            if reply is None or reply.get("type") != "ack":
+        if text.startswith(self.INTERNAL_ITEM_PREFIX):
+            library_id, item_id = self._parse_internal_item_ref(text)
+            if not library_id or not item_id:
                 return []
-            body = reply.get("body") or {}
-            sources = body.get("sources") or []
+            ref = self._make_library_ref(library_id, item_id)
+            sources = await self._resolve_sources_for_ref(ref)
             if not sources:
                 return []
-            # Check if sources represent multiple tracks (container expansion)
-            # or multiple formats of the same track (alternative sources).
-            # Container expansion: each source has a distinct itemId (album tracks).
-            # Single track: sources share the same itemId or have none — use first only.
             distinct_ids = {s.get("itemId") for s in sources if s.get("itemId")}
             is_container = len(distinct_ids) > 1
-            _LOGGER.warning(
-                "DIAG resolve %s: %d sources, %d distinct itemIds, container=%s",
-                media_id, len(sources), len(distinct_ids), is_container,
-            )
             if is_container:
-                entries = []
+                entries: list[dict[str, Any]] = []
                 for source in sources:
-                    sid = source.get("itemId")
-                    ref_id = f"lib:{library_id}:{sid}" if sid else media_id
-                    entries.append({"ref": {"id": ref_id}, "resolved": source})
+                    sid = source.get("itemId") or item_id
+                    entries.append({
+                        "ref": self._make_library_ref(library_id, sid),
+                        "resolved": source,
+                    })
                 return entries
-            # Single track — use only the first source
             source = sources[0]
-            sid = source.get("itemId")
-            ref_id = f"lib:{library_id}:{sid}" if sid else media_id
-            return [{"ref": {"id": ref_id}, "resolved": source}]
+            sid = source.get("itemId") or item_id
+            return [{
+                "ref": self._make_library_ref(library_id, sid),
+                "resolved": source,
+            }]
         return []
 
     def _resolve_renderer(self, selector: str) -> str | None:
@@ -2161,9 +2282,11 @@ class MudBridge:
                 "token": lease.token,
             }
         topic = f"{self.topic_base}/node/{node_id}/cmd"
-        _LOGGER.warning(
-            "DIAG publish cmd_id=%s type=%s node=%s entries=%d",
-            cmd_id, cmd_type, node_id.split(":")[-1],
+        _LOGGER.debug(
+            "publish cmd_id=%s type=%s node=%s entries=%d",
+            cmd_id,
+            cmd_type,
+            node_id.split(":")[-1],
             len(body.get("entries", [])),
         )
         await self._publish(topic, payload, retain=False)
@@ -2213,26 +2336,4 @@ class MudBridge:
             if topic in topics.values():
                 return node_id
         return None
-
-    def _split_lib_ref(self, ref: str) -> tuple[str | None, str | None]:
-        """Split a library reference into (library_node_id, item_id).
-        
-        Format: lib:mu:library:{provider}:{namespace}:{resource}:{item_id}
-        Example: lib:mu:library:upnp:mud@office:default:uuid::base64
-        Returns: (mu:library:upnp:mud@office:default, uuid::base64)
-        """
-        if not ref.startswith("lib:"):
-            return None, None
-        ref = ref[len("lib:") :]
-        # Library node IDs have the pattern: mu:library:{provider}:{namespace}:{resource}
-        # So we need to find the 5th colon to separate library_id from item_id
-        parts = ref.split(":", 5)  # Split into at most 6 parts
-        if len(parts) < 6:
-            return None, None
-        # Rejoin first 5 parts as library_id, 6th part is item_id
-        library_id = ":".join(parts[:5])
-        item_id = parts[5]
-        if not library_id or not item_id:
-            return None, None
-        return library_id, item_id
 

@@ -134,7 +134,7 @@ async def ws_renderer_state(
     playback = state.get("playback") or {}
     queue = state.get("queue") or {}
     current = state.get("current") or {}
-    metadata = current.get("metadata") or {}
+    display = bridge._current_display(current)
 
     result = {
         "session": {
@@ -150,10 +150,11 @@ async def ws_renderer_state(
             "mute": playback.get("mute", False),
         },
         "current": {
-            "title": metadata.get("title", ""),
-            "artist": metadata.get("artist", ""),
-            "album": metadata.get("album", ""),
-            "art_url": bridge.rewrite_artwork_url(metadata.get("artworkUrl")),
+            "ref": current.get("ref") if isinstance(current.get("ref"), dict) else None,
+            "title": display.get("title", ""),
+            "artist": display.get("artist", ""),
+            "album": display.get("album", ""),
+            "art_url": bridge.rewrite_artwork_url(display.get("artworkUrl")),
         },
         "queue": {
             "revision": queue.get("revision", 0),
@@ -196,12 +197,12 @@ async def ws_subscribe_renderer_state(
             playback = state.get("playback") or {}
             queue = state.get("queue") or {}
             current = state.get("current") or {}
-            metadata = current.get("metadata") or {}
+            display = bridge._current_display(current)
 
             # Only send when something meaningful changes (not just position).
             # This prevents flooding the WS with position-only updates.
             status = playback.get("status", "idle")
-            title = metadata.get("title", "")
+            title = display.get("title", "")
             vol = playback.get("volume", 1.0)
             mute = playback.get("mute", False)
             q_rev = queue.get("revision", 0)
@@ -239,10 +240,11 @@ async def ws_subscribe_renderer_state(
                     "mute": mute,
                 },
                 "current": {
+                    "ref": current.get("ref") if isinstance(current.get("ref"), dict) else None,
                     "title": title,
-                    "artist": metadata.get("artist", ""),
-                    "album": metadata.get("album", ""),
-                    "art_url": bridge.rewrite_artwork_url(metadata.get("artworkUrl")),
+                    "artist": display.get("artist", ""),
+                    "album": display.get("album", ""),
+                    "art_url": bridge.rewrite_artwork_url(display.get("artworkUrl")),
                 },
                 "queue": {
                     "revision": q_rev,
@@ -548,53 +550,10 @@ async def ws_queue_get(
     queue_info = (state or {}).get("queue") or {}
 
     entries = await bridge.async_get_queue(renderer_id)
-    
-    # Collect item IDs that need metadata resolution
-    # Use a dict to deduplicate while preserving order
-    items_needing_metadata = {}
-    for entry in entries:
-        metadata = entry.get("metadata") or {}
-        if not metadata.get("title") and not metadata.get("name"):
-            item_id = entry.get("itemId")
-            if item_id and item_id.startswith("lib:") and item_id not in items_needing_metadata:
-                items_needing_metadata[item_id] = True
-    
-    # Batch fetch metadata for items without inline metadata
-    resolved_metadata = {}
-    if items_needing_metadata:
-        resolved_metadata = await bridge.async_fetch_metadata_batch(list(items_needing_metadata.keys()))
-        _LOGGER.debug("Queue metadata resolution: requested=%d resolved=%d", 
-                      len(items_needing_metadata), len(resolved_metadata))
-    
+
     formatted = []
     for entry in entries:
-        metadata = entry.get("metadata") or {}
-        item_id = entry.get("itemId", "")
-        
-        # If no inline metadata, try resolved metadata
-        if not metadata.get("title") and not metadata.get("name"):
-            if item_id in resolved_metadata:
-                metadata = resolved_metadata[item_id]
-                _LOGGER.debug("Using resolved metadata for %s: title=%s", 
-                              item_id, metadata.get("title") or metadata.get("name"))
-        
-        # Queue metadata uses 'title' but may have 'name' as fallback
-        title = metadata.get("title") or metadata.get("name") or "Unknown"
-        # Handle both single artist string and artists array
-        artist = metadata.get("artist") or ""
-        if not artist:
-            artists = metadata.get("artists")
-            if isinstance(artists, list) and artists:
-                artist = ", ".join(artists)
-        formatted.append({
-            "queueEntryId": entry.get("queueEntryId", ""),
-            "itemId": item_id,
-            "title": title,
-            "artist": artist,
-            "album": metadata.get("album", ""),
-            "duration_ms": metadata.get("durationMs", 0),
-            "art_url": bridge.rewrite_artwork_url(metadata.get("artworkUrl") or metadata.get("imageUrl")),
-        })
+        formatted.append(_format_queue_entry_for_panel(bridge, entry))
 
     result = {
         "revision": queue_info.get("revision", 0),
@@ -604,11 +563,51 @@ async def ws_queue_get(
     connection.send_result(msg["id"], result)
 
 
+def _format_queue_entry_for_panel(bridge, entry: dict[str, Any]) -> dict[str, Any]:
+    """Format a queue entry for panel JSON.
+
+    Reads `entry.display` directly — no library round-trips on the hot path.
+    Falls back to the resolved URL or the raw item id only if the renderer
+    failed to attach a display block.
+    """
+    display = bridge.display_for_entry(entry) or {}
+    ref = entry.get("ref") if isinstance(entry.get("ref"), dict) else {}
+    resolved = entry.get("resolved") if isinstance(entry.get("resolved"), dict) else {}
+    title = display.get("title") or display.get("name")
+    if not title:
+        title = resolved.get("url") or ref.get("itemId") or "Unknown"
+    artist = display.get("artist") or ""
+    if not artist:
+        artists = display.get("artists")
+        if isinstance(artists, list) and artists:
+            artist = ", ".join(str(a) for a in artists)
+    art = display.get("artworkUrl") or display.get("imageUrl")
+    return {
+        "queueEntryId": entry.get("queueEntryId", ""),
+        "ref": ref or None,
+        "resolved": {"url": resolved.get("url")} if resolved.get("url") else None,
+        "display": {
+            "title": title,
+            "artist": artist,
+            "album": display.get("album", ""),
+            "durationMs": display.get("durationMs", 0),
+            "artworkUrl": bridge.rewrite_artwork_url(art),
+            "mediaType": display.get("mediaType", ""),
+        },
+        # Legacy/flat fields kept for backwards-compatible panel JS rendering.
+        "title": title,
+        "artist": artist,
+        "album": display.get("album", ""),
+        "duration_ms": display.get("durationMs", 0),
+        "art_url": bridge.rewrite_artwork_url(art),
+    }
+
+
 @websocket_api.websocket_command({
     vol.Required("type"): "mu/queue_add",
     vol.Required("renderer_id"): str,
     vol.Required("mode"): vol.In(["replace", "next", "append"]),
-    vol.Required("items"): [str],
+    vol.Required("items"): list,
 })
 @websocket_api.async_response
 async def ws_queue_add(
@@ -616,7 +615,12 @@ async def ws_queue_add(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Add items to queue."""
+    """Add items to a renderer's queue.
+
+    Accepts structured library refs (`{libraryId, itemId}` or full
+    `{kind, libraryId, itemId}`), direct http(s):// URLs, or `mu:item:`
+    internal browse content_ids.  Legacy `lib:` strings are rejected.
+    """
     bridge = _get_bridge(hass)
     if bridge is None:
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
@@ -624,10 +628,23 @@ async def ws_queue_add(
 
     renderer_id = msg["renderer_id"]
     mode = msg["mode"]
-    items = msg["items"]
-    _LOGGER.warning("DIAG ws_queue_add: renderer=%s mode=%s items=%s", renderer_id, mode, items)
+    items = msg["items"] or []
+    _LOGGER.debug("ws_queue_add: renderer=%s mode=%s count=%d", renderer_id, mode, len(items))
+    for raw in items:
+        if isinstance(raw, str) and raw.startswith("lib:"):
+            connection.send_error(
+                msg["id"],
+                "legacy_lib_ref",
+                "Legacy 'lib:' item IDs are no longer accepted. "
+                "Pass structured refs {libraryId, itemId} instead.",
+            )
+            return
 
-    success = await bridge.async_queue_add(renderer_id, items, mode)
+    try:
+        success = await bridge.async_queue_add(renderer_id, items, mode)
+    except ValueError as exc:
+        connection.send_error(msg["id"], "invalid_ref", str(exc))
+        return
     connection.send_result(msg["id"], {"success": success})
 
 
@@ -796,15 +813,15 @@ async def ws_playlist_get(
 
     entries = []
     for entry in playlist.get("entries") or []:
-        ref = entry.get("ref") or {}
-        metadata = entry.get("metadata") or {}
+        ref = entry.get("ref") if isinstance(entry.get("ref"), dict) else {}
+        display = bridge.display_for_entry(entry) or {}
         entries.append({
             "entryId": entry.get("entryId", ""),
-            "itemId": ref.get("id", ""),
-            "title": metadata.get("title", "Unknown"),
-            "artist": metadata.get("artist", ""),
-            "album": metadata.get("album", ""),
-            "art_url": bridge.rewrite_artwork_url(metadata.get("artworkUrl")),
+            "ref": ref or None,
+            "title": display.get("title", "Unknown"),
+            "artist": display.get("artist", ""),
+            "album": display.get("album", ""),
+            "art_url": bridge.rewrite_artwork_url(display.get("artworkUrl")),
         })
 
     result = {
@@ -863,7 +880,7 @@ async def ws_playlist_rename(
 @websocket_api.websocket_command({
     vol.Required("type"): "mu/playlist_add",
     vol.Required("playlist_id"): str,
-    vol.Required("item_id"): str,
+    vol.Required("ref"): dict,
     vol.Optional("mode", default="append"): vol.In(["append", "insert"]),
     vol.Optional("at_index"): int,
 })
@@ -879,9 +896,18 @@ async def ws_playlist_add(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
+    ref = msg.get("ref") or {}
+    if not (isinstance(ref, dict) and ref.get("libraryId") and ref.get("itemId")):
+        connection.send_error(
+            msg["id"],
+            "invalid_ref",
+            "playlist_add requires a structured ref {libraryId, itemId}",
+        )
+        return
+
     success = await bridge.async_playlist_add_item(
         msg["playlist_id"],
-        msg["item_id"],
+        ref,
         msg["mode"],
         msg.get("at_index"),
     )
@@ -1444,15 +1470,14 @@ async def ws_playlist_save_from_queue(
         connection.send_error(msg["id"], "queue_error", "Failed to get queue")
         return
 
-    # Extract item IDs from queue entries
-    item_ids = [entry.get("itemId") for entry in entries if entry.get("itemId")]
-
-    # Replace playlist items
-    success = await bridge.async_playlist_replace_items(playlist_id, item_ids)
+    success = await bridge.async_playlist_replace_items(playlist_id, entries)
     if not success:
         connection.send_error(msg["id"], "save_failed", "Failed to save queue to playlist")
         return
 
-    connection.send_result(msg["id"], {"success": True, "playlistId": playlist_id, "itemCount": len(item_ids)})
+    connection.send_result(
+        msg["id"],
+        {"success": True, "playlistId": playlist_id, "itemCount": len(entries)},
+    )
 
 

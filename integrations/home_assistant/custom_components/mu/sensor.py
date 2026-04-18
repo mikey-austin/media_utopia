@@ -296,11 +296,11 @@ class PlaybackStatusSensor(LeaseSensorBase):
     def extra_state_attributes(self) -> dict[str, Any]:
         state = self._bridge.get_renderer_state(self._node_id)
         current = state.get("current") or {}
-        metadata = current.get("metadata") or {}
+        display = self._bridge._current_display(current) or {}
         return {
-            "media_title": metadata.get("title"),
-            "media_artist": metadata.get("artist"),
-            "media_album": metadata.get("album"),
+            "media_title": display.get("title"),
+            "media_artist": display.get("artist"),
+            "media_album": display.get("album"),
         }
 
 

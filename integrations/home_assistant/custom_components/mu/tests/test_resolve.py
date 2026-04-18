@@ -1,10 +1,10 @@
-"""Tests for resolve logic in bridge.py."""
+"""Tests for source-resolution logic in bridge.py."""
 
 
 def test_single_track_detection():
     """A single track with multiple alternative sources should produce one entry."""
     # Simulating what _resolve_media_entries does:
-    # When library.resolve returns multiple sources for the same track
+    # When library.resolveSources returns multiple sources for the same track
     sources = [
         {"url": "http://host/direct.mp3", "mime": "audio/mpeg"},
         {"url": "http://host/transcoded.mp3", "mime": "audio/mpeg"},
