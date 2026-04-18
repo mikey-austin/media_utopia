@@ -64,9 +64,6 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	if err != nil {
 		return nil, err
 	}
-	if err := storage.MigrateOnDisk(log); err != nil {
-		return nil, fmt.Errorf("migrate storage: %w", err)
-	}
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
 

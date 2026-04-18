@@ -657,7 +657,7 @@ class MudBridge:
         """Build a structured library ref from a dict input.
 
         Accepts {kind, libraryId, itemId} (canonical) or {libraryId, itemId}.
-        Returns None for anything else (including legacy `lib:` strings).
+        Returns None for anything else.
         """
         if not isinstance(value, dict):
             return None
@@ -1146,7 +1146,7 @@ class MudBridge:
         (`{kind, libraryId, itemId}` or `{libraryId, itemId}`) or one of the
         recognised string forms (a `mu:item:` internal browse id, a direct
         http(s):// URL, or a `playlist:`/`snapshot:` selector handled
-        elsewhere).  Legacy `lib:` strings are rejected.
+        elsewhere).
         """
         if not items:
             return True
@@ -1155,11 +1155,6 @@ class MudBridge:
         ref_inputs: list[dict[str, Any]] = []
         misc_inputs: list[Any] = []
         for raw in items:
-            if isinstance(raw, str) and raw.startswith(self.LEGACY_LIB_PREFIX):
-                raise ValueError(
-                    "legacy 'lib:' item IDs are no longer supported; pass "
-                    "structured refs to mu/queue_add"
-                )
             ref = self._ref_from_anything(raw)
             if ref is not None:
                 ref_inputs.append(ref)
@@ -1431,11 +1426,6 @@ class MudBridge:
         if text.startswith("library:"):
             await self.async_play_library_container(node_id, text)
             return
-        if text.startswith(self.LEGACY_LIB_PREFIX):
-            raise ValueError(
-                "legacy 'lib:' media IDs are no longer supported; pass a "
-                "structured library ref or use a 'mu:item:' browse content_id"
-            )
         entries = await self._resolve_media_entries(text)
         await self._queue_set_and_fill(node_id, entries)
 
@@ -1918,8 +1908,6 @@ class MudBridge:
         return False
 
 
-    LEGACY_LIB_PREFIX = "lib:"
-
     INTERNAL_ITEM_PREFIX = "mu:item:"
 
     def _parse_internal_item_ref(
@@ -1954,12 +1942,6 @@ class MudBridge:
         text = str(media_id).strip()
         if text.startswith("http://") or text.startswith("https://"):
             return [{"resolved": {"url": text, "byteRange": False}}]
-        if text.startswith(self.LEGACY_LIB_PREFIX):
-            raise ValueError(
-                "legacy 'lib:' media IDs are no longer supported; pass a "
-                "structured library ref {kind, libraryId, itemId} or use the "
-                "new mu:item: browse content_id"
-            )
         if text.startswith(self.INTERNAL_ITEM_PREFIX):
             library_id, item_id = self._parse_internal_item_ref(text)
             if not library_id or not item_id:

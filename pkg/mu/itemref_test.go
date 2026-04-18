@@ -18,7 +18,7 @@ func TestParseLibraryNodeID(t *testing.T) {
 	})
 
 	t.Run("rejects non-mu prefix", func(t *testing.T) {
-		_, _, _, err := ParseLibraryNodeID("lib:mu:library:jellyfin:mud@home:default")
+		_, _, _, err := ParseLibraryNodeID("some:library:jellyfin:mud@home:default")
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -83,7 +83,7 @@ func TestLibraryItemRefValidate(t *testing.T) {
 	})
 
 	t.Run("invalid library id", func(t *testing.T) {
-		r := LibraryItemRef{Kind: LibraryItemKind, LibraryID: "lib:mu:library:jellyfin:mud@home:default", ItemID: "x"}
+		r := LibraryItemRef{Kind: LibraryItemKind, LibraryID: "not-a-mu-urn", ItemID: "x"}
 		if err := r.Validate(); err == nil {
 			t.Fatal("expected error")
 		}

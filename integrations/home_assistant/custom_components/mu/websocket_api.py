@@ -619,7 +619,7 @@ async def ws_queue_add(
 
     Accepts structured library refs (`{libraryId, itemId}` or full
     `{kind, libraryId, itemId}`), direct http(s):// URLs, or `mu:item:`
-    internal browse content_ids.  Legacy `lib:` strings are rejected.
+    internal browse content_ids.
     """
     bridge = _get_bridge(hass)
     if bridge is None:
@@ -630,15 +630,6 @@ async def ws_queue_add(
     mode = msg["mode"]
     items = msg["items"] or []
     _LOGGER.debug("ws_queue_add: renderer=%s mode=%s count=%d", renderer_id, mode, len(items))
-    for raw in items:
-        if isinstance(raw, str) and raw.startswith("lib:"):
-            connection.send_error(
-                msg["id"],
-                "legacy_lib_ref",
-                "Legacy 'lib:' item IDs are no longer accepted. "
-                "Pass structured refs {libraryId, itemId} instead.",
-            )
-            return
 
     try:
         success = await bridge.async_queue_add(renderer_id, items, mode)

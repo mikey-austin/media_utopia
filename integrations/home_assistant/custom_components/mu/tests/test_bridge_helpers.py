@@ -123,9 +123,9 @@ def test_ref_from_anything_partial_dict_fills_kind():
     assert ref == {"kind": "libraryItem", "libraryId": "lib-1", "itemId": "track-1"}
 
 
-def test_ref_from_anything_rejects_legacy_string():
+def test_ref_from_anything_rejects_string():
     bridge = _make_bridge()
-    assert bridge._ref_from_anything("lib:mu:library:fs:mud@home:default:abc") is None
+    assert bridge._ref_from_anything("just-a-string") is None
 
 
 def test_ref_from_anything_rejects_missing_fields():
@@ -143,12 +143,6 @@ def test_ref_cache_key():
     assert key == "lib-1|track-1"
     assert bridge._ref_cache_key(None) is None
     assert bridge._ref_cache_key({"libraryId": "lib-1"}) is None
-
-
-def test_split_lib_ref_helper_removed():
-    """The legacy _split_lib_ref helper must be gone after the protocol reset."""
-    bridge = _make_bridge()
-    assert not hasattr(bridge, "_split_lib_ref")
 
 
 # ---------------------------------------------------------------------------

@@ -323,12 +323,6 @@ class MuRendererEntity(MediaPlayerEntity):
                 return
             except ValueError:
                 pass
-        if str(media_id).startswith("lib:"):
-            raise ValueError(
-                "Legacy 'lib:' media_content_id is no longer supported. "
-                "Update your automation to a structured library ref or use "
-                "the new 'mu:item:' browse content id."
-            )
         try:
             await self._bridge.async_play_media(self._node_id, media_id)
         except ValueError as exc:

@@ -302,36 +302,3 @@ def test_resolve_sources_for_refs_uses_library_resolveSourcesBatch():
     assert captured[0][2]["refs"] == refs
     assert out["lib-1|a"][0]["url"] == "http://u/a"
     assert out["lib-1|b"][0]["url"] == "http://u/b"
-
-
-# ---------------------------------------------------------------------------
-# Hard-cut entry-point validation: legacy `lib:` strings are rejected.
-# ---------------------------------------------------------------------------
-
-
-def test_async_play_media_rejects_legacy_lib_string():
-    bridge = _make_bridge()
-    with pytest.raises(ValueError, match="legacy 'lib:'"):
-        _run(
-            bridge.async_play_media("renderer-1", "lib:mu:library:fs:mud@home:default:abc")
-        )
-
-
-def test_async_queue_add_rejects_legacy_lib_string():
-    bridge = _make_bridge()
-    with pytest.raises(ValueError, match="legacy 'lib:'"):
-        _run(
-            bridge.async_queue_add(
-                "renderer-1",
-                ["lib:mu:library:fs:mud@home:default:abc"],
-                "append",
-            )
-        )
-
-
-def test_resolve_media_entries_rejects_legacy_lib_string():
-    bridge = _make_bridge()
-    with pytest.raises(ValueError, match="legacy 'lib:'"):
-        _run(
-            bridge._resolve_media_entries("lib:mu:library:fs:mud@home:default:abc")
-        )
