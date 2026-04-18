@@ -379,7 +379,7 @@ class MudBridge:
         if node_id in self._renderers:
             _LOGGER.debug("state %s status=%s", node_id, (payload.get("playback") or {}).get("status"))
             self._renderers[node_id]["state"] = payload
-            await self._maybe_resolve_metadata(node_id, payload)
+            self._maybe_resolve_metadata(node_id, payload)
             self._notify_renderer_state_listeners(node_id, payload)
             await self._publish_renderer_state(node_id, payload)
 
