@@ -4,6 +4,7 @@ import android.util.Log
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
 import com.mediautopia.app.data.protocol.RendererState
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,8 +61,17 @@ class RendererStateRepository @Inject constructor(
         // Return existing flow if already subscribed.
         remoteFlows[nodeId]?.let { return it }
 
-        // Create a new SharedFlow and subscribe via MQTT.
-        val flow = MutableSharedFlow<RendererState>(replay = 1)
+        // Create a new SharedFlow and subscribe via MQTT. Renderers publish
+        // position updates ~1Hz; with replay=1 and a default zero-capacity
+        // buffer, tryEmit silently drops updates whenever the Compose collector
+        // is mid-recomposition, leaving the UI stuck on stale state. Use a
+        // small buffer with DROP_OLDEST so emissions never fail and the
+        // collector always sees the most recent state.
+        val flow = MutableSharedFlow<RendererState>(
+            replay = 1,
+            extraBufferCapacity = 64,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
         remoteFlows[nodeId] = flow
 
         val subscriptionId = mqtt.subscribe(
@@ -146,12 +156,9 @@ class RendererStateRepository @Inject constructor(
             return
         }
 
-        Log.d(tag, "State for $nodeId: status=${state.playback?.status} current=${state.current != null} meta=${state.current?.metadata?.keys} session=${state.session?.owner}")
+        Log.d(tag, "State for $nodeId: status=${state.playback?.status} current=${state.current != null} display=${state.current?.display != null} session=${state.session?.owner}")
 
         val flow = remoteFlows[nodeId] ?: return
-        val emitted = flow.tryEmit(state)
-        if (!emitted) {
-            Log.w(tag, "Failed to emit state for $nodeId (flow full?)")
-        }
+        flow.tryEmit(state)
     }
 }
