@@ -16,6 +16,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const testNodeID = "mu:library:jellyfin:test:default"
+
+func mkRef(itemID string) mu.LibraryItemRef {
+	return mu.NewLibraryItemRef(testNodeID, itemID)
+}
+
 func TestLibraryBrowse(t *testing.T) {
 	handler := newJellyfinTestHandler(t)
 
@@ -23,6 +29,7 @@ func TestLibraryBrowse(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
@@ -47,38 +54,83 @@ func TestLibraryBrowse(t *testing.T) {
 	}
 }
 
-func TestLibraryResolve(t *testing.T) {
+func TestLibraryGetItem(t *testing.T) {
 	handler := newJellyfinTestHandler(t)
 
 	module := Module{
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
 		},
 	}
 
-	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "item-1"})}
-	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryGetItemBody{Ref: mkRef("item-1")})}
+	reply := module.libraryGetItem(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !reply.OK {
+		t.Fatalf("unexpected error reply: %+v", reply.Err)
+	}
 
-	var payload mu.LibraryResolveReply
+	var payload mu.LibraryGetItemReply
 	if err := json.Unmarshal(reply.Body, &payload); err != nil {
 		t.Fatalf("decode reply: %v", err)
 	}
-	if payload.ItemID != "item-1" {
-		t.Fatalf("expected item id")
+	if payload.Ref.ItemID != "item-1" {
+		t.Fatalf("expected item id, got %s", payload.Ref.ItemID)
+	}
+	if payload.Display == nil {
+		t.Fatalf("expected display populated")
+	}
+	if payload.Display.Title != "Song" {
+		t.Fatalf("expected title Song, got %q", payload.Display.Title)
+	}
+	if payload.Display.Artist != "Artist" {
+		t.Fatalf("expected artist, got %q", payload.Display.Artist)
+	}
+	if payload.Display.ArtworkURL == "" {
+		t.Fatalf("expected artwork url")
+	}
+	if payload.Attributes["type"] != "Audio" {
+		t.Fatalf("expected attributes.type=Audio, got %v", payload.Attributes["type"])
+	}
+}
+
+func TestLibraryResolveSources(t *testing.T) {
+	handler := newJellyfinTestHandler(t)
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			NodeID:  testNodeID,
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: mkRef("item-1")})}
+	reply := module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !reply.OK {
+		t.Fatalf("unexpected error reply: %+v", reply.Err)
+	}
+
+	var payload mu.LibraryResolveSourcesReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if payload.Ref.ItemID != "item-1" {
+		t.Fatalf("expected item id, got %s", payload.Ref.ItemID)
 	}
 	if len(payload.Sources) != 1 || payload.Sources[0].URL == "" {
 		t.Fatalf("expected source")
 	}
-	if payload.Metadata["artworkUrl"] == nil {
-		t.Fatalf("expected artwork url")
-	}
 }
 
-func TestLibraryResolveBatch(t *testing.T) {
+func TestLibraryResolveSourcesBatch(t *testing.T) {
 	handler := http.NewServeMux()
 
 	handler.HandleFunc("/Items/item-1", func(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +162,7 @@ func TestLibraryResolveBatch(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:   testNodeID,
 			BaseURL:  "http://jellyfin.test",
 			APIKey:   "key",
 			UserID:   "user",
@@ -118,10 +171,13 @@ func TestLibraryResolveBatch(t *testing.T) {
 	}
 	module.cache = newCache(module.config.CacheSize)
 
-	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBatchBody{ItemIDs: []string{"item-1", "item-2"}})}
-	reply := module.libraryResolveBatch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBatchBody{Refs: []mu.LibraryItemRef{
+		mkRef("item-1"),
+		mkRef("item-2"),
+	}})}
+	reply := module.libraryResolveSourcesBatch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 
-	var payload mu.LibraryResolveBatchReply
+	var payload mu.LibraryResolveSourcesBatchReply
 	if err := json.Unmarshal(reply.Body, &payload); err != nil {
 		t.Fatalf("decode reply: %v", err)
 	}
@@ -138,7 +194,45 @@ func TestLibraryResolveBatch(t *testing.T) {
 	}
 }
 
-func TestLibraryResolveUsesCache(t *testing.T) {
+func TestLibraryGetItems(t *testing.T) {
+	handler := newJellyfinTestHandler(t)
+
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(handler),
+		config: Config{
+			NodeID:  testNodeID,
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryGetItemsBody{Refs: []mu.LibraryItemRef{
+		mkRef("item-1"),
+		mu.NewLibraryItemRef("mu:library:jellyfin:other:default", "item-1"),
+	}})}
+	reply := module.libraryGetItems(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+
+	var payload mu.LibraryGetItemsReply
+	if err := json.Unmarshal(reply.Body, &payload); err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(payload.Items))
+	}
+	if payload.Items[0].Err != nil {
+		t.Fatalf("unexpected error on matching ref: %+v", payload.Items[0].Err)
+	}
+	if payload.Items[0].Display == nil || payload.Items[0].Display.Title == "" {
+		t.Fatalf("expected display populated")
+	}
+	if payload.Items[1].Err == nil {
+		t.Fatalf("expected error for mismatched libraryId")
+	}
+}
+
+func TestLibraryResolveSourcesUsesCache(t *testing.T) {
 	var itemHits int
 	var playbackHits int
 	handler := http.NewServeMux()
@@ -162,6 +256,7 @@ func TestLibraryResolveUsesCache(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:   testNodeID,
 			BaseURL:  "http://jellyfin.test",
 			APIKey:   "key",
 			UserID:   "user",
@@ -170,8 +265,8 @@ func TestLibraryResolveUsesCache(t *testing.T) {
 	}
 	module.cache = newCache(module.config.CacheSize)
 
-	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "item-1"})}
-	_ = module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: mkRef("item-1")})}
+	_ = module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 	value, err := module.cache.Get(context.Background(), "item-1")
 	if err != nil {
 		t.Fatalf("expected cached entry: %v", err)
@@ -183,7 +278,7 @@ func TestLibraryResolveUsesCache(t *testing.T) {
 	if !entry.SourcesReady {
 		t.Fatalf("expected sourcesReady=true in cache entry")
 	}
-	_ = module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	_ = module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 
 	if itemHits != 1 || playbackHits != 1 {
 		t.Fatalf("expected cache hits item=%d playback=%d", itemHits, playbackHits)
@@ -197,6 +292,7 @@ func TestLibrarySearch(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
@@ -233,6 +329,7 @@ func TestLibrarySearchTypes(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
@@ -247,35 +344,7 @@ func TestLibrarySearchTypes(t *testing.T) {
 	}
 }
 
-func TestLibraryResolveIncludesMetadata(t *testing.T) {
-	handler := newJellyfinTestHandler(t)
-
-	module := Module{
-		log:  zap.NewNop(),
-		http: newTestClient(handler),
-		config: Config{
-			BaseURL: "http://jellyfin.test",
-			APIKey:  "key",
-			UserID:  "user",
-		},
-	}
-
-	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "item-1"})}
-	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-
-	var payload mu.LibraryResolveReply
-	if err := json.Unmarshal(reply.Body, &payload); err != nil {
-		t.Fatalf("decode reply: %v", err)
-	}
-	if payload.Metadata["title"] != "Song" {
-		t.Fatalf("expected title")
-	}
-	if payload.Metadata["artist"] != "Artist" {
-		t.Fatalf("expected artist")
-	}
-}
-
-func TestLibraryResolveExpandsAlbum(t *testing.T) {
+func TestLibraryResolveSourcesExpandsAlbum(t *testing.T) {
 	handler := http.NewServeMux()
 
 	handler.HandleFunc("/Items/album-1", func(w http.ResponseWriter, r *http.Request) {
@@ -330,25 +399,26 @@ func TestLibraryResolveExpandsAlbum(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
 		},
 	}
 
-	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "album-1"})}
-	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: mkRef("album-1")})}
+	reply := module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 
-	var payload mu.LibraryResolveReply
+	var payload mu.LibraryResolveSourcesReply
 	if err := json.Unmarshal(reply.Body, &payload); err != nil {
 		t.Fatalf("decode reply: %v", err)
 	}
 	if len(payload.Sources) != 2 {
-		t.Fatalf("expected 2 sources")
+		t.Fatalf("expected 2 sources, got %d", len(payload.Sources))
 	}
 }
 
-func TestLibraryResolveExpandsPlaylist(t *testing.T) {
+func TestLibraryResolveSourcesExpandsPlaylist(t *testing.T) {
 	handler := http.NewServeMux()
 
 	handler.HandleFunc("/Items/playlist-1", func(w http.ResponseWriter, r *http.Request) {
@@ -385,16 +455,17 @@ func TestLibraryResolveExpandsPlaylist(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
 		},
 	}
 
-	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "playlist-1"})}
-	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: mkRef("playlist-1")})}
+	reply := module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 
-	var payload mu.LibraryResolveReply
+	var payload mu.LibraryResolveSourcesReply
 	if err := json.Unmarshal(reply.Body, &payload); err != nil {
 		t.Fatalf("decode reply: %v", err)
 	}
@@ -413,6 +484,7 @@ func TestLibrarySearchRespectsTimeout(t *testing.T) {
 	module := Module{
 		http: &http.Client{Timeout: 5 * time.Millisecond, Transport: roundTripper{handler: handler}},
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
@@ -433,6 +505,7 @@ func TestResolveSourceFallback(t *testing.T) {
 	module := Module{
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
@@ -450,7 +523,7 @@ func TestResolveSourceFallback(t *testing.T) {
 
 func TestNewModuleDefaults(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:  "mu:library:jellyfin:test",
+		NodeID:  testNodeID,
 		BaseURL: "http://example",
 		APIKey:  "key",
 		UserID:  "user",
@@ -505,7 +578,7 @@ func TestAbsoluteURL(t *testing.T) {
 	}
 }
 
-func TestLibraryResolveMissing(t *testing.T) {
+func TestLibraryGetItemMissing(t *testing.T) {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/Items/nonexistent", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -515,14 +588,15 @@ func TestLibraryResolveMissing(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
 		},
 	}
 
-	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "nonexistent"})}
-	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryGetItemBody{Ref: mkRef("nonexistent")})}
+	reply := module.libraryGetItem(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 
 	if reply.OK {
 		t.Fatalf("expected error reply for missing item")
@@ -535,6 +609,33 @@ func TestLibraryResolveMissing(t *testing.T) {
 	}
 	if !strings.Contains(reply.Err.Message, "404") {
 		t.Fatalf("expected 404 in error message, got: %s", reply.Err.Message)
+	}
+}
+
+func TestLibraryGetItemRejectsInvalidRef(t *testing.T) {
+	module := Module{
+		log:  zap.NewNop(),
+		http: newTestClient(http.NewServeMux()),
+		config: Config{
+			NodeID:  testNodeID,
+			BaseURL: "http://jellyfin.test",
+			APIKey:  "key",
+			UserID:  "user",
+		},
+	}
+
+	// Wrong libraryId
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryGetItemBody{Ref: mu.NewLibraryItemRef("mu:library:jellyfin:other:default", "item-1")})}
+	reply := module.libraryGetItem(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if reply.OK || reply.Err == nil {
+		t.Fatalf("expected mismatched library error")
+	}
+
+	// Empty itemId — Validate() should reject
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryGetItemBody{Ref: mkRef("")})}
+	reply = module.libraryGetItem(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if reply.OK || reply.Err == nil {
+		t.Fatalf("expected validation error for empty itemId")
 	}
 }
 
@@ -561,6 +662,7 @@ func TestLibraryBrowseEmpty(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
@@ -600,6 +702,7 @@ func TestLibrarySearchEmpty(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
@@ -654,6 +757,7 @@ func TestLibraryBrowsePagination(t *testing.T) {
 		log:  zap.NewNop(),
 		http: newTestClient(handler),
 		config: Config{
+			NodeID:  testNodeID,
 			BaseURL: "http://jellyfin.test",
 			APIKey:  "key",
 			UserID:  "user",
@@ -693,7 +797,7 @@ func TestNewModuleRequiredFields(t *testing.T) {
 		{
 			name: "missing base_url",
 			cfg: Config{
-				NodeID: "mu:library:test",
+				NodeID: testNodeID,
 				APIKey: "key",
 				UserID: "user",
 			},
@@ -702,7 +806,7 @@ func TestNewModuleRequiredFields(t *testing.T) {
 		{
 			name: "missing api_key",
 			cfg: Config{
-				NodeID:  "mu:library:test",
+				NodeID:  testNodeID,
 				BaseURL: "http://example",
 				UserID:  "user",
 			},
@@ -720,7 +824,7 @@ func TestNewModuleRequiredFields(t *testing.T) {
 		{
 			name: "missing user_id",
 			cfg: Config{
-				NodeID:  "mu:library:test",
+				NodeID:  testNodeID,
 				BaseURL: "http://example",
 				APIKey:  "key",
 			},

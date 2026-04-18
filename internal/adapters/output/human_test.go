@@ -76,8 +76,9 @@ func TestRenderStatus(t *testing.T) {
 						Volume:     0.75,
 					},
 					Current: &mu.CurrentItemState{
-						ItemID:   "item-1",
-						Metadata: map[string]any{"title": "My Song", "artist": "The Band"},
+						QueueEntryID: "qe-1",
+						Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-1"},
+						Display:      &mu.DisplayMetadata{Title: "My Song", Artist: "The Band"},
 					},
 					Queue: &mu.QueueState{
 						Length:   10,
@@ -257,7 +258,7 @@ func TestRenderQueue(t *testing.T) {
 		{
 			name: "empty queue",
 			input: core.QueueResult{
-				Queue: mu.QueueGetReply{Entries: []mu.QueueItem{}},
+				Queue: mu.QueueGetReply{Entries: []mu.QueueEntry{}},
 			},
 			contains: []string{"Queue is empty."},
 			absent:   []string{"QUEUE_ID", "ITEM_ID"},
@@ -266,25 +267,25 @@ func TestRenderQueue(t *testing.T) {
 			name: "queue with entries and metadata",
 			input: core.QueueResult{
 				Queue: mu.QueueGetReply{
-					Entries: []mu.QueueItem{
+					Entries: []mu.QueueEntry{
 						{
 							QueueEntryID: "qe1",
-							ItemID:       "item-1",
-							Metadata: map[string]any{
-								"title":     "Song One",
-								"mediaType": "audio",
-								"artist":    "Artist A",
-								"album":     "Album X",
-								"durationMs": json.Number("180000"),
+							Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-1"},
+							Display: &mu.DisplayMetadata{
+								Title:      "Song One",
+								MediaType:  "audio",
+								Artist:     "Artist A",
+								Album:      "Album X",
+								DurationMS: 180000,
 							},
 						},
 						{
 							QueueEntryID: "qe2",
-							ItemID:       "item-2",
-							Metadata: map[string]any{
-								"title":  "Song Two",
-								"type":   "audio",
-								"artist": "Artist B",
+							Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-2"},
+							Display: &mu.DisplayMetadata{
+								Title:     "Song Two",
+								MediaType: "audio",
+								Artist:    "Artist B",
 							},
 						},
 					},
@@ -298,13 +299,11 @@ func TestRenderQueue(t *testing.T) {
 			input: core.QueueResult{
 				FullIDs: true,
 				Queue: mu.QueueGetReply{
-					Entries: []mu.QueueItem{
+					Entries: []mu.QueueEntry{
 						{
 							QueueEntryID: "qe-full-1",
-							ItemID:       "item-full-1",
-							Metadata: map[string]any{
-								"title": "Track",
-							},
+							Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-full-1"},
+							Display:      &mu.DisplayMetadata{Title: "Track"},
 						},
 					},
 				},
@@ -312,14 +311,13 @@ func TestRenderQueue(t *testing.T) {
 			contains: []string{"QUEUE_ID", "ITEM_ID", "qe-full-1", "item-full-1", "Track"},
 		},
 		{
-			name: "queue with missing metadata fields",
+			name: "queue with missing display fields",
 			input: core.QueueResult{
 				Queue: mu.QueueGetReply{
-					Entries: []mu.QueueItem{
+					Entries: []mu.QueueEntry{
 						{
 							QueueEntryID: "qe3",
-							ItemID:       "item-3",
-							Metadata:     nil,
+							Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-3"},
 						},
 					},
 				},
@@ -365,11 +363,9 @@ func TestRenderQueueNow(t *testing.T) {
 			name: "current with title and artist",
 			input: core.QueueNowResult{
 				Current: &mu.CurrentItemState{
-					ItemID: "item-1",
-					Metadata: map[string]any{
-						"title":  "Song Title",
-						"artist": "Song Artist",
-					},
+					QueueEntryID: "qe-1",
+					Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-1"},
+					Display:      &mu.DisplayMetadata{Title: "Song Title", Artist: "Song Artist"},
 				},
 			},
 			contains: []string{"Song Artist - Song Title"},
@@ -378,10 +374,9 @@ func TestRenderQueueNow(t *testing.T) {
 			name: "current with only title",
 			input: core.QueueNowResult{
 				Current: &mu.CurrentItemState{
-					ItemID: "item-2",
-					Metadata: map[string]any{
-						"title": "Only Title",
-					},
+					QueueEntryID: "qe-2",
+					Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-2"},
+					Display:      &mu.DisplayMetadata{Title: "Only Title"},
 				},
 			},
 			contains: []string{"Only Title"},
@@ -390,8 +385,8 @@ func TestRenderQueueNow(t *testing.T) {
 			name: "current with only itemID",
 			input: core.QueueNowResult{
 				Current: &mu.CurrentItemState{
-					ItemID:   "item-fallback",
-					Metadata: nil,
+					QueueEntryID: "qe-fallback",
+					Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-fallback"},
 				},
 			},
 			contains: []string{"item-fallback"},
@@ -470,20 +465,20 @@ func TestRenderPlaylistShow(t *testing.T) {
 			contains: []string{"Playlist: Empty Playlist (0 tracks)"},
 		},
 		{
-			name: "with metadata no FullIDs",
+			name: "with display no FullIDs",
 			input: core.PlaylistShowResult{
 				PlaylistID: "pl-1",
 				Name:       "Test Playlist",
 				Entries: []core.PlaylistEntryResult{
 					{
 						EntryID: "e1",
-						ItemID:  "i1",
-						Metadata: map[string]any{
-							"title":      "Track One",
-							"mediaType":  "audio",
-							"artist":     "Artist One",
-							"album":      "Album One",
-							"durationMs": json.Number("200000"),
+						Ref:     &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "i1"},
+						Display: &mu.DisplayMetadata{
+							Title:      "Track One",
+							MediaType:  "audio",
+							Artist:     "Artist One",
+							Album:      "Album One",
+							DurationMS: 200000,
 						},
 					},
 				},
@@ -500,25 +495,22 @@ func TestRenderPlaylistShow(t *testing.T) {
 				Entries: []core.PlaylistEntryResult{
 					{
 						EntryID: "entry-abc",
-						ItemID:  "item-xyz",
-						Metadata: map[string]any{
-							"title": "Full Track",
-						},
+						Ref:     &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-xyz"},
+						Display: &mu.DisplayMetadata{Title: "Full Track"},
 					},
 				},
 			},
 			contains: []string{"Playlist: Full IDs Playlist (1 tracks)", "ENTRY_ID", "ITEM_ID", "entry-abc", "item-xyz", "Full Track"},
 		},
 		{
-			name: "with missing metadata",
+			name: "with missing display",
 			input: core.PlaylistShowResult{
 				PlaylistID: "pl-3",
 				Name:       "Sparse Playlist",
 				Entries: []core.PlaylistEntryResult{
 					{
-						EntryID:  "e3",
-						ItemID:   "i3",
-						Metadata: nil,
+						EntryID: "e3",
+						Ref:     &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "i3"},
 					},
 				},
 			},
@@ -645,8 +637,9 @@ func TestRenderSuggestShow(t *testing.T) {
 					"name": "Jazz Night",
 					"entries": [
 						{
-							"itemId": "item-1",
-							"metadata": {
+							"entryId": "e1",
+							"ref": {"kind": "libraryItem", "libraryId": "mu:library:fs:default:music", "itemId": "item-1"},
+							"display": {
 								"title": "Blue in Green",
 								"artist": "Miles Davis",
 								"album": "Kind of Blue",
@@ -654,8 +647,9 @@ func TestRenderSuggestShow(t *testing.T) {
 							}
 						},
 						{
-							"itemId": "item-2",
-							"metadata": {
+							"entryId": "e2",
+							"ref": {"kind": "libraryItem", "libraryId": "mu:library:fs:default:music", "itemId": "item-2"},
+							"display": {
 								"title": "Take Five",
 								"artist": "Dave Brubeck",
 								"album": "Time Out",
@@ -673,14 +667,15 @@ func TestRenderSuggestShow(t *testing.T) {
 			},
 		},
 		{
-			name: "suggestion with missing metadata",
+			name: "suggestion with missing display",
 			input: SuggestShowOutput{
 				Payload: json.RawMessage(`{
 					"suggestionId": "sug-3",
 					"name": "Sparse Mix",
 					"entries": [
 						{
-							"itemId": "item-no-meta"
+							"entryId": "e-bare",
+							"ref": {"kind": "libraryItem", "libraryId": "mu:library:fs:default:music", "itemId": "item-no-meta"}
 						}
 					]
 				}`),
@@ -723,20 +718,35 @@ func TestRenderLibraryResolve(t *testing.T) {
 		contains []string
 	}{
 		{
-			name: "no sources",
+			name: "metadata only (no sources requested)",
 			input: core.LibraryResolveResult{
-				Item: mu.LibraryResolveReply{
-					ItemID:  "item-1",
+				Item: mu.LibraryGetItemReply{
+					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-1"),
+				},
+			},
+			contains: []string{"Item: item-1", "Sources: (not requested"},
+		},
+		{
+			name: "sources requested but empty",
+			input: core.LibraryResolveResult{
+				Item: mu.LibraryGetItemReply{
+					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-1b"),
+				},
+				Sources: &mu.LibraryResolveSourcesReply{
+					Ref:     mu.NewLibraryItemRef("mu:library:fs:default:music", "item-1b"),
 					Sources: []mu.ResolvedSource{},
 				},
 			},
-			contains: []string{"Item: item-1", "Sources: (none)"},
+			contains: []string{"Item: item-1b", "Sources: (none)"},
 		},
 		{
 			name: "multiple sources",
 			input: core.LibraryResolveResult{
-				Item: mu.LibraryResolveReply{
-					ItemID: "item-2",
+				Item: mu.LibraryGetItemReply{
+					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-2"),
+				},
+				Sources: &mu.LibraryResolveSourcesReply{
+					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-2"),
 					Sources: []mu.ResolvedSource{
 						{URL: "http://example.com/a.flac", Mime: "audio/flac"},
 						{URL: "http://example.com/b.mp3", Mime: "audio/mpeg"},
@@ -751,16 +761,19 @@ func TestRenderLibraryResolve(t *testing.T) {
 			},
 		},
 		{
-			name: "with metadata",
+			name: "with display metadata",
 			input: core.LibraryResolveResult{
-				Item: mu.LibraryResolveReply{
-					ItemID: "item-3",
-					Metadata: map[string]any{
-						"title":      "Great Song",
-						"artist":     "Cool Band",
-						"album":      "Best Album",
-						"durationMs": json.Number("240000"),
+				Item: mu.LibraryGetItemReply{
+					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-3"),
+					Display: &mu.DisplayMetadata{
+						Title:      "Great Song",
+						Artist:     "Cool Band",
+						Album:      "Best Album",
+						DurationMS: 240000,
 					},
+				},
+				Sources: &mu.LibraryResolveSourcesReply{
+					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-3"),
 					Sources: []mu.ResolvedSource{
 						{URL: "http://example.com/c.flac", Mime: "audio/flac"},
 					},
@@ -778,8 +791,11 @@ func TestRenderLibraryResolve(t *testing.T) {
 		{
 			name: "source with empty mime",
 			input: core.LibraryResolveResult{
-				Item: mu.LibraryResolveReply{
-					ItemID: "item-4",
+				Item: mu.LibraryGetItemReply{
+					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-4"),
+				},
+				Sources: &mu.LibraryResolveSourcesReply{
+					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-4"),
 					Sources: []mu.ResolvedSource{
 						{URL: "http://example.com/d.bin", Mime: ""},
 					},
@@ -1044,32 +1060,35 @@ func TestFormatItem(t *testing.T) {
 		{
 			name: "title and artist",
 			current: &mu.CurrentItemState{
-				ItemID:   "item-1",
-				Metadata: map[string]any{"title": "My Song", "artist": "The Band"},
+				QueueEntryID: "qe-1",
+				Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-1"},
+				Display:      &mu.DisplayMetadata{Title: "My Song", Artist: "The Band"},
 			},
 			want: "The Band - My Song",
 		},
 		{
 			name: "title only",
 			current: &mu.CurrentItemState{
-				ItemID:   "item-2",
-				Metadata: map[string]any{"title": "Solo Title"},
+				QueueEntryID: "qe-2",
+				Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-2"},
+				Display:      &mu.DisplayMetadata{Title: "Solo Title"},
 			},
 			want: "Solo Title",
 		},
 		{
-			name: "no metadata",
+			name: "empty display",
 			current: &mu.CurrentItemState{
-				ItemID:   "item-3",
-				Metadata: map[string]any{},
+				QueueEntryID: "qe-3",
+				Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-3"},
+				Display:      &mu.DisplayMetadata{},
 			},
 			want: "item-3",
 		},
 		{
-			name: "nil metadata",
+			name: "nil display",
 			current: &mu.CurrentItemState{
-				ItemID:   "item-4",
-				Metadata: nil,
+				QueueEntryID: "qe-4",
+				Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-4"},
 			},
 			want: "item-4",
 		},
@@ -1231,9 +1250,9 @@ func TestRenderQueueListOutput(t *testing.T) {
 			Result: core.QueueResult{
 				Queue: mu.QueueGetReply{
 					Revision: 5,
-					Entries: []mu.QueueItem{
-						{QueueEntryID: "q1", ItemID: "i1", Metadata: map[string]any{"title": "Song A"}},
-						{QueueEntryID: "q2", ItemID: "i2", Metadata: map[string]any{"title": "Song B"}},
+					Entries: []mu.QueueEntry{
+						{QueueEntryID: "q1", Ref: &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "i1"}, Display: &mu.DisplayMetadata{Title: "Song A"}},
+						{QueueEntryID: "q2", Ref: &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "i2"}, Display: &mu.DisplayMetadata{Title: "Song B"}},
 					},
 				},
 			},
@@ -1260,8 +1279,8 @@ func TestRenderQueueListOutput(t *testing.T) {
 		data := QueueListOutput{
 			Result: core.QueueResult{
 				Queue: mu.QueueGetReply{
-					Entries: []mu.QueueItem{
-						{QueueEntryID: "q1", ItemID: "i1", Metadata: map[string]any{"title": "Song A"}},
+					Entries: []mu.QueueEntry{
+						{QueueEntryID: "q1", Ref: &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "i1"}, Display: &mu.DisplayMetadata{Title: "Song A"}},
 					},
 				},
 			},

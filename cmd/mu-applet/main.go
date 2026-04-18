@@ -367,79 +367,7 @@ func main() {
 	}
 	tray.SetPopup(popup)
 
-	// resolveMetadata fetches metadata for queue items from the library.
-	// Parses "lib:<libraryNodeID>:<itemHash>" format to extract library node and item IDs.
-	resolveMetadata := func(items []mu.QueueItem) []mu.QueueItem {
-		// Group items by library node ID
-		type resolveReq struct {
-			libraryNodeID string
-			itemID        string
-			index         int
-		}
-		var reqs []resolveReq
-		for i, item := range items {
-			if item.Metadata != nil {
-				continue
-			}
-			if !strings.HasPrefix(item.ItemID, "lib:") {
-				continue
-			}
-			ref := strings.TrimPrefix(item.ItemID, "lib:")
-			idx := strings.LastIndex(ref, ":")
-			if idx <= 0 {
-				continue
-			}
-			reqs = append(reqs, resolveReq{
-				libraryNodeID: ref[:idx],
-				itemID:        ref[idx+1:],
-				index:         i,
-			})
-		}
-		if len(reqs) == 0 {
-			return items
-		}
-
-		// Group by library
-		byLib := map[string][]resolveReq{}
-		for _, r := range reqs {
-			byLib[r.libraryNodeID] = append(byLib[r.libraryNodeID], r)
-		}
-
-		for libID, libReqs := range byLib {
-			itemIDs := make([]string, len(libReqs))
-			for i, r := range libReqs {
-				itemIDs[i] = r.itemID
-			}
-			libTopic := mu.TopicCommands(cfg.Server.TopicBase, libID)
-			reply, err := sendMQTTCmd(libTopic, "library.resolveBatch", mu.LibraryResolveBatchBody{
-				ItemIDs:      itemIDs,
-				MetadataOnly: true,
-			})
-			if err != nil || reply == nil || !reply.OK {
-				logger.Debug("resolveBatch failed", zap.String("lib", libID), zap.Error(err))
-				continue
-			}
-			var batch mu.LibraryResolveBatchReply
-			if err := json.Unmarshal(reply.Body, &batch); err != nil {
-				continue
-			}
-			// Map results back to queue items
-			resolved := map[string]map[string]any{}
-			for _, item := range batch.Items {
-				if item.Metadata != nil {
-					resolved[item.ItemID] = item.Metadata
-				}
-			}
-			for _, r := range libReqs {
-				if md, ok := resolved[r.itemID]; ok {
-					items[r.index].Metadata = md
-				}
-			}
-		}
-		return items
-	}
-
-	// Queue fetcher — sends queue.get then resolves metadata from library
+	// Queue fetcher — entries already carry Display metadata from the renderer.
 	fetchQueue := func() {
 		reply, err := sendMQTTCmd(cmdTopic, "queue.get", mu.QueueGetBody{From: 0, Count: 1000})
 		if err != nil || reply == nil || !reply.OK {
@@ -449,7 +377,6 @@ func main() {
 		if err := json.Unmarshal(reply.Body, &body); err != nil {
 			return
 		}
-		body.Entries = resolveMetadata(body.Entries)
 		glib.IdleAdd(func() bool {
 			popup.SetQueueItems(body.Entries, body.Index)
 			return false

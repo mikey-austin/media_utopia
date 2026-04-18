@@ -122,18 +122,22 @@ func renderStatus(result core.StatusResult) (string, error) {
 		}
 	}
 	if result.State.Current != nil {
-		if result.State.Current.Metadata != nil {
-			title, _ := result.State.Current.Metadata["title"].(string)
-			artist, _ := result.State.Current.Metadata["artist"].(string)
-			if title != "" {
-				item = title
+		if d := result.State.Current.Display; d != nil {
+			if d.Title != "" {
+				item = d.Title
 			}
-			if artist != "" {
-				artistLine = artist
+			if d.Artist != "" {
+				artistLine = d.Artist
+			} else if len(d.Artists) > 0 {
+				artistLine = strings.Join(d.Artists, ", ")
 			}
 		}
 		if item == "" {
-			item = result.State.Current.ItemID
+			if ref := result.State.Current.Ref; ref != nil {
+				item = ref.ItemID
+			} else if result.State.Current.QueueEntryID != "" {
+				item = result.State.Current.QueueEntryID
+			}
 		}
 	}
 	if result.State.Queue != nil {
@@ -236,27 +240,13 @@ func renderQueueWithOffset(result core.QueueResult, offset int64) (string, error
 	}
 	rows := make([][]string, 0, len(result.Queue.Entries))
 	for idx, entry := range result.Queue.Entries {
-		title := entry.ItemID
-		typ := ""
-		artist := ""
-		album := ""
-		length := ""
-		if entry.Metadata != nil {
-			if val, ok := entry.Metadata["title"].(string); ok && val != "" {
-				title = val
+		title, typ, artist, album, length := displayFields(entry.Display)
+		if title == "" {
+			if entry.Ref != nil {
+				title = entry.Ref.ItemID
+			} else if entry.QueueEntryID != "" {
+				title = entry.QueueEntryID
 			}
-			if val, ok := entry.Metadata["mediaType"].(string); ok && val != "" {
-				typ = val
-			} else if val, ok := entry.Metadata["type"].(string); ok {
-				typ = val
-			}
-			if val, ok := entry.Metadata["artist"].(string); ok {
-				artist = val
-			}
-			if val, ok := entry.Metadata["album"].(string); ok {
-				album = val
-			}
-			length = formatDuration(entry.Metadata["durationMs"])
 		}
 		absoluteIdx := offset + int64(idx)
 		indexStr := fmt.Sprintf("  %d", absoluteIdx)
@@ -272,11 +262,34 @@ func renderQueueWithOffset(result core.QueueResult, offset int64) (string, error
 			length,
 		}
 		if result.FullIDs {
-			row = append(row, entry.QueueEntryID, entry.ItemID)
+			itemID := ""
+			if entry.Ref != nil {
+				itemID = entry.Ref.ItemID
+			}
+			row = append(row, entry.QueueEntryID, itemID)
 		}
 		rows = append(rows, row)
 	}
 	return renderTable(headers, rows)
+}
+
+// displayFields extracts presentation fields from DisplayMetadata.
+func displayFields(d *mu.DisplayMetadata) (title, mediaType, artist, album, length string) {
+	if d == nil {
+		return
+	}
+	title = d.Title
+	mediaType = d.MediaType
+	if d.Artist != "" {
+		artist = d.Artist
+	} else if len(d.Artists) > 0 {
+		artist = strings.Join(d.Artists, ", ")
+	}
+	album = d.Album
+	if d.DurationMS > 0 {
+		length = formatMS(d.DurationMS)
+	}
+	return
 }
 
 func renderQueueList(data QueueListOutput) (string, error) {
@@ -326,27 +339,17 @@ func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
 	}
 	rows := make([][]string, 0, len(result.Entries))
 	for idx, entry := range result.Entries {
-		title := entry.ItemID
-		typ := ""
-		artist := ""
-		album := ""
-		length := ""
-		if entry.Metadata != nil {
-			if val, ok := entry.Metadata["title"].(string); ok && val != "" {
-				title = val
+		title, typ, artist, album, length := displayFields(entry.Display)
+		itemID := ""
+		if entry.Ref != nil {
+			itemID = entry.Ref.ItemID
+		}
+		if title == "" {
+			if itemID != "" {
+				title = itemID
+			} else if entry.EntryID != "" {
+				title = entry.EntryID
 			}
-			if val, ok := entry.Metadata["mediaType"].(string); ok && val != "" {
-				typ = val
-			} else if val, ok := entry.Metadata["type"].(string); ok {
-				typ = val
-			}
-			if val, ok := entry.Metadata["artist"].(string); ok {
-				artist = val
-			}
-			if val, ok := entry.Metadata["album"].(string); ok {
-				album = val
-			}
-			length = formatDuration(entry.Metadata["durationMs"])
 		}
 		row := []string{
 			fmt.Sprintf("%d", idx),
@@ -357,7 +360,7 @@ func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
 			length,
 		}
 		if result.FullIDs {
-			row = append(row, entry.EntryID, entry.ItemID)
+			row = append(row, entry.EntryID, itemID)
 		}
 		rows = append(rows, row)
 	}
@@ -395,8 +398,9 @@ func renderSuggestShow(data SuggestShowOutput) (string, error) {
 		SuggestionID string `json:"suggestionId"`
 		Name         string `json:"name"`
 		Entries      []struct {
-			ItemID   string         `json:"itemId"`
-			Metadata map[string]any `json:"metadata,omitempty"`
+			EntryID string              `json:"entryId,omitempty"`
+			Ref     *mu.LibraryItemRef  `json:"ref,omitempty"`
+			Display *mu.DisplayMetadata `json:"display,omitempty"`
 		} `json:"entries"`
 	}
 	if err := json.Unmarshal(data.Payload, &suggestion); err != nil {
@@ -416,21 +420,13 @@ func renderSuggestShow(data SuggestShowOutput) (string, error) {
 
 	rows := make([][]string, 0, len(suggestion.Entries))
 	for idx, entry := range suggestion.Entries {
-		title := entry.ItemID
-		artist := ""
-		album := ""
-		length := ""
-		if entry.Metadata != nil {
-			if val, ok := entry.Metadata["title"].(string); ok && val != "" {
-				title = val
+		title, _, artist, album, length := displayFields(entry.Display)
+		if title == "" {
+			if entry.Ref != nil {
+				title = entry.Ref.ItemID
+			} else if entry.EntryID != "" {
+				title = entry.EntryID
 			}
-			if val, ok := entry.Metadata["artist"].(string); ok {
-				artist = val
-			}
-			if val, ok := entry.Metadata["album"].(string); ok {
-				album = val
-			}
-			length = formatDuration(entry.Metadata["durationMs"])
 		}
 		rows = append(rows, []string{
 			fmt.Sprintf("%d", idx),
@@ -450,33 +446,35 @@ func renderSuggestShow(data SuggestShowOutput) (string, error) {
 func renderLibraryResolve(result core.LibraryResolveResult) (string, error) {
 	var buf strings.Builder
 
-	// Show title/artist if available in metadata
-	title := result.Item.ItemID
-	if result.Item.Metadata != nil {
-		if val, ok := result.Item.Metadata["title"].(string); ok && val != "" {
-			title = val
-		}
+	title := result.Item.Ref.ItemID
+	if d := result.Item.Display; d != nil && d.Title != "" {
+		title = d.Title
 	}
 	buf.WriteString(fmt.Sprintf("Item: %s\n", title))
 
-	if result.Item.Metadata != nil {
-		if artist, ok := result.Item.Metadata["artist"].(string); ok && artist != "" {
+	if d := result.Item.Display; d != nil {
+		artist := d.Artist
+		if artist == "" && len(d.Artists) > 0 {
+			artist = strings.Join(d.Artists, ", ")
+		}
+		if artist != "" {
 			buf.WriteString(fmt.Sprintf("Artist: %s\n", artist))
 		}
-		if album, ok := result.Item.Metadata["album"].(string); ok && album != "" {
-			buf.WriteString(fmt.Sprintf("Album: %s\n", album))
+		if d.Album != "" {
+			buf.WriteString(fmt.Sprintf("Album: %s\n", d.Album))
 		}
-		dur := formatDuration(result.Item.Metadata["durationMs"])
-		if dur != "" {
-			buf.WriteString(fmt.Sprintf("Duration: %s\n", dur))
+		if d.DurationMS > 0 {
+			buf.WriteString(fmt.Sprintf("Duration: %s\n", formatMS(d.DurationMS)))
 		}
 	}
 
-	if len(result.Item.Sources) == 0 {
+	if result.Sources == nil {
+		buf.WriteString("Sources: (not requested; use --sources)\n")
+	} else if len(result.Sources.Sources) == 0 {
 		buf.WriteString("Sources: (none)\n")
 	} else {
-		buf.WriteString(fmt.Sprintf("Sources: (%d)\n", len(result.Item.Sources)))
-		for _, src := range result.Item.Sources {
+		buf.WriteString(fmt.Sprintf("Sources: (%d)\n", len(result.Sources.Sources)))
+		for _, src := range result.Sources.Sources {
 			mime := src.Mime
 			if mime == "" {
 				mime = "unknown"
@@ -620,9 +618,12 @@ func formatMS(ms int64) string {
 }
 
 func formatItem(current *mu.CurrentItemState) string {
-	if current.Metadata != nil {
-		title, _ := current.Metadata["title"].(string)
-		artist, _ := current.Metadata["artist"].(string)
+	if d := current.Display; d != nil {
+		title := d.Title
+		artist := d.Artist
+		if artist == "" && len(d.Artists) > 0 {
+			artist = strings.Join(d.Artists, ", ")
+		}
 		if title != "" && artist != "" {
 			return fmt.Sprintf("%s - %s", artist, title)
 		}
@@ -630,7 +631,10 @@ func formatItem(current *mu.CurrentItemState) string {
 			return title
 		}
 	}
-	return current.ItemID
+	if current.Ref != nil {
+		return current.Ref.ItemID
+	}
+	return current.QueueEntryID
 }
 
 func formatDuration(value any) string {

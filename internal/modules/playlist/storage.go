@@ -28,8 +28,13 @@ func NewStorage(root string) (*Storage, error) {
 	return &Storage{root: root}, nil
 }
 
+// StorageVersion is the current on-disk schema version. Files written by the
+// current code carry this; older files are migrated at startup.
+const StorageVersion = 2
+
 // Playlist is stored on disk as JSON.
 type Playlist struct {
+	Version    int             `json:"version"`
 	PlaylistID string          `json:"playlistId"`
 	Name       string          `json:"name"`
 	Owner      string          `json:"owner"`
@@ -41,13 +46,15 @@ type Playlist struct {
 
 // PlaylistEntry stores a queue entry within a playlist.
 type PlaylistEntry struct {
-	EntryID  string             `json:"entryId"`
-	Ref      *mu.ItemRef        `json:"ref,omitempty"`
-	Resolved *mu.ResolvedSource `json:"resolved,omitempty"`
+	EntryID  string              `json:"entryId"`
+	Ref      *mu.LibraryItemRef  `json:"ref,omitempty"`
+	Resolved *mu.ResolvedSource  `json:"resolved,omitempty"`
+	Display  *mu.DisplayMetadata `json:"display,omitempty"`
 }
 
 // Snapshot is stored on disk as JSON.
 type Snapshot struct {
+	Version    int                `json:"version"`
 	SnapshotID string             `json:"snapshotId"`
 	Name       string             `json:"name"`
 	Owner      string             `json:"owner"`
@@ -55,13 +62,14 @@ type Snapshot struct {
 	RendererID string             `json:"rendererId"`
 	SessionID  string             `json:"sessionId"`
 	Capture    mu.SnapshotCapture `json:"capture"`
-	Items      []string           `json:"items,omitempty"`
+	Entries    []mu.QueueEntry    `json:"entries,omitempty"`
 	CreatedAt  int64              `json:"createdAt"`
 	UpdatedAt  int64              `json:"updatedAt"`
 }
 
 // Suggestion is stored on disk as JSON.
 type Suggestion struct {
+	Version      int             `json:"version"`
 	SuggestionID string          `json:"suggestionId"`
 	Name         string          `json:"name"`
 	Owner        string          `json:"owner"`
@@ -123,6 +131,7 @@ func (s *Storage) SavePlaylist(pl Playlist) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	pl.Version = StorageVersion
 	path := s.playlistPath(pl.PlaylistID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

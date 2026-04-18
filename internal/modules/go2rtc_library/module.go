@@ -255,10 +255,14 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.libraryBrowse(cmd, reply)
 	case "library.search":
 		return m.librarySearch(cmd, reply)
-	case "library.resolve":
-		return m.libraryResolve(cmd, reply)
-	case "library.resolveBatch":
-		return m.libraryResolveBatch(cmd, reply)
+	case "library.getItem":
+		return m.libraryGetItem(cmd, reply)
+	case "library.getItems":
+		return m.libraryGetItems(cmd, reply)
+	case "library.resolveSources":
+		return m.libraryResolveSources(cmd, reply)
+	case "library.resolveSourcesBatch":
+		return m.libraryResolveSourcesBatch(cmd, reply)
 	default:
 		return errorReply(cmd, "INVALID", "unsupported command")
 	}
@@ -304,42 +308,211 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	return reply
 }
 
-func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
-	var body mu.LibraryResolveBody
+func (m *Module) refMatchesNode(ref mu.LibraryItemRef) bool {
+	return ref.LibraryID == m.config.NodeID
+}
+
+// describeItem returns Display + Attributes for an item id. The bool reports
+// whether the id is known (stream container or live/clip item).
+func (m *Module) describeItem(itemID string) (*mu.DisplayMetadata, map[string]any, bool) {
+	streams, err := m.refreshStreams()
+	if err != nil {
+		return nil, nil, false
+	}
+	if stream, ok := streams[itemID]; ok {
+		display := &mu.DisplayMetadata{
+			Title:      stream.Name,
+			MediaType:  "Video",
+			ArtworkURL: m.snapshotURL(stream.Name),
+		}
+		attrs := map[string]any{
+			"container": true,
+			"type":      "Camera",
+		}
+		return display, attrs, true
+	}
+	streamID, live, duration, ok := parseItemID(itemID)
+	if !ok {
+		return nil, nil, false
+	}
+	stream, ok := streams[streamID]
+	if !ok {
+		return nil, nil, false
+	}
+	title := stream.Name
+	durationMS := int64(0)
+	if live {
+		title = fmt.Sprintf("%s (Live)", stream.Name)
+	} else {
+		title = fmt.Sprintf("%s (%s clip)", stream.Name, duration)
+		durationMS = int64(duration.Milliseconds())
+	}
+	display := &mu.DisplayMetadata{
+		Title:      title,
+		MediaType:  "Video",
+		DurationMS: durationMS,
+		ArtworkURL: m.snapshotURL(stream.Name),
+	}
+	attrs := map[string]any{
+		"container": false,
+		"type":      "Video",
+		"live":      live,
+	}
+	return display, attrs, true
+}
+
+// resolveItemSource returns the playable source for a stream item id.
+// Stream container ids (without live/clip prefix) resolve to a live source.
+func (m *Module) resolveItemSource(itemID string) (mu.ResolvedSource, error) {
+	streams, err := m.refreshStreams()
+	if err != nil {
+		return mu.ResolvedSource{}, err
+	}
+	streamID, live, duration, ok := parseItemID(itemID)
+	if !ok {
+		if _, found := streams[itemID]; found {
+			streamID = itemID
+			live = true
+			duration = 0
+			ok = true
+		}
+	}
+	if !ok {
+		return mu.ResolvedSource{}, errors.New("item not found")
+	}
+	stream, ok := streams[streamID]
+	if !ok {
+		return mu.ResolvedSource{}, errors.New("item not found")
+	}
+	return mu.ResolvedSource{
+		URL:       m.streamURL(stream.Name, live, duration),
+		Mime:      "video/mp4",
+		ByteRange: false,
+	}, nil
+}
+
+func (m *Module) libraryGetItem(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryGetItemBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	metadata, sources, err := m.resolveItem(body.ItemID, body.MetadataOnly)
-	if err != nil {
+	if err := body.Ref.Validate(); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
+	if !m.refMatchesNode(body.Ref) {
+		return errorReply(cmd, "INVALID", "ref.libraryId does not match this library node")
+	}
+	display, attrs, ok := m.describeItem(body.Ref.ItemID)
+	if !ok {
+		return errorReply(cmd, "NOT_FOUND", "item not found")
+	}
+	payload, _ := json.Marshal(mu.LibraryGetItemReply{
+		Ref:        body.Ref,
+		Display:    display,
+		Attributes: attrs,
+	})
 	reply.Body = payload
 	return reply
 }
 
-func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
-	var body mu.LibraryResolveBatchBody
+func (m *Module) libraryGetItems(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryGetItemsBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	items := make([]mu.LibraryResolveBatchItem, 0, len(body.ItemIDs))
-	for _, itemID := range body.ItemIDs {
-		metadata, sources, err := m.resolveItem(itemID, body.MetadataOnly)
-		if err != nil {
-			items = append(items, mu.LibraryResolveBatchItem{
-				ItemID: itemID,
-				Err:    &mu.ReplyError{Code: "NOT_FOUND", Message: err.Error()},
+	items := make([]mu.LibraryGetItemsReplyItem, 0, len(body.Refs))
+	for _, ref := range body.Refs {
+		if err := ref.Validate(); err != nil {
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
 			})
 			continue
 		}
-		items = append(items, mu.LibraryResolveBatchItem{
-			ItemID:   itemID,
-			Metadata: metadata,
-			Sources:  sources,
+		if !m.refMatchesNode(ref) {
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: "ref.libraryId does not match this library node"},
+			})
+			continue
+		}
+		display, attrs, ok := m.describeItem(ref.ItemID)
+		if !ok {
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "NOT_FOUND", Message: "item not found"},
+			})
+			continue
+		}
+		items = append(items, mu.LibraryGetItemsReplyItem{
+			Ref:        ref,
+			Display:    display,
+			Attributes: attrs,
 		})
 	}
-	payload, _ := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
+	payload, _ := json.Marshal(mu.LibraryGetItemsReply{Items: items})
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) libraryResolveSources(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveSourcesBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if err := body.Ref.Validate(); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	if !m.refMatchesNode(body.Ref) {
+		return errorReply(cmd, "INVALID", "ref.libraryId does not match this library node")
+	}
+	source, err := m.resolveItemSource(body.Ref.ItemID)
+	if err != nil {
+		return errorReply(cmd, "NOT_FOUND", err.Error())
+	}
+	payload, _ := json.Marshal(mu.LibraryResolveSourcesReply{
+		Ref:     body.Ref,
+		Sources: []mu.ResolvedSource{source},
+	})
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) libraryResolveSourcesBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveSourcesBatchBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	items := make([]mu.LibraryResolveSourcesBatchItem, 0, len(body.Refs))
+	for _, ref := range body.Refs {
+		if err := ref.Validate(); err != nil {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
+			})
+			continue
+		}
+		if !m.refMatchesNode(ref) {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: "ref.libraryId does not match this library node"},
+			})
+			continue
+		}
+		source, err := m.resolveItemSource(ref.ItemID)
+		if err != nil {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "NOT_FOUND", Message: err.Error()},
+			})
+			continue
+		}
+		items = append(items, mu.LibraryResolveSourcesBatchItem{
+			Ref:     ref,
+			Sources: []mu.ResolvedSource{source},
+		})
+	}
+	payload, _ := json.Marshal(mu.LibraryResolveSourcesBatchReply{Items: items})
 	reply.Body = payload
 	return reply
 }
@@ -449,55 +622,6 @@ func (m *Module) searchItems(query string, start int64, count int64) ([]libraryI
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return paginateItems(items, start, count)
-}
-
-func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, error) {
-	streams, err := m.refreshStreams()
-	if err != nil {
-		return nil, nil, err
-	}
-	streamID, live, duration, ok := parseItemID(itemID)
-	if !ok {
-		if stream, found := streams[itemID]; found {
-			streamID = stream.ID
-			live = true
-			duration = 0
-			ok = true
-		}
-	}
-	if !ok {
-		return nil, nil, errors.New("item not found")
-	}
-	stream, ok := streams[streamID]
-	if !ok {
-		return nil, nil, errors.New("item not found")
-	}
-
-	title := stream.Name
-	durationMS := int64(0)
-	if live {
-		title = fmt.Sprintf("%s (Live)", stream.Name)
-	} else {
-		title = fmt.Sprintf("%s (%s clip)", stream.Name, duration)
-		durationMS = int64(duration.Milliseconds())
-	}
-	metadata := map[string]any{
-		"title":      title,
-		"mediaType":  "Video",
-		"type":       "Video",
-		"durationMs": durationMS,
-		"artworkUrl": m.snapshotURL(stream.Name),
-	}
-	if metadataOnly {
-		return metadata, nil, nil
-	}
-
-	streamURL := m.streamURL(stream.Name, live, duration)
-	return metadata, []mu.ResolvedSource{{
-		URL:       streamURL,
-		Mime:      "video/mp4",
-		ByteRange: false,
-	}}, nil
 }
 
 func (m *Module) streamEntries(stream streamInfo) []libraryItem {

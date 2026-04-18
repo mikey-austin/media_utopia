@@ -60,10 +60,10 @@ type Popup struct {
 	lastState  *mu.RendererState
 
 	// Queue cache
-	queueItems    []mu.QueueItem
-	queueIndex    int64
-	lastQueueIdx  int64
-	lastQueueLen  int64
+	queueItems   []mu.QueueEntry
+	queueIndex   int64
+	lastQueueIdx int64
+	lastQueueLen int64
 
 	// Artwork
 	artMu         sync.Mutex
@@ -148,7 +148,7 @@ func (p *Popup) SetPlaylists(playlists []mu.PlaylistSummary) {
 }
 
 // SetQueueItems updates the cached queue and re-renders track info.
-func (p *Popup) SetQueueItems(items []mu.QueueItem, index int64) {
+func (p *Popup) SetQueueItems(items []mu.QueueEntry, index int64) {
 	p.queueItems = items
 	p.queueIndex = index
 	// Reset caches so everything re-renders with new metadata
@@ -186,39 +186,48 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 	}
 	p.lastState = state
 
-	// Resolve metadata: try Current.Metadata, fall back to queue cache
-	var md map[string]interface{}
+	// Resolve display metadata: try Current.Display, fall back to queue cache.
+	var disp *mu.DisplayMetadata
+	var currentItemID string
 	if state.Current != nil {
-		md = state.Current.Metadata
-		if (md == nil || metaString(md, "title", "") == "") && len(p.queueItems) > 0 {
+		disp = state.Current.Display
+		if state.Current.Ref != nil {
+			currentItemID = state.Current.Ref.ItemID
+		}
+		if (disp == nil || disp.Title == "") && len(p.queueItems) > 0 {
 			idx := int(p.queueIndex)
 			if idx >= 0 && idx < len(p.queueItems) {
-				if p.queueItems[idx].ItemID == state.Current.ItemID {
-					md = p.queueItems[idx].Metadata
+				cached := p.queueItems[idx]
+				if cached.Ref != nil && state.Current.Ref != nil &&
+					cached.Ref.LibraryID == state.Current.Ref.LibraryID &&
+					cached.Ref.ItemID == state.Current.Ref.ItemID {
+					disp = cached.Display
 				}
 			}
 		}
 	}
 
-	// Track change detection
-	if state.Current != nil && state.Current.ItemID != p.lastItemID {
+	// Track change detection (key on item id)
+	if state.Current != nil && currentItemID != p.lastItemID {
 		if p.lastItemID != "" {
 			p.pendingNotify = true
 		}
-		p.lastItemID = state.Current.ItemID
+		p.lastItemID = currentItemID
 	}
 
 	// Track info
 	if state.Current != nil {
-		title := metaString(md, "title", "")
+		title := displayTitle(disp)
 		if title == "" {
-			title = displayName(state.Current.ItemID)
+			title = displayName(currentItemID)
 		}
-		artist := metaString(md, "artists", "")
-		if artist == "" {
-			artist = metaString(md, "artist", "")
+		artist := displayArtist(disp)
+		album := ""
+		artworkURL := ""
+		if disp != nil {
+			album = disp.Album
+			artworkURL = disp.ArtworkURL
 		}
-		album := metaString(md, "album", "")
 		p.titleLabel.SetText(title)
 		p.titleLabel.SetTooltipText(title)
 		p.albumLabel.SetText(album)
@@ -233,12 +242,11 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 			if album != "" && artist != "" {
 				notifBody = artist + " — " + album
 			}
-			go notifyTrackChange(title, notifBody, metaString(md, "artworkUrl", ""))
+			go notifyTrackChange(title, notifBody, artworkURL)
 		}
 
 		// Artwork
-		artURL := metaString(md, "artworkUrl", "")
-		artKey := state.Current.ItemID
+		artKey := currentItemID
 		p.artMu.Lock()
 		needsFetch := artKey != p.lastArtworkID
 		if needsFetch {
@@ -246,8 +254,8 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		}
 		p.artMu.Unlock()
 		if needsFetch {
-			if artURL != "" {
-				go p.fetchArtwork(artURL)
+			if artworkURL != "" {
+				go p.fetchArtwork(artworkURL)
 			} else {
 				p.setDefaultArtwork()
 			}
@@ -287,14 +295,7 @@ func (p *Popup) UpdateState(state *mu.RendererState) {
 		p.volumeBar.SetValue(pb.Volume)
 		p.volumeLabel.SetText(fmt.Sprintf("Vol %d%%", int(pb.Volume*100)))
 
-		// Bitrate/status info
-		kbps := metaString(md, "bitrate", "")
-		sampleRate := metaString(md, "sampleRate", "")
-		if kbps != "" {
-			p.bitrateLabel.SetText(fmt.Sprintf("%skbps %s", kbps, sampleRate))
-		} else {
-			p.bitrateLabel.SetText(pb.Status)
-		}
+		p.bitrateLabel.SetText(pb.Status)
 	}
 
 	// Only rebuild queue widgets if index or length changed
@@ -342,9 +343,13 @@ func (p *Popup) updateQueue(state *mu.RendererState) {
 			p.addQueueLabel(fmt.Sprintf("  +%d more", rem), "q-dim", -1)
 		}
 	} else if state.Current != nil {
-		title := metaString(state.Current.Metadata, "title", "")
+		title := displayTitle(state.Current.Display)
 		if title == "" {
-			title = displayName(state.Current.ItemID)
+			itemID := ""
+			if state.Current.Ref != nil {
+				itemID = state.Current.Ref.ItemID
+			}
+			title = displayName(itemID)
 		}
 		p.addQueueLabel("▶ "+title, "q-now", -1)
 		rem := int(q.Length) - idx - 1
@@ -801,55 +806,45 @@ func (p *Popup) applyCSS() error {
 
 // --- helpers ---
 
-func queueItemName(item mu.QueueItem) string {
-	title := metaString(item.Metadata, "title", "")
-	artist := metaString(item.Metadata, "artists", "")
-	if artist == "" {
-		artist = metaString(item.Metadata, "artist", "")
-	}
+func queueItemName(item mu.QueueEntry) string {
+	title := displayTitle(item.Display)
+	artist := displayArtist(item.Display)
 	if title != "" && artist != "" {
 		return artist + " — " + title
 	}
 	if title != "" {
 		return title
 	}
-	return displayName(item.ItemID)
+	itemID := ""
+	if item.Ref != nil {
+		itemID = item.Ref.ItemID
+	}
+	return displayName(itemID)
 }
 
-func metaString(md map[string]interface{}, key, fallback string) string {
-	if md == nil {
-		return fallback
+func displayTitle(d *mu.DisplayMetadata) string {
+	if d == nil {
+		return ""
 	}
-	v, ok := md[key]
-	if !ok {
-		return fallback
+	return d.Title
+}
+
+func displayArtist(d *mu.DisplayMetadata) string {
+	if d == nil {
+		return ""
 	}
-	switch val := v.(type) {
-	case string:
-		if val != "" {
-			return val
-		}
-	case []interface{}:
-		// Handle arrays like "artists": ["Name1", "Name2"]
-		parts := make([]string, 0, len(val))
-		for _, item := range val {
-			if s, ok := item.(string); ok && s != "" {
-				parts = append(parts, s)
-			}
-		}
-		if len(parts) > 0 {
-			return strings.Join(parts, ", ")
-		}
+	if d.Artist != "" {
+		return d.Artist
 	}
-	return fallback
+	if len(d.Artists) > 0 {
+		return strings.Join(d.Artists, ", ")
+	}
+	return ""
 }
 
 func displayName(itemID string) string {
 	if itemID == "" {
 		return "Unknown"
-	}
-	if strings.HasPrefix(itemID, "lib:") {
-		return "Track"
 	}
 	if u, err := url.Parse(itemID); err == nil && u.Scheme != "" && u.Path != "" {
 		base := path.Base(u.Path)

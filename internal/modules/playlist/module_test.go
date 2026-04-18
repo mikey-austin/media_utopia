@@ -62,9 +62,12 @@ func TestPlaylistCreateFromSnapshot(t *testing.T) {
 		RendererID: "r",
 		SessionID:  "s",
 		Capture:    mu.SnapshotCapture{},
-		Items:      []string{"lib:mu:library:test:one", "http://example.com/a.mp3"},
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		Entries: []mu.QueueEntry{
+			{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "one"))},
+			{Resolved: &mu.ResolvedSource{URL: "http://example.com/a.mp3"}},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if err := storage.SaveSnapshot(snap); err != nil {
 		t.Fatalf("save snapshot: %v", err)
@@ -134,7 +137,10 @@ func TestSnapshotSaveAndList(t *testing.T) {
 			RendererID: "r",
 			SessionID:  "s",
 			Capture:    mu.SnapshotCapture{},
-			Items:      []string{"lib:mu:library:test:one", "http://example.com/a.mp3"},
+			Entries: []mu.QueueEntry{
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "one"))},
+				{Resolved: &mu.ResolvedSource{URL: "http://example.com/a.mp3"}},
+			},
 		}),
 	}
 
@@ -164,8 +170,8 @@ func TestSnapshotSaveAndList(t *testing.T) {
 	if err := json.Unmarshal(getReply.Body, &getOut); err != nil {
 		t.Fatalf("decode get reply: %v", err)
 	}
-	if len(getOut.Items) != 2 {
-		t.Fatalf("expected 2 snapshot items")
+	if len(getOut.Entries) != 2 {
+		t.Fatalf("expected 2 snapshot entries, got %d", len(getOut.Entries))
 	}
 
 	rmCmd := mu.CommandEnvelope{
@@ -276,7 +282,7 @@ func TestPlaylistRemoveItems(t *testing.T) {
 		Type: "playlist.addItems",
 		TS:   time.Now().Unix(),
 		From: "tester",
-		Body: mustJSON(mu.PlaylistAddItemsBody{PlaylistID: playlistID, Entries: []mu.QueueEntry{{Ref: &mu.ItemRef{ID: "mu:track:one"}}}}),
+		Body: mustJSON(mu.PlaylistAddItemsBody{PlaylistID: playlistID, Entries: []mu.QueueEntry{{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "one"))}}}),
 	}
 	module.playlistAddItems(add, mu.ReplyEnvelope{ID: add.ID, Type: "ack", OK: true})
 
@@ -385,8 +391,8 @@ func TestPlaylistAddItems(t *testing.T) {
 		Body: mustJSON(mu.PlaylistAddItemsBody{
 			PlaylistID: playlistID,
 			Entries: []mu.QueueEntry{
-				{Ref: &mu.ItemRef{ID: "mu:track:alpha"}},
-				{Ref: &mu.ItemRef{ID: "mu:track:beta"}},
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "alpha"))},
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "beta"))},
 			},
 		}),
 	}
@@ -402,11 +408,11 @@ func TestPlaylistAddItems(t *testing.T) {
 	if len(pl.Entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(pl.Entries))
 	}
-	if pl.Entries[0].Ref.ID != "mu:track:alpha" {
-		t.Fatalf("expected first entry ref mu:track:alpha, got %s", pl.Entries[0].Ref.ID)
+	if pl.Entries[0].Ref.ItemID != "alpha" {
+		t.Fatalf("expected first entry itemId alpha, got %s", pl.Entries[0].Ref.ItemID)
 	}
-	if pl.Entries[1].Ref.ID != "mu:track:beta" {
-		t.Fatalf("expected second entry ref mu:track:beta, got %s", pl.Entries[1].Ref.ID)
+	if pl.Entries[1].Ref.ItemID != "beta" {
+		t.Fatalf("expected second entry itemId beta, got %s", pl.Entries[1].Ref.ItemID)
 	}
 	if pl.Revision != initialRevision+1 {
 		t.Fatalf("expected revision %d, got %d", initialRevision+1, pl.Revision)
@@ -420,7 +426,7 @@ func TestPlaylistAddItems(t *testing.T) {
 		From: "tester",
 		Body: mustJSON(mu.PlaylistAddItemsBody{
 			PlaylistID: playlistID,
-			Entries:    []mu.QueueEntry{{Ref: &mu.ItemRef{ID: "mu:track:gamma"}}},
+			Entries:    []mu.QueueEntry{{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "gamma"))}},
 		}),
 	}
 	module.playlistAddItems(add2, mu.ReplyEnvelope{ID: add2.ID, Type: "ack", OK: true})
@@ -432,8 +438,8 @@ func TestPlaylistAddItems(t *testing.T) {
 	if len(pl.Entries) != 3 {
 		t.Fatalf("expected 3 entries after second add, got %d", len(pl.Entries))
 	}
-	if pl.Entries[2].Ref.ID != "mu:track:gamma" {
-		t.Fatalf("expected third entry appended with ref mu:track:gamma, got %s", pl.Entries[2].Ref.ID)
+	if pl.Entries[2].Ref.ItemID != "gamma" {
+		t.Fatalf("expected third entry appended with itemId gamma, got %s", pl.Entries[2].Ref.ItemID)
 	}
 	if pl.Revision != initialRevision+2 {
 		t.Fatalf("expected revision %d, got %d", initialRevision+2, pl.Revision)
@@ -476,9 +482,9 @@ func TestPlaylistMoveItems(t *testing.T) {
 		Body: mustJSON(mu.PlaylistAddItemsBody{
 			PlaylistID: playlistID,
 			Entries: []mu.QueueEntry{
-				{Ref: &mu.ItemRef{ID: "mu:track:A"}},
-				{Ref: &mu.ItemRef{ID: "mu:track:B"}},
-				{Ref: &mu.ItemRef{ID: "mu:track:C"}},
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "A"))},
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "B"))},
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "C"))},
 			},
 		}),
 	}
@@ -501,7 +507,11 @@ func TestPlaylistMoveItems(t *testing.T) {
 		From: "tester",
 		Body: mustJSON(mu.PlaylistReplaceItemsBody{
 			PlaylistID: playlistID,
-			Items:      []string{"mu:track:C", "mu:track:B", "mu:track:A"},
+			Entries: []mu.QueueEntry{
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "C"))},
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "B"))},
+				{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "A"))},
+			},
 		}),
 	}
 	replaceReply := module.playlistReplaceItems(replace, mu.ReplyEnvelope{ID: replace.ID, Type: "ack", OK: true})
@@ -518,14 +528,14 @@ func TestPlaylistMoveItems(t *testing.T) {
 	}
 
 	// Verify the new order.
-	expectedOrder := []string{"mu:track:C", "mu:track:B", "mu:track:A"}
+	expectedOrder := []string{"C", "B", "A"}
 	for i, want := range expectedOrder {
-		if pl.Entries[i].Ref == nil || pl.Entries[i].Ref.ID != want {
+		if pl.Entries[i].Ref == nil || pl.Entries[i].Ref.ItemID != want {
 			got := "<nil>"
 			if pl.Entries[i].Ref != nil {
-				got = pl.Entries[i].Ref.ID
+				got = pl.Entries[i].Ref.ItemID
 			}
-			t.Fatalf("entry %d: expected ref %s, got %s", i, want, got)
+			t.Fatalf("entry %d: expected itemId %s, got %s", i, want, got)
 		}
 	}
 	if pl.Revision != revisionBeforeReplace+1 {
@@ -557,7 +567,9 @@ func TestSnapshotDelete(t *testing.T) {
 				RendererID: "r",
 				SessionID:  "s",
 				Capture:    mu.SnapshotCapture{},
-				Items:      []string{"mu:track:one"},
+				Entries: []mu.QueueEntry{
+					{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "one"))},
+				},
 			}),
 		}
 		reply := module.snapshotSave(cmd, mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true})
@@ -617,8 +629,12 @@ func TestSnapshotRestore(t *testing.T) {
 		config:  Config{NodeID: "mu:playlist:plsrv:default:main"},
 	}
 
-	// Save a snapshot with specific items and capture state.
-	items := []string{"mu:track:x", "mu:track:y", "mu:track:z"}
+	// Save a snapshot with specific entries and capture state.
+	itemIDs := []string{"x", "y", "z"}
+	entries := make([]mu.QueueEntry, len(itemIDs))
+	for i, id := range itemIDs {
+		entries[i] = mu.QueueEntry{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", id))}
+	}
 	capture := mu.SnapshotCapture{
 		QueueRevision: 5,
 		Index:         2,
@@ -637,7 +653,7 @@ func TestSnapshotRestore(t *testing.T) {
 			RendererID: "renderer-1",
 			SessionID:  "session-1",
 			Capture:    capture,
-			Items:      items,
+			Entries:    entries,
 		}),
 	}
 	saveReply := module.snapshotSave(saveCmd, mu.ReplyEnvelope{ID: saveCmd.ID, Type: "ack", OK: true})
@@ -681,12 +697,13 @@ func TestSnapshotRestore(t *testing.T) {
 	if getOut.Name != "Restore Me" {
 		t.Fatalf("expected name 'Restore Me', got %s", getOut.Name)
 	}
-	if len(getOut.Items) != 3 {
-		t.Fatalf("expected 3 items, got %d", len(getOut.Items))
+	if len(getOut.Entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(getOut.Entries))
 	}
-	for i, want := range items {
-		if getOut.Items[i] != want {
-			t.Fatalf("item %d: expected %s, got %s", i, want, getOut.Items[i])
+	for i, want := range itemIDs {
+		got := getOut.Entries[i].Ref
+		if got == nil || got.ItemID != want {
+			t.Fatalf("entry %d: expected itemId %s, got %+v", i, want, got)
 		}
 	}
 	if getOut.Capture.QueueRevision != 5 {
@@ -744,7 +761,7 @@ func TestPlaylistRevisionConflict(t *testing.T) {
 		IfRevision: &currentRevision,
 		Body: mustJSON(mu.PlaylistAddItemsBody{
 			PlaylistID: playlistID,
-			Entries:    []mu.QueueEntry{{Ref: &mu.ItemRef{ID: "mu:track:one"}}},
+			Entries:    []mu.QueueEntry{{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "one"))}},
 		}),
 	}
 	okReply := module.playlistAddItems(addOK, mu.ReplyEnvelope{ID: addOK.ID, Type: "ack", OK: true})
@@ -762,7 +779,7 @@ func TestPlaylistRevisionConflict(t *testing.T) {
 		IfRevision: &staleRevision,
 		Body: mustJSON(mu.PlaylistAddItemsBody{
 			PlaylistID: playlistID,
-			Entries:    []mu.QueueEntry{{Ref: &mu.ItemRef{ID: "mu:track:two"}}},
+			Entries:    []mu.QueueEntry{{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "two"))}},
 		}),
 	}
 	conflictReply := module.playlistAddItems(addConflict, mu.ReplyEnvelope{ID: addConflict.ID, Type: "ack", OK: true})
@@ -814,7 +831,7 @@ func TestPlaylistRevisionConflict(t *testing.T) {
 		IfRevision: &staleRevision,
 		Body: mustJSON(mu.PlaylistReplaceItemsBody{
 			PlaylistID: playlistID,
-			Items:      []string{"mu:track:replaced"},
+			Entries:    []mu.QueueEntry{{Ref: refPtr(mu.NewLibraryItemRef("mu:library:fs:test:default", "replaced"))}},
 		}),
 	}
 	replConflict := module.playlistReplaceItems(replaceConflict, mu.ReplyEnvelope{ID: replaceConflict.ID, Type: "ack", OK: true})
@@ -829,4 +846,8 @@ func TestPlaylistRevisionConflict(t *testing.T) {
 func mustJSON(v any) json.RawMessage {
 	data, _ := json.Marshal(v)
 	return data
+}
+
+func refPtr(r mu.LibraryItemRef) *mu.LibraryItemRef {
+	return &r
 }

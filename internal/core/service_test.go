@@ -178,7 +178,7 @@ func TestLeaseAutoRefreshesOnCommand(t *testing.T) {
 	}
 }
 
-func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
+func TestPlaylistAddExpandsLibraryContainer(t *testing.T) {
 	playlistServer := mu.Presence{NodeID: "mu:playlist:plsrv:default:main", Kind: "playlist", Name: "Main"}
 	library := mu.Presence{NodeID: "mu:library:jellyfin:test", Kind: "library", Name: "Jellyfin"}
 	broker := &stubBroker{
@@ -190,12 +190,16 @@ func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal reply: %v", err)
 	}
-	resolveBody, err := json.Marshal(mu.LibraryResolveReply{
-		ItemID:   "album-1",
-		Metadata: map[string]any{"type": "MusicAlbum"},
-		Sources: []mu.ResolvedSource{
-			{URL: "http://a", Mime: "audio/mp3", ByteRange: true},
-		},
+	getItemBody, err := json.Marshal(mu.LibraryGetItemReply{
+		Ref:        mu.NewLibraryItemRef(library.NodeID, "album-1"),
+		Display:    &mu.DisplayMetadata{Title: "Album"},
+		Attributes: map[string]any{"container": true, "type": "MusicAlbum"},
+	})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+	sourcesBody, err := json.Marshal(mu.LibraryResolveSourcesReply{
+		Sources: []mu.ResolvedSource{{URL: "http://a", Mime: "audio/mp3", ByteRange: true}},
 	})
 	if err != nil {
 		t.Fatalf("marshal reply: %v", err)
@@ -205,10 +209,11 @@ func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
 		t.Fatalf("marshal reply: %v", err)
 	}
 	broker.replies = map[string]mu.ReplyEnvelope{
-		"playlist.list":     {ID: "id-0", Type: "ack", OK: true, TS: 101, Body: listBody},
-		"library.browse":    {ID: "id-0", Type: "ack", OK: true, TS: 101, Body: browseBody},
-		"library.resolve":   {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: resolveBody},
-		"playlist.addItems": {ID: "id-2", Type: "ack", OK: true, TS: 101},
+		"playlist.list":          {ID: "id-0", Type: "ack", OK: true, TS: 101, Body: listBody},
+		"library.browse":         {ID: "id-0", Type: "ack", OK: true, TS: 101, Body: browseBody},
+		"library.getItem":        {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: getItemBody},
+		"library.resolveSources": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: sourcesBody},
+		"playlist.addItems":      {ID: "id-2", Type: "ack", OK: true, TS: 101},
 	}
 
 	service := Service{
@@ -237,25 +242,25 @@ func TestPlaylistAddExpandsLibraryResolve(t *testing.T) {
 	if body.Entries[0].Ref == nil || body.Entries[1].Ref == nil {
 		t.Fatalf("expected playlist entries to have refs")
 	}
-	if body.Entries[0].Ref.ID != "lib:mu:library:jellyfin:test:track-1" {
-		t.Fatalf("unexpected first ref id: %s", body.Entries[0].Ref.ID)
+	if body.Entries[0].Ref.LibraryID != library.NodeID || body.Entries[0].Ref.ItemID != "track-1" {
+		t.Fatalf("unexpected first ref: %+v", body.Entries[0].Ref)
 	}
-	if body.Entries[1].Ref.ID != "lib:mu:library:jellyfin:test:track-2" {
-		t.Fatalf("unexpected second ref id: %s", body.Entries[1].Ref.ID)
+	if body.Entries[1].Ref.LibraryID != library.NodeID || body.Entries[1].Ref.ItemID != "track-2" {
+		t.Fatalf("unexpected second ref: %+v", body.Entries[1].Ref)
 	}
 }
 
-func TestResolveQueueEntriesUsesBatch(t *testing.T) {
+func TestBackfillQueueDisplayUsesGetItems(t *testing.T) {
 	library := mu.Presence{NodeID: "mu:library:jellyfin:test", Kind: "library", Name: "Jellyfin"}
 	broker := &stubBroker{
 		presence:   []mu.Presence{library},
 		replyTopic: "mu/v1/reply/test",
 	}
 
-	batchBody, err := json.Marshal(mu.LibraryResolveBatchReply{
-		Items: []mu.LibraryResolveBatchItem{
-			{ItemID: "track-1", Metadata: map[string]any{"title": "A"}},
-			{ItemID: "track-2", Metadata: map[string]any{"title": "B"}},
+	batchBody, err := json.Marshal(mu.LibraryGetItemsReply{
+		Items: []mu.LibraryGetItemsReplyItem{
+			{Ref: mu.NewLibraryItemRef(library.NodeID, "track-1"), Display: &mu.DisplayMetadata{Title: "A"}},
+			{Ref: mu.NewLibraryItemRef(library.NodeID, "track-2"), Display: &mu.DisplayMetadata{Title: "B"}},
 		},
 	})
 	if err != nil {
@@ -263,7 +268,7 @@ func TestResolveQueueEntriesUsesBatch(t *testing.T) {
 	}
 
 	broker.replies = map[string]mu.ReplyEnvelope{
-		"library.resolveBatch": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: batchBody},
+		"library.getItems": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: batchBody},
 	}
 
 	service := Service{
@@ -275,16 +280,21 @@ func TestResolveQueueEntriesUsesBatch(t *testing.T) {
 		Config:     Config{Identity: "tester"},
 	}
 
-	entries := []mu.QueueItem{
-		{ItemID: "lib:lib:track-1"},
-		{ItemID: "lib:lib:track-2"},
+	ref1 := mu.NewLibraryItemRef(library.NodeID, "track-1")
+	ref2 := mu.NewLibraryItemRef(library.NodeID, "track-2")
+	entries := []mu.QueueEntry{
+		{Ref: &ref1},
+		{Ref: &ref2},
 	}
-	resolved := service.resolveQueueEntries(context.Background(), entries)
-	if resolved[0].Metadata["title"] != "A" || resolved[1].Metadata["title"] != "B" {
-		t.Fatalf("expected resolved titles")
+	resolved := service.backfillQueueDisplay(context.Background(), entries)
+	if resolved[0].Display == nil || resolved[0].Display.Title != "A" {
+		t.Fatalf("expected resolved title A on entry 0")
 	}
-	if len(broker.calls) != 1 || broker.calls[0].Type != "library.resolveBatch" {
-		t.Fatalf("expected batch resolve call")
+	if resolved[1].Display == nil || resolved[1].Display.Title != "B" {
+		t.Fatalf("expected resolved title B on entry 1")
+	}
+	if len(broker.calls) != 1 || broker.calls[0].Type != "library.getItems" {
+		t.Fatalf("expected single library.getItems call")
 	}
 }
 
@@ -426,7 +436,7 @@ func TestResolveVolumeDeltaClamp(t *testing.T) {
 
 func TestParseQueueFileMuq(t *testing.T) {
 	service := Service{}
-	data := []byte("\n# comment\nmu:track:one\nhttp://example/stream\n")
+	data := []byte("\n# comment\nhttp://example/stream\nhttps://other/stream2\n")
 	entries, err := service.parseQueueFile("muq", data)
 	if err != nil {
 		t.Fatalf("parseQueueFile: %v", err)
@@ -434,11 +444,11 @@ func TestParseQueueFileMuq(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
-	if entries[0].Ref == nil || entries[0].Ref.ID != "mu:track:one" {
-		t.Fatalf("expected ref entry")
+	if entries[0].Resolved == nil || entries[0].Resolved.URL != "http://example/stream" {
+		t.Fatalf("expected first resolved URL entry")
 	}
-	if entries[1].Resolved == nil || entries[1].Resolved.URL != "http://example/stream" {
-		t.Fatalf("expected resolved entry")
+	if entries[1].Resolved == nil || entries[1].Resolved.URL != "https://other/stream2" {
+		t.Fatalf("expected second resolved URL entry")
 	}
 }
 
@@ -784,18 +794,26 @@ func TestQueueAdd(t *testing.T) {
 		replyTopic: "mu/v1/reply/test",
 	}
 
-	resolveBody, err := json.Marshal(mu.LibraryResolveReply{
-		ItemID:   "track-1",
-		Metadata: map[string]any{"title": "Song One"},
-		Sources:  []mu.ResolvedSource{{URL: "http://host/track-1.flac", Mime: "audio/flac", ByteRange: true}},
+	sourcesBody, err := json.Marshal(mu.LibraryResolveSourcesReply{
+		Ref:     mu.NewLibraryItemRef(library.NodeID, "track-1"),
+		Sources: []mu.ResolvedSource{{URL: "http://host/track-1.flac", Mime: "audio/flac", ByteRange: true}},
+	})
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+	getItemBody, err := json.Marshal(mu.LibraryGetItemReply{
+		Ref:        mu.NewLibraryItemRef(library.NodeID, "track-1"),
+		Display:    &mu.DisplayMetadata{Title: "Song One"},
+		Attributes: map[string]any{"container": false, "type": "audio"},
 	})
 	if err != nil {
 		t.Fatalf("marshal reply: %v", err)
 	}
 	broker.replies = map[string]mu.ReplyEnvelope{
-		"session.renew":   {ID: "id-1", Type: "ack", OK: true, TS: 101},
-		"library.resolve": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: resolveBody},
-		"queue.add":       {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		"session.renew":          {ID: "id-1", Type: "ack", OK: true, TS: 101},
+		"library.getItem":        {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: getItemBody},
+		"library.resolveSources": {ID: "id-1", Type: "ack", OK: true, TS: 101, Body: sourcesBody},
+		"queue.add":              {ID: "id-1", Type: "ack", OK: true, TS: 101},
 	}
 
 	service := Service{

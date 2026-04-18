@@ -58,8 +58,7 @@ type Config struct {
 
 // cmdWork represents a command to be processed by a worker.
 type cmdWork struct {
-	cmd      mu.CommandEnvelope
-	serverID string
+	cmd mu.CommandEnvelope
 }
 
 // Module handles library commands via UPnP ContentDirectory.
@@ -297,9 +296,8 @@ func (m *Module) handleMessage(msg paho.Message) {
 	}
 
 	// Queue command for async processing to avoid blocking MQTT handler
-	serverID := m.serverIDFromTopic(msg.Topic())
 	select {
-	case m.cmdQueue <- cmdWork{cmd: cmd, serverID: serverID}:
+	case m.cmdQueue <- cmdWork{cmd: cmd}:
 		// Queued successfully
 	default:
 		// Queue full - apply backpressure
@@ -320,12 +318,12 @@ func (m *Module) commandWorker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case work := <-m.cmdQueue:
-			m.processCommand(work.cmd, work.serverID)
+			m.processCommand(work.cmd)
 		}
 	}
 }
 
-func (m *Module) processCommand(cmd mu.CommandEnvelope, serverID string) {
+func (m *Module) processCommand(cmd mu.CommandEnvelope) {
 	if mu.ShouldDedup(cmd.Type) && m.dedup.Seen(cmd.ID) {
 		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
 		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
@@ -335,7 +333,7 @@ func (m *Module) processCommand(cmd mu.CommandEnvelope, serverID string) {
 	}
 
 	started := time.Now()
-	reply := m.dispatch(cmd, serverID)
+	reply := m.dispatch(cmd)
 	if cmd.ReplyTo == "" {
 		return
 	}
@@ -362,7 +360,7 @@ func (m *Module) processCommand(cmd mu.CommandEnvelope, serverID string) {
 	}
 }
 
-func (m *Module) dispatch(cmd mu.CommandEnvelope, serverID string) mu.ReplyEnvelope {
+func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 	reply := mu.ReplyEnvelope{
 		ID:   cmd.ID,
 		Type: "ack",
@@ -375,10 +373,14 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope, serverID string) mu.ReplyEnvel
 		return m.libraryBrowse(cmd, reply)
 	case "library.search":
 		return m.librarySearch(cmd, reply)
-	case "library.resolve":
-		return m.libraryResolve(cmd, reply, serverID)
-	case "library.resolveBatch":
-		return m.libraryResolveBatch(cmd, reply, serverID)
+	case "library.getItem":
+		return m.libraryGetItem(cmd, reply)
+	case "library.getItems":
+		return m.libraryGetItems(cmd, reply)
+	case "library.resolveSources":
+		return m.libraryResolveSources(cmd, reply)
+	case "library.resolveSourcesBatch":
+		return m.libraryResolveSourcesBatch(cmd, reply)
 	default:
 		return errorReply(cmd, "INVALID", "unsupported command")
 	}
@@ -501,31 +503,157 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	return reply
 }
 
-func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope, serverID string) mu.ReplyEnvelope {
-	var body mu.LibraryResolveBody
+func (m *Module) refMatchesNode(ref mu.LibraryItemRef) bool {
+	return ref.LibraryID == m.config.NodeID
+}
+
+// describeItem returns Display + Attributes for a UPnP item id of the form
+// "<serverID>::<base64(objectID)>". The bool indicates whether the item was
+// found via ContentDirectory.
+func (m *Module) describeItem(itemID string) (*mu.DisplayMetadata, map[string]any, bool) {
+	serverID, objectID, ok := parseItemID(itemID)
+	if !ok {
+		return nil, nil, false
+	}
+	server := m.serverByID(serverID)
+	if server == nil {
+		return nil, nil, false
+	}
+	obj, err := m.fetchObject(server, objectID)
+	if err != nil {
+		return nil, nil, false
+	}
+	display := m.buildDisplay(server, obj)
+	itemType, mediaType := classifyObject(obj.Class, obj.ID, len(obj.Resources))
+	if isContainerObject(obj) {
+		itemType, mediaType = "Folder", "Folder"
+	}
+	attrs := map[string]any{
+		"container": isContainerObject(obj),
+		"type":      itemType,
+		"mediaType": mediaType,
+	}
+	return display, attrs, true
+}
+
+func (m *Module) libraryGetItem(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryGetItemBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	body.ItemID = m.normalizeItemID(body.ItemID, serverID)
+	if err := body.Ref.Validate(); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	if !m.refMatchesNode(body.Ref) {
+		return errorReply(cmd, "INVALID", "ref.libraryId does not match this library node")
+	}
 	started := time.Now()
-	metadata, sources, err := m.resolveItem(body.ItemID, body.MetadataOnly)
+	display, attrs, ok := m.describeItem(body.Ref.ItemID)
+	if !ok {
+		return errorReply(cmd, "NOT_FOUND", "item not found")
+	}
+	payload, err := json.Marshal(mu.LibraryGetItemReply{
+		Ref:        body.Ref,
+		Display:    display,
+		Attributes: attrs,
+	})
 	if err != nil {
-		m.log.Debug(
-			"library resolve failed",
-			zap.String("item", body.ItemID),
+		m.log.Error("marshal getItem reply", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to marshal response")
+	}
+	m.log.Debug("library getItem ok",
+		zap.String("item", body.Ref.ItemID),
+		zap.Int("bytes", len(payload)),
+		zap.Duration("duration", time.Since(started)),
+	)
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) libraryGetItems(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryGetItemsBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	type itemResult struct {
+		index int
+		entry mu.LibraryGetItemsReplyItem
+	}
+	results := make(chan itemResult, len(body.Refs))
+	var wg sync.WaitGroup
+	for i, ref := range body.Refs {
+		entry := mu.LibraryGetItemsReplyItem{Ref: ref}
+		if err := ref.Validate(); err != nil {
+			entry.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
+			results <- itemResult{index: i, entry: entry}
+			continue
+		}
+		if !m.refMatchesNode(ref) {
+			entry.Err = &mu.ReplyError{Code: "INVALID", Message: "ref.libraryId does not match this library node"}
+			results <- itemResult{index: i, entry: entry}
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, r mu.LibraryItemRef) {
+			defer wg.Done()
+			e := mu.LibraryGetItemsReplyItem{Ref: r}
+			display, attrs, ok := m.describeItem(r.ItemID)
+			if !ok {
+				e.Err = &mu.ReplyError{Code: "NOT_FOUND", Message: "item not found"}
+			} else {
+				e.Display = display
+				e.Attributes = attrs
+			}
+			results <- itemResult{index: idx, entry: e}
+		}(i, ref)
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	items := make([]mu.LibraryGetItemsReplyItem, len(body.Refs))
+	for res := range results {
+		items[res.index] = res.entry
+	}
+	payload, err := json.Marshal(mu.LibraryGetItemsReply{Items: items})
+	if err != nil {
+		m.log.Error("marshal getItems reply", zap.Error(err))
+		return errorReply(cmd, "INTERNAL", "failed to marshal response")
+	}
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) libraryResolveSources(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveSourcesBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if err := body.Ref.Validate(); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	if !m.refMatchesNode(body.Ref) {
+		return errorReply(cmd, "INVALID", "ref.libraryId does not match this library node")
+	}
+	started := time.Now()
+	sources, err := m.resolveSources(body.Ref.ItemID)
+	if err != nil {
+		m.log.Debug("library resolveSources failed",
+			zap.String("item", body.Ref.ItemID),
 			zap.Error(err),
 		)
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, err := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
+	payload, err := json.Marshal(mu.LibraryResolveSourcesReply{
+		Ref:     body.Ref,
+		Sources: sources,
+	})
 	if err != nil {
-		m.log.Error("marshal resolve reply", zap.Error(err))
+		m.log.Error("marshal resolveSources reply", zap.Error(err))
 		return errorReply(cmd, "INTERNAL", "failed to marshal response")
 	}
-	m.log.Debug(
-		"library resolve ok",
-		zap.String("item", body.ItemID),
-		zap.Bool("metadata_only", body.MetadataOnly),
+	m.log.Debug("library resolveSources ok",
+		zap.String("item", body.Ref.ItemID),
 		zap.Int("sources", len(sources)),
 		zap.Int("bytes", len(payload)),
 		zap.Duration("duration", time.Since(started)),
@@ -534,93 +662,83 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope, 
 	return reply
 }
 
-func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope, serverID string) mu.ReplyEnvelope {
-	var body mu.LibraryResolveBatchBody
+func (m *Module) libraryResolveSourcesBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveSourcesBatchBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	if len(body.ItemIDs) == 0 {
-		return errorReply(cmd, "INVALID", "itemIds required")
-	}
-
-	// Normalize item IDs first
-	normalizedIDs := make([]string, 0, len(body.ItemIDs))
-	for _, itemID := range body.ItemIDs {
-		itemID = strings.TrimSpace(itemID)
-		itemID = m.normalizeItemID(itemID, serverID)
-		if itemID != "" {
-			normalizedIDs = append(normalizedIDs, itemID)
-		}
-	}
-
-	// Resolve items in parallel for better performance
-	type resolveResult struct {
+	type batchResult struct {
 		index int
-		entry mu.LibraryResolveBatchItem
+		entry mu.LibraryResolveSourcesBatchItem
 	}
-	results := make(chan resolveResult, len(normalizedIDs))
+	results := make(chan batchResult, len(body.Refs))
 	var wg sync.WaitGroup
-	for i, itemID := range normalizedIDs {
+	for i, ref := range body.Refs {
+		entry := mu.LibraryResolveSourcesBatchItem{Ref: ref}
+		if err := ref.Validate(); err != nil {
+			entry.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
+			results <- batchResult{index: i, entry: entry}
+			continue
+		}
+		if !m.refMatchesNode(ref) {
+			entry.Err = &mu.ReplyError{Code: "INVALID", Message: "ref.libraryId does not match this library node"}
+			results <- batchResult{index: i, entry: entry}
+			continue
+		}
 		wg.Add(1)
-		go func(idx int, id string) {
+		go func(idx int, r mu.LibraryItemRef) {
 			defer wg.Done()
-			metadata, sources, err := m.resolveItem(id, body.MetadataOnly)
-			entry := mu.LibraryResolveBatchItem{ItemID: id, Metadata: metadata, Sources: sources}
+			e := mu.LibraryResolveSourcesBatchItem{Ref: r}
+			sources, err := m.resolveSources(r.ItemID)
 			if err != nil {
-				entry.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
+				e.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
+			} else {
+				e.Sources = sources
 			}
-			results <- resolveResult{index: idx, entry: entry}
-		}(i, itemID)
+			results <- batchResult{index: idx, entry: e}
+		}(i, ref)
 	}
-
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
-
-	// Collect results preserving original order
-	items := make([]mu.LibraryResolveBatchItem, len(normalizedIDs))
+	items := make([]mu.LibraryResolveSourcesBatchItem, len(body.Refs))
 	for res := range results {
 		items[res.index] = res.entry
 	}
-
-	payload, err := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
+	payload, err := json.Marshal(mu.LibraryResolveSourcesBatchReply{Items: items})
 	if err != nil {
-		m.log.Error("marshal resolveBatch reply", zap.Error(err))
+		m.log.Error("marshal resolveSourcesBatch reply", zap.Error(err))
 		return errorReply(cmd, "INTERNAL", "failed to marshal response")
 	}
 	reply.Body = payload
 	return reply
 }
 
-// resolveItem resolves a single item into metadata and sources with caching.
-func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, error) {
-	if metadata, sources, ok := m.cacheGet(itemID, metadataOnly); ok {
-		m.log.Debug("upnp cache hit", zap.String("item", itemID), zap.Bool("metadata_only", metadataOnly))
-		return metadata, sources, nil
+// resolveSources resolves a single item to its playable sources with caching.
+func (m *Module) resolveSources(itemID string) ([]mu.ResolvedSource, error) {
+	if sources, ok := m.cacheGetSources(itemID); ok {
+		m.log.Debug("upnp cache hit sources", zap.String("item", itemID))
+		return sources, nil
 	}
 	serverID, objectID, ok := parseItemID(itemID)
 	if !ok {
-		return nil, nil, errors.New("invalid itemId")
+		return nil, errors.New("invalid itemId")
 	}
 	server := m.serverByID(serverID)
 	if server == nil {
-		return nil, nil, errors.New("library not found")
+		return nil, errors.New("library not found")
 	}
 	obj, err := m.fetchObject(server, objectID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if isContainerObject(obj) {
-		return nil, nil, fmt.Errorf("item %s is a container", itemID)
+		return nil, fmt.Errorf("item %s is a container", itemID)
 	}
-	metadata := m.buildMetadata(server, obj)
-	sources := []mu.ResolvedSource{}
-	if !metadataOnly {
-		sources = buildSources(server, obj)
-	}
-	m.cachePut(itemID, metadata, sources, !metadataOnly)
-	return metadata, sources, nil
+	sources := buildSources(server, obj)
+	m.cachePutSources(itemID, sources)
+	return sources, nil
 }
 
 // Discovery and browse helpers.
@@ -1036,34 +1154,36 @@ func (m *Module) libraryItemFromObject(server *mediaServer, obj didlObject) libr
 	}
 }
 
-func (m *Module) buildMetadata(server *mediaServer, obj didlObject) map[string]any {
-	itemType, mediaType := classifyObject(obj.Class, obj.ID, len(obj.Resources))
-	meta := map[string]any{
-		"title":     obj.Title,
-		"type":      itemType,
-		"mediaType": mediaType,
+func (m *Module) buildDisplay(server *mediaServer, obj didlObject) *mu.DisplayMetadata {
+	_, mediaType := classifyObject(obj.Class, obj.ID, len(obj.Resources))
+	if isContainerObject(obj) {
+		mediaType = "Folder"
 	}
-	if obj.Album != "" {
-		meta["album"] = obj.Album
+	display := &mu.DisplayMetadata{
+		Title:     obj.Title,
+		Album:     obj.Album,
+		MediaType: mediaType,
 	}
+	artists := []string{}
 	if obj.Artist != "" {
-		meta["artist"] = obj.Artist
-		meta["artists"] = []string{obj.Artist}
+		artists = append(artists, obj.Artist)
 	}
 	if obj.Creator != "" && obj.Creator != obj.Artist {
-		meta["creator"] = obj.Creator
+		artists = append(artists, obj.Creator)
+	}
+	if len(artists) > 0 {
+		display.Artists = artists
+		display.Artist = strings.Join(artists, ", ")
 	}
 	if len(obj.Resources) > 0 {
-		if ms := durationToMS(obj.Resources[0].Duration); ms > 0 {
-			meta["durationMs"] = ms
-		}
+		display.DurationMS = durationToMS(obj.Resources[0].Duration)
 	}
 	if art := firstAlbumArt(server, obj); art != "" {
-		meta["artworkUrl"] = art
+		display.ArtworkURL = art
 	} else if server.IconURL != "" {
-		meta["artworkUrl"] = server.IconURL
+		display.ArtworkURL = server.IconURL
 	}
-	return meta
+	return display
 }
 
 // DIDL-Lite parsing helpers.
@@ -1245,75 +1365,40 @@ func (d deviceDescription) IconURL(base string) string {
 
 // Caching helpers.
 
-type resolveCacheEntry struct {
-	Metadata     map[string]any      `json:"metadata"`
-	Sources      []mu.ResolvedSource `json:"sources"`
-	SourcesReady bool                `json:"sourcesReady"`
-}
-
-func (m *Module) cacheGet(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, bool) {
+func (m *Module) cacheGetSources(itemID string) ([]mu.ResolvedSource, bool) {
 	m.ensureCache()
 	if m.cache == nil {
-		return nil, nil, false
+		return nil, false
 	}
-	value, err := m.cache.Get(m.cacheCtx, itemID)
+	value, err := m.cache.Get(m.cacheCtx, "sources:"+itemID)
 	if err != nil {
-		return nil, nil, false
+		return nil, false
 	}
 	value, ok := m.cacheDecode(value)
 	if !ok {
-		return nil, nil, false
+		return nil, false
 	}
-	var entry resolveCacheEntry
-	if err := json.Unmarshal(value, &entry); err != nil {
-		return nil, nil, false
+	var sources []mu.ResolvedSource
+	if err := json.Unmarshal(value, &sources); err != nil {
+		return nil, false
 	}
-	if metadataOnly {
-		if entry.Metadata == nil {
-			return nil, nil, false
-		}
-		return copyMetadata(entry.Metadata), nil, true
-	}
-	if entry.Metadata == nil || !entry.SourcesReady {
-		return nil, nil, false
-	}
-	return copyMetadata(entry.Metadata), append([]mu.ResolvedSource(nil), entry.Sources...), true
+	return append([]mu.ResolvedSource(nil), sources...), true
 }
 
-func (m *Module) cachePut(itemID string, metadata map[string]any, sources []mu.ResolvedSource, sourcesReady bool) {
-	if metadata == nil {
+func (m *Module) cachePutSources(itemID string, sources []mu.ResolvedSource) {
+	if len(sources) == 0 {
 		return
 	}
 	m.ensureCache()
 	if m.cache == nil {
 		return
 	}
-	if len(sources) > 0 {
-		sourcesReady = true
-	}
-	entry := resolveCacheEntry{
-		Metadata:     copyMetadata(metadata),
-		Sources:      append([]mu.ResolvedSource(nil), sources...),
-		SourcesReady: sourcesReady,
-	}
-	payload, err := json.Marshal(entry)
+	payload, err := json.Marshal(sources)
 	if err != nil {
 		return
 	}
 	payload = m.cacheEncode(payload)
-	ttl := m.cacheTTL()
-	_ = m.cache.Set(m.cacheCtx, itemID, payload, libstore.WithExpiration(ttl))
-}
-
-func copyMetadata(metadata map[string]any) map[string]any {
-	if metadata == nil {
-		return nil
-	}
-	out := make(map[string]any, len(metadata))
-	for k, v := range metadata {
-		out[k] = v
-	}
-	return out
+	_ = m.cache.Set(m.cacheCtx, "sources:"+itemID, payload, libstore.WithExpiration(m.cacheTTL()))
 }
 
 func (m *Module) cacheDecode(value []byte) ([]byte, bool) {
@@ -1575,24 +1660,6 @@ func isContainerObject(obj didlObject) bool {
 		return true
 	}
 	return false
-}
-
-func (m *Module) normalizeItemID(itemID string, serverID string) string {
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" {
-		return ""
-	}
-	if _, _, ok := parseItemID(itemID); ok {
-		return itemID
-	}
-	if serverID == "" {
-		return itemID
-	}
-	decoded, err := base64.RawURLEncoding.DecodeString(itemID)
-	if err == nil && len(decoded) > 0 {
-		itemID = string(decoded)
-	}
-	return makeContainerID(serverID, itemID)
 }
 
 func (m *Module) serverIDFromTopic(topic string) string {

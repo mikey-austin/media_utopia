@@ -92,8 +92,12 @@ func TestJSONPrinterQueueResult(t *testing.T) {
 		Queue: mu.QueueGetReply{
 			Revision: 5,
 			Index:    2,
-			Entries: []mu.QueueItem{
-				{QueueEntryID: "q-1", ItemID: "item-1", Metadata: map[string]any{"title": "Song A"}},
+			Entries: []mu.QueueEntry{
+				{
+					QueueEntryID: "q-1",
+					Ref:          &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: "mu:library:fs:default:music", ItemID: "item-1"},
+					Display:      &mu.DisplayMetadata{Title: "Song A"},
+				},
 			},
 		},
 	}

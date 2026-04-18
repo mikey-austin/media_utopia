@@ -64,6 +64,9 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	if err != nil {
 		return nil, err
 	}
+	if err := storage.MigrateOnDisk(log); err != nil {
+		return nil, fmt.Errorf("migrate storage: %w", err)
+	}
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
 
@@ -298,12 +301,14 @@ func (m *Module) playlistCreate(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 			}
 			return errorReply(cmd, "INVALID", err.Error())
 		}
-		if len(snap.Items) > 0 {
-			entries := make([]PlaylistEntry, 0, len(snap.Items))
-			for _, item := range snap.Items {
+		if len(snap.Entries) > 0 {
+			entries := make([]PlaylistEntry, 0, len(snap.Entries))
+			for _, qe := range snap.Entries {
 				entries = append(entries, PlaylistEntry{
-					EntryID: fmt.Sprintf("mu:playlistentry:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID()),
-					Ref:     &mu.ItemRef{ID: item},
+					EntryID:  fmt.Sprintf("mu:playlistentry:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID()),
+					Ref:      qe.Ref,
+					Resolved: qe.Resolved,
+					Display:  qe.Display,
 				})
 			}
 			pl.Entries = entries
@@ -360,10 +365,14 @@ func (m *Module) playlistAddItems(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope
 	}
 
 	for _, entry := range body.Entries {
+		if err := entry.Validate(); err != nil {
+			return errorReply(cmd, "INVALID", err.Error())
+		}
 		pl.Entries = append(pl.Entries, PlaylistEntry{
 			EntryID:  fmt.Sprintf("mu:playlistentry:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID()),
 			Ref:      entry.Ref,
 			Resolved: entry.Resolved,
+			Display:  entry.Display,
 		})
 	}
 	pl.Revision++
@@ -430,12 +439,16 @@ func (m *Module) playlistReplaceItems(cmd mu.CommandEnvelope, reply mu.ReplyEnve
 		return errorReply(cmd, "CONFLICT", "revision mismatch")
 	}
 
-	// Build new entries from item IDs
-	newEntries := make([]PlaylistEntry, 0, len(body.Items))
-	for _, itemID := range body.Items {
+	newEntries := make([]PlaylistEntry, 0, len(body.Entries))
+	for _, entry := range body.Entries {
+		if err := entry.Validate(); err != nil {
+			return errorReply(cmd, "INVALID", err.Error())
+		}
 		newEntries = append(newEntries, PlaylistEntry{
-			EntryID: fmt.Sprintf("mu:playlistentry:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID()),
-			Ref:     &mu.ItemRef{ID: itemID},
+			EntryID:  fmt.Sprintf("mu:playlistentry:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID()),
+			Ref:      entry.Ref,
+			Resolved: entry.Resolved,
+			Display:  entry.Display,
 		})
 	}
 	pl.Entries = newEntries
@@ -505,6 +518,11 @@ func (m *Module) snapshotSave(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu
 	}
 	id := fmt.Sprintf("mu:snapshot:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID())
 	now := time.Now().Unix()
+	for _, e := range body.Entries {
+		if err := e.Validate(); err != nil {
+			return errorReply(cmd, "INVALID", err.Error())
+		}
+	}
 	snapshot := Snapshot{
 		SnapshotID: id,
 		Name:       body.Name,
@@ -513,7 +531,7 @@ func (m *Module) snapshotSave(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu
 		RendererID: body.RendererID,
 		SessionID:  body.SessionID,
 		Capture:    body.Capture,
-		Items:      body.Items,
+		Entries:    body.Entries,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -561,7 +579,7 @@ func (m *Module) snapshotGet(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.
 		SnapshotID: snap.SnapshotID,
 		Name:       snap.Name,
 		Revision:   snap.Revision,
-		Items:      snap.Items,
+		Entries:    snap.Entries,
 		Capture:    snap.Capture,
 	})
 	if err != nil {
@@ -653,6 +671,7 @@ func (m *Module) suggestPromote(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 			EntryID:  fmt.Sprintf("mu:playlistentry:plsrv:%s:%s", safeNodeSuffix(m.config.NodeID), m.idgen.NewID()),
 			Ref:      entry.Ref,
 			Resolved: entry.Resolved,
+			Display:  entry.Display,
 		})
 	}
 	pl := Playlist{

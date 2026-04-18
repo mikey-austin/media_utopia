@@ -1,5 +1,10 @@
 package mu
 
+import (
+	"errors"
+	"fmt"
+)
+
 // SessionAcquireBody is the payload for session.acquire.
 type SessionAcquireBody struct {
 	TTLMS int64 `json:"ttlMs"`
@@ -53,16 +58,36 @@ type QueueGetBody struct {
 
 // QueueGetReply is the reply body for queue.get.
 type QueueGetReply struct {
-	Revision int64       `json:"revision"`
-	Index    int64       `json:"index"`
-	Entries  []QueueItem `json:"entries"`
+	Revision int64        `json:"revision"`
+	Index    int64        `json:"index"`
+	Entries  []QueueEntry `json:"entries"`
 }
 
-// QueueItem is an entry returned by queue.get.
-type QueueItem struct {
-	QueueEntryID string                 `json:"queueEntryId"`
-	ItemID       string                 `json:"itemId"`
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+// QueueEntry is the canonical wire representation of a queue position.
+// Either Ref or Resolved (or both) must be set. Display is a denormalized
+// UI snapshot included whenever known so controllers do not need to issue
+// follow-up library catalog lookups for ordinary rendering.
+type QueueEntry struct {
+	QueueEntryID string           `json:"queueEntryId,omitempty"`
+	Ref          *LibraryItemRef  `json:"ref,omitempty"`
+	Resolved     *ResolvedSource  `json:"resolved,omitempty"`
+	Display      *DisplayMetadata `json:"display,omitempty"`
+}
+
+// Validate reports whether a QueueEntry is well formed for wire transport.
+func (e QueueEntry) Validate() error {
+	if e.Ref == nil && e.Resolved == nil {
+		return errors.New("queue entry requires ref or resolved")
+	}
+	if e.Ref != nil {
+		if err := e.Ref.Validate(); err != nil {
+			return fmt.Errorf("queue entry ref: %w", err)
+		}
+	}
+	if e.Resolved != nil && e.Resolved.URL == "" {
+		return errors.New("queue entry resolved.url is required")
+	}
+	return nil
 }
 
 // QueueSetBody replaces the queue atomically.
@@ -135,21 +160,8 @@ type QueueLoadSuggestionBody struct {
 	Resolve          string `json:"resolve"`
 }
 
-// QueueEntry is an entry reference or resolved source.
-type QueueEntry struct {
-	Ref      *ItemRef               `json:"ref,omitempty"`
-	Resolved *ResolvedSource        `json:"resolved,omitempty"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
-}
-
-// ItemRef is a reference to a library item.
-type ItemRef struct {
-	ID string `json:"id"`
-}
-
-// ResolvedSource is a fully resolved source reference.
+// ResolvedSource is a fully resolved playable source.
 type ResolvedSource struct {
-	ItemID    string `json:"itemId,omitempty"`
 	URL       string `json:"url"`
 	Mime      string `json:"mime,omitempty"`
 	ByteRange bool   `json:"byteRange"`
@@ -208,8 +220,8 @@ type PlaylistDeleteBody struct {
 
 // PlaylistReplaceItemsBody is the payload for playlist.replaceItems.
 type PlaylistReplaceItemsBody struct {
-	PlaylistID string   `json:"playlistId"`
-	Items      []string `json:"items"` // Array of itemIds to replace all entries
+	PlaylistID string       `json:"playlistId"`
+	Entries    []QueueEntry `json:"entries"`
 }
 
 // SnapshotSaveBody is the payload for snapshot.save.
@@ -218,7 +230,7 @@ type SnapshotSaveBody struct {
 	RendererID string          `json:"rendererId"`
 	SessionID  string          `json:"sessionId"`
 	Capture    SnapshotCapture `json:"capture"`
-	Items      []string        `json:"items,omitempty"`
+	Entries    []QueueEntry    `json:"entries,omitempty"`
 }
 
 // SnapshotCapture is the session queue capture.
@@ -256,7 +268,7 @@ type SnapshotGetReply struct {
 	SnapshotID string          `json:"snapshotId"`
 	Name       string          `json:"name"`
 	Revision   int64           `json:"revision"`
-	Items      []string        `json:"items,omitempty"`
+	Entries    []QueueEntry    `json:"entries,omitempty"`
 	Capture    SnapshotCapture `json:"capture"`
 }
 
@@ -282,36 +294,62 @@ type LibrarySearchBody struct {
 	Types []string `json:"types,omitempty"`
 }
 
-// LibraryResolveBody is the payload for library.resolve.
-type LibraryResolveBody struct {
-	ItemID       string `json:"itemId"`
-	MetadataOnly bool   `json:"metadataOnly,omitempty"`
+// LibraryGetItemBody is the payload for library.getItem (catalog metadata only).
+type LibraryGetItemBody struct {
+	Ref LibraryItemRef `json:"ref"`
 }
 
-// LibraryResolveReply describes the response for library.resolve.
-type LibraryResolveReply struct {
-	ItemID   string           `json:"itemId"`
-	Metadata map[string]any   `json:"metadata,omitempty"`
-	Sources  []ResolvedSource `json:"sources"`
+// LibraryGetItemReply describes the response for library.getItem.
+type LibraryGetItemReply struct {
+	Ref        LibraryItemRef   `json:"ref"`
+	Display    *DisplayMetadata `json:"display,omitempty"`
+	Attributes map[string]any   `json:"attributes,omitempty"`
 }
 
-// LibraryResolveBatchBody is the payload for library.resolveBatch.
-type LibraryResolveBatchBody struct {
-	ItemIDs      []string `json:"itemIds"`
-	MetadataOnly bool     `json:"metadataOnly,omitempty"`
+// LibraryGetItemsBody is the batch payload for library.getItems.
+type LibraryGetItemsBody struct {
+	Refs []LibraryItemRef `json:"refs"`
 }
 
-// LibraryResolveBatchItem is an item entry in library.resolveBatch reply.
-type LibraryResolveBatchItem struct {
-	ItemID   string           `json:"itemId"`
-	Metadata map[string]any   `json:"metadata,omitempty"`
-	Sources  []ResolvedSource `json:"sources,omitempty"`
-	Err      *ReplyError      `json:"err,omitempty"`
+// LibraryGetItemsReplyItem is one entry in a library.getItems reply.
+type LibraryGetItemsReplyItem struct {
+	Ref        LibraryItemRef   `json:"ref"`
+	Display    *DisplayMetadata `json:"display,omitempty"`
+	Attributes map[string]any   `json:"attributes,omitempty"`
+	Err        *ReplyError      `json:"err,omitempty"`
 }
 
-// LibraryResolveBatchReply describes the response for library.resolveBatch.
-type LibraryResolveBatchReply struct {
-	Items []LibraryResolveBatchItem `json:"items"`
+// LibraryGetItemsReply describes the response for library.getItems.
+type LibraryGetItemsReply struct {
+	Items []LibraryGetItemsReplyItem `json:"items"`
+}
+
+// LibraryResolveSourcesBody is the payload for library.resolveSources (playable urls only).
+type LibraryResolveSourcesBody struct {
+	Ref LibraryItemRef `json:"ref"`
+}
+
+// LibraryResolveSourcesReply describes the response for library.resolveSources.
+type LibraryResolveSourcesReply struct {
+	Ref     LibraryItemRef   `json:"ref"`
+	Sources []ResolvedSource `json:"sources"`
+}
+
+// LibraryResolveSourcesBatchBody is the batch payload for library.resolveSourcesBatch.
+type LibraryResolveSourcesBatchBody struct {
+	Refs []LibraryItemRef `json:"refs"`
+}
+
+// LibraryResolveSourcesBatchItem is one entry in a library.resolveSourcesBatch reply.
+type LibraryResolveSourcesBatchItem struct {
+	Ref     LibraryItemRef   `json:"ref"`
+	Sources []ResolvedSource `json:"sources,omitempty"`
+	Err     *ReplyError      `json:"err,omitempty"`
+}
+
+// LibraryResolveSourcesBatchReply describes the response for library.resolveSourcesBatch.
+type LibraryResolveSourcesBatchReply struct {
+	Items []LibraryResolveSourcesBatchItem `json:"items"`
 }
 
 // SuggestListBody is the payload for suggest.list.

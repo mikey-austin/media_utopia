@@ -23,7 +23,7 @@ func TestLibraryBrowseAndResolve(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:          "mu:library:podcast:test",
+		NodeID:          "mu:library:podcast:test:default",
 		TopicBase:       mu.BaseTopic,
 		Feeds:           []string{feedURL},
 		CacheDir:        cacheDir,
@@ -61,17 +61,38 @@ func TestLibraryBrowseAndResolve(t *testing.T) {
 	}
 
 	episodeID := browse.Items[0].ItemID
-	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: episodeID})}
-	resolve := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	var resolveBody mu.LibraryResolveReply
+	episodeRef := mu.NewLibraryItemRef("mu:library:podcast:test:default", episodeID)
+
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryGetItemBody{Ref: episodeRef})}
+	getItemReply := module.libraryGetItem(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !getItemReply.OK {
+		t.Fatalf("getItem failed: %+v", getItemReply.Err)
+	}
+	var itemBody mu.LibraryGetItemReply
+	if err := json.Unmarshal(getItemReply.Body, &itemBody); err != nil {
+		t.Fatalf("getItem decode: %v", err)
+	}
+	if itemBody.Ref.ItemID != episodeID {
+		t.Fatalf("expected item %s, got %s", episodeID, itemBody.Ref.ItemID)
+	}
+	if itemBody.Display == nil || itemBody.Display.Album == "" {
+		t.Fatalf("expected album in display metadata, got %+v", itemBody.Display)
+	}
+	if itemBody.Display.MediaType != "Audio" {
+		t.Fatalf("expected mediaType Audio, got %q", itemBody.Display.MediaType)
+	}
+
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: episodeRef})}
+	resolve := module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !resolve.OK {
+		t.Fatalf("resolveSources failed: %+v", resolve.Err)
+	}
+	var resolveBody mu.LibraryResolveSourcesReply
 	if err := json.Unmarshal(resolve.Body, &resolveBody); err != nil {
 		t.Fatalf("resolve decode: %v", err)
 	}
-	if resolveBody.ItemID != episodeID {
-		t.Fatalf("expected item %s, got %s", episodeID, resolveBody.ItemID)
-	}
-	if resolveBody.Metadata["album"] == "" {
-		t.Fatalf("expected album metadata")
+	if resolveBody.Ref.ItemID != episodeID {
+		t.Fatalf("expected item %s, got %s", episodeID, resolveBody.Ref.ItemID)
 	}
 	if len(resolveBody.Sources) != 1 {
 		t.Fatalf("expected 1 source")
@@ -81,7 +102,7 @@ func TestLibraryBrowseAndResolve(t *testing.T) {
 		t.Fatalf("expected 1 feed fetch, got %d", atomic.LoadInt32(&feedCalls))
 	}
 
-	cachePath := filepath.Join(cacheDir, safeFilename("mu:library:podcast:test"), "podcast_"+hashID("feed", feedURL)+".json")
+	cachePath := filepath.Join(cacheDir, safeFilename("mu:library:podcast:test:default"), "podcast_"+hashID("feed", feedURL)+".json")
 	if !strings.Contains(cachePath, "podcast_feed_") {
 		t.Fatalf("unexpected cache path %s", cachePath)
 	}
@@ -91,7 +112,7 @@ func TestBrowseLatestFolder(t *testing.T) {
 	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:          "mu:library:podcast:test",
+		NodeID:          "mu:library:podcast:test:default",
 		TopicBase:       mu.BaseTopic,
 		Feeds:           []string{feedURL},
 		CacheDir:        t.TempDir(),
@@ -122,7 +143,7 @@ func TestLibrarySearch(t *testing.T) {
 	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:          "mu:library:podcast:test",
+		NodeID:          "mu:library:podcast:test:default",
 		TopicBase:       mu.BaseTopic,
 		Feeds:           []string{feedURL},
 		CacheDir:        t.TempDir(),
@@ -150,7 +171,7 @@ func TestReverseSortByDate(t *testing.T) {
 	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:            "mu:library:podcast:test",
+		NodeID:            "mu:library:podcast:test:default",
 		TopicBase:         mu.BaseTopic,
 		Feeds:             []string{feedURL},
 		CacheDir:          t.TempDir(),
@@ -183,7 +204,7 @@ func TestSearchNoResults(t *testing.T) {
 	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:          "mu:library:podcast:test",
+		NodeID:          "mu:library:podcast:test:default",
 		TopicBase:       mu.BaseTopic,
 		Feeds:           []string{feedURL},
 		CacheDir:        t.TempDir(),
@@ -214,7 +235,7 @@ func TestBrowseNonexistentContainer(t *testing.T) {
 	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:          "mu:library:podcast:test",
+		NodeID:          "mu:library:podcast:test:default",
 		TopicBase:       mu.BaseTopic,
 		Feeds:           []string{feedURL},
 		CacheDir:        t.TempDir(),
@@ -247,7 +268,7 @@ func TestResolveNonexistentItem(t *testing.T) {
 	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:          "mu:library:podcast:test",
+		NodeID:          "mu:library:podcast:test:default",
 		TopicBase:       mu.BaseTopic,
 		Feeds:           []string{feedURL},
 		CacheDir:        t.TempDir(),
@@ -260,8 +281,9 @@ func TestResolveNonexistentItem(t *testing.T) {
 		return feedResponse(testFeed), nil
 	})}
 
-	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: "nonexistent_item_id"})}
-	reply := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	missingRef := mu.NewLibraryItemRef("mu:library:podcast:test:default", "nonexistent_item_id")
+	cmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: missingRef})}
+	reply := module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 	if reply.OK {
 		t.Fatalf("expected error reply for nonexistent item")
 	}
@@ -271,8 +293,17 @@ func TestResolveNonexistentItem(t *testing.T) {
 	if reply.Err == nil {
 		t.Fatalf("expected Err to be set")
 	}
-	if reply.Err.Code != "INVALID" {
-		t.Fatalf("expected error code INVALID, got %q", reply.Err.Code)
+	if reply.Err.Code != "NOT_FOUND" {
+		t.Fatalf("expected error code NOT_FOUND, got %q", reply.Err.Code)
+	}
+
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryGetItemBody{Ref: missingRef})}
+	reply = module.libraryGetItem(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if reply.OK {
+		t.Fatalf("expected error reply for nonexistent item via getItem")
+	}
+	if reply.Err == nil || reply.Err.Code != "NOT_FOUND" {
+		t.Fatalf("expected NOT_FOUND from getItem, got %+v", reply.Err)
 	}
 }
 
@@ -280,7 +311,7 @@ func TestBrowsePagination(t *testing.T) {
 	feedURL := "http://example.test/feed.xml"
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:          "mu:library:podcast:test",
+		NodeID:          "mu:library:podcast:test:default",
 		TopicBase:       mu.BaseTopic,
 		Feeds:           []string{feedURL},
 		CacheDir:        t.TempDir(),
@@ -401,7 +432,7 @@ func TestBrowsePagination(t *testing.T) {
 
 func TestAllFeedsIncludesYoutube(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
 		CacheDir:         t.TempDir(),
@@ -425,7 +456,7 @@ func TestAllFeedsIncludesYoutube(t *testing.T) {
 
 func TestAllFeedsMergesBoth(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		Feeds:            []string{"https://example.com/feed.xml"},
 		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
@@ -450,7 +481,7 @@ func TestAllFeedsMergesBoth(t *testing.T) {
 
 func TestRunYtDlp(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
 		CacheDir:         t.TempDir(),
@@ -475,7 +506,7 @@ func TestRunYtDlp(t *testing.T) {
 
 func TestRunYtDlpNotFound(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
 		CacheDir:         t.TempDir(),
@@ -555,7 +586,7 @@ func TestBrowseYoutubeFeed(t *testing.T) {
 	}, "\n")
 
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{playlistURL},
 		CacheDir:         t.TempDir(),
@@ -599,7 +630,7 @@ func TestBrowseYoutubeFeed(t *testing.T) {
 
 func TestParseYtDlpPlaylist(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
 		CacheDir:         t.TempDir(),
@@ -652,7 +683,7 @@ func TestParseYtDlpPlaylist(t *testing.T) {
 
 func TestParseYtDlpPlaylistEmpty(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
 		CacheDir:         t.TempDir(),
@@ -676,7 +707,7 @@ func TestParseYtDlpPlaylistEmpty(t *testing.T) {
 
 func TestParseYtDlpDescriptionTruncation(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
 		CacheDir:         t.TempDir(),
@@ -700,7 +731,7 @@ func TestParseYtDlpDescriptionTruncation(t *testing.T) {
 
 func TestParseYtDlpThumbnailFallback(t *testing.T) {
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{"https://www.youtube.com/playlist?list=PLabc"},
 		CacheDir:         t.TempDir(),
@@ -735,7 +766,7 @@ func TestResolveYoutubeEpisode(t *testing.T) {
 
 	ytDlpCalls := int32(0)
 	module, err := NewModule(zap.NewNop(), nil, Config{
-		NodeID:           "mu:library:podcast:test",
+		NodeID:           "mu:library:podcast:test:default",
 		TopicBase:        mu.BaseTopic,
 		YoutubePlaylists: []string{playlistURL},
 		CacheDir:         t.TempDir(),
@@ -767,13 +798,27 @@ func TestResolveYoutubeEpisode(t *testing.T) {
 	json.Unmarshal(reply.Body, &browse)
 	episodeID := browse.Items[0].ItemID
 
-	// Resolve the YouTube episode.
-	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: episodeID})}
-	resolve := module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	episodeRef := mu.NewLibraryItemRef("mu:library:podcast:test:default", episodeID)
+
+	// getItem should expose album metadata regardless of stream resolution.
+	getItemCmd := mu.CommandEnvelope{Body: mustJSON(mu.LibraryGetItemBody{Ref: episodeRef})}
+	getItemReply := module.libraryGetItem(getItemCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !getItemReply.OK {
+		t.Fatalf("expected OK getItem, got error: %+v", getItemReply.Err)
+	}
+	var itemBody mu.LibraryGetItemReply
+	json.Unmarshal(getItemReply.Body, &itemBody)
+	if itemBody.Display == nil || itemBody.Display.Album != "Playlist" {
+		t.Fatalf("expected album 'Playlist', got %+v", itemBody.Display)
+	}
+
+	// Resolve the YouTube episode sources.
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: episodeRef})}
+	resolve := module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 	if !resolve.OK {
 		t.Fatalf("expected OK resolve, got error: %+v", resolve.Err)
 	}
-	var resolveBody mu.LibraryResolveReply
+	var resolveBody mu.LibraryResolveSourcesReply
 	json.Unmarshal(resolve.Body, &resolveBody)
 
 	if len(resolveBody.Sources) != 1 {
@@ -782,14 +827,11 @@ func TestResolveYoutubeEpisode(t *testing.T) {
 	if resolveBody.Sources[0].URL != resolvedStreamURL {
 		t.Fatalf("expected stream URL, got %q", resolveBody.Sources[0].URL)
 	}
-	if resolveBody.Metadata["album"] != "Playlist" {
-		t.Fatalf("expected album 'Playlist', got %q", resolveBody.Metadata["album"])
-	}
 
 	// Resolve again — should use cache, not call yt-dlp again.
 	callsBefore := atomic.LoadInt32(&ytDlpCalls)
-	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveBody{ItemID: episodeID})}
-	resolve = module.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	cmd = mu.CommandEnvelope{Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: episodeRef})}
+	resolve = module.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 	if !resolve.OK {
 		t.Fatalf("second resolve failed")
 	}

@@ -199,35 +199,83 @@ func TestResolveBuildsSources(t *testing.T) {
 	mod.cacheCtx = context.Background()
 
 	itemID := makeContainerID(server.ID, "track-1")
-	cmd := mu.CommandEnvelope{Body: mustJSON(t, mu.LibraryResolveBody{ItemID: itemID})}
-	reply := mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true}, server.ID)
+	mod.config.NodeID = "mu:library:upnp:test:default"
+	ref := mu.NewLibraryItemRef(mod.config.NodeID, itemID)
 
-	if !reply.OK {
-		t.Fatalf("expected ok")
+	// library.getItem returns Display populated from DIDL metadata.
+	getItemCmd := mu.CommandEnvelope{Body: mustJSON(t, mu.LibraryGetItemBody{Ref: ref})}
+	getItemReply := mod.libraryGetItem(getItemCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !getItemReply.OK {
+		t.Fatalf("expected getItem ok, err: %+v", getItemReply.Err)
+	}
+	var got mu.LibraryGetItemReply
+	if err := jsonUnmarshal(getItemReply.Body, &got); err != nil {
+		t.Fatalf("getItem decode: %v", err)
+	}
+	if got.Display == nil || got.Display.Title != "Song" {
+		t.Fatalf("expected display title Song, got %+v", got.Display)
+	}
+	if got.Display.ArtworkURL == "" {
+		t.Fatalf("expected artwork url on display")
+	}
+	if got.Attributes["container"] != false {
+		t.Fatalf("expected container=false, got %v", got.Attributes["container"])
+	}
+
+	// library.resolveSources returns sources only.
+	resolveCmd := mu.CommandEnvelope{Body: mustJSON(t, mu.LibraryResolveSourcesBody{Ref: ref})}
+	reqCount = 0
+	resolveReply := mod.libraryResolveSources(resolveCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !resolveReply.OK {
+		t.Fatalf("expected resolveSources ok, err: %+v", resolveReply.Err)
 	}
 	if reqCount == 0 {
-		t.Fatalf("expected SOAP call")
+		t.Fatalf("expected SOAP call for resolveSources")
+	}
+	var srcs mu.LibraryResolveSourcesReply
+	if err := jsonUnmarshal(resolveReply.Body, &srcs); err != nil {
+		t.Fatalf("resolveSources decode: %v", err)
+	}
+	if len(srcs.Sources) != 1 || srcs.Sources[0].URL == "" {
+		t.Fatalf("expected source, got %+v", srcs.Sources)
 	}
 
-	var payload mu.LibraryResolveReply
-	if err := jsonUnmarshal(reply.Body, &payload); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(payload.Sources) != 1 || payload.Sources[0].URL == "" {
-		t.Fatalf("expected source")
-	}
-	if payload.Metadata["artworkUrl"] == nil {
-		t.Fatalf("expected artwork url")
-	}
-
-	// cached path should not call browse again
+	// Cached path should not call browse again.
 	reqCount = 0
-	reply = mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true}, server.ID)
+	resolveReply = mod.libraryResolveSources(resolveCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
 	if reqCount != 0 {
-		t.Fatalf("expected cache hit without extra request")
+		t.Fatalf("expected cache hit without extra request, got %d requests", reqCount)
 	}
-	if !reply.OK {
+	if !resolveReply.OK {
 		t.Fatalf("expected ok from cache")
+	}
+
+	// Mismatched libraryId should be rejected.
+	badRef := mu.NewLibraryItemRef("mu:library:upnp:test:other", itemID)
+	badCmd := mu.CommandEnvelope{Body: mustJSON(t, mu.LibraryResolveSourcesBody{Ref: badRef})}
+	badReply := mod.libraryResolveSources(badCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if badReply.OK || badReply.Err == nil {
+		t.Fatalf("expected error for mismatched libraryId")
+	}
+
+	// library.resolveSourcesBatch handles a missing item alongside a known one.
+	missingRef := mu.NewLibraryItemRef(mod.config.NodeID, makeContainerID("missing-srv", "x"))
+	batchCmd := mu.CommandEnvelope{Body: mustJSON(t, mu.LibraryResolveSourcesBatchBody{
+		Refs: []mu.LibraryItemRef{ref, missingRef},
+	})}
+	batchReply := mod.libraryResolveSourcesBatch(batchCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if !batchReply.OK {
+		t.Fatalf("expected batch ok")
+	}
+	var batch mu.LibraryResolveSourcesBatchReply
+	if err := jsonUnmarshal(batchReply.Body, &batch); err != nil {
+		t.Fatalf("batch decode: %v", err)
+	}
+	if len(batch.Items) != 2 {
+		t.Fatalf("expected 2 batch items, got %d", len(batch.Items))
+	}
+	if batch.Items[1].Err == nil {
+		t.Fatalf("expected error for missing server, got %+v", batch.Items[1])
 	}
 }
 

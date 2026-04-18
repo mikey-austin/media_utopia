@@ -21,14 +21,10 @@ type Queue struct {
 	shuffle    bool
 }
 
-// QueueEntry describes a queued item.
-type QueueEntry struct {
-	QueueEntryID string             `json:"queueEntryId"`
-	ItemID       string             `json:"itemId"`
-	Metadata     map[string]any     `json:"metadata,omitempty"`
-	Ref          *mu.ItemRef        `json:"ref,omitempty"`
-	Resolved     *mu.ResolvedSource `json:"resolved,omitempty"`
-}
+// QueueEntry is the in-memory queue entry. It mirrors mu.QueueEntry so it
+// can be shipped on the wire and persisted in snapshots/playlists without
+// translation.
+type QueueEntry = mu.QueueEntry
 
 // Snapshot returns a copy of the queue.
 func (q *Queue) Snapshot(from int64, count int64) mu.QueueGetReply {
@@ -37,16 +33,10 @@ func (q *Queue) Snapshot(from int64, count int64) mu.QueueGetReply {
 
 	start := clampIndex(from, int64(len(q.entries)))
 	end := clampIndex(from+count, int64(len(q.entries)))
-	items := make([]mu.QueueItem, 0, end-start)
-	for _, entry := range q.entries[start:end] {
-		items = append(items, mu.QueueItem{
-			QueueEntryID: entry.QueueEntryID,
-			ItemID:       entry.ItemID,
-			Metadata:     entry.Metadata,
-		})
-	}
+	entries := make([]mu.QueueEntry, 0, end-start)
+	entries = append(entries, q.entries[start:end]...)
 
-	return mu.QueueGetReply{Revision: q.revision, Index: q.index, Entries: items}
+	return mu.QueueGetReply{Revision: q.revision, Index: q.index, Entries: entries}
 }
 
 // Set replaces the queue atomically.

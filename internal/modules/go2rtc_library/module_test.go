@@ -76,39 +76,64 @@ func TestBrowseContainerEntries(t *testing.T) {
 	}
 }
 
-func TestResolveItem(t *testing.T) {
+func TestDescribeAndResolveItem(t *testing.T) {
 	mod := newTestModule()
 	mod.streams = map[string]streamInfo{
 		"stream_f": {ID: "stream_f", Name: "FrontDoor"},
 	}
 	mod.lastRefresh = time.Now()
 
-	meta, sources, err := mod.resolveItem("live:stream_f", false)
+	display, attrs, ok := mod.describeItem("live-stream_f")
+	if !ok {
+		t.Fatal("describe live not ok")
+	}
+	if display.DurationMS != 0 {
+		t.Fatalf("expected display duration 0, got %d", display.DurationMS)
+	}
+	if display.MediaType != "Video" {
+		t.Fatalf("expected mediaType Video, got %q", display.MediaType)
+	}
+	if display.Title != "FrontDoor (Live)" {
+		t.Fatalf("expected title 'FrontDoor (Live)', got %q", display.Title)
+	}
+	if c, _ := attrs["container"].(bool); c {
+		t.Fatalf("expected container false for live entry")
+	}
+
+	source, err := mod.resolveItemSource("live:stream_f")
 	if err != nil {
 		t.Fatalf("resolve live error: %v", err)
 	}
-	if meta["durationMs"].(int64) != 0 {
-		t.Fatalf("expected duration 0, got %v", meta["durationMs"])
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if sources[0].URL != "http://go2rtc.local/api/stream.mp4?src=FrontDoor" {
-		t.Fatalf("unexpected live url: %s", sources[0].URL)
+	if source.URL != "http://go2rtc.local/api/stream.mp4?src=FrontDoor" {
+		t.Fatalf("unexpected live url: %s", source.URL)
 	}
 
-	meta, sources, err = mod.resolveItem("clip-stream_f-30", false)
+	display, _, ok = mod.describeItem("clip-stream_f-30")
+	if !ok {
+		t.Fatal("describe clip not ok")
+	}
+	if display.DurationMS != 30000 {
+		t.Fatalf("expected display duration 30000, got %d", display.DurationMS)
+	}
+
+	source, err = mod.resolveItemSource("clip-stream_f-30")
 	if err != nil {
 		t.Fatalf("resolve clip error: %v", err)
 	}
-	if meta["durationMs"].(int64) != 30000 {
-		t.Fatalf("expected duration 30000, got %v", meta["durationMs"])
+	if source.URL != "http://go2rtc.local/api/stream.mp4?duration=30&src=FrontDoor" {
+		t.Fatalf("unexpected clip url: %s", source.URL)
 	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
+
+	// Container itself describes as a Camera container.
+	display, attrs, ok = mod.describeItem("stream_f")
+	if !ok {
+		t.Fatal("describe container not ok")
 	}
-	if sources[0].URL != "http://go2rtc.local/api/stream.mp4?duration=30&src=FrontDoor" {
-		t.Fatalf("unexpected clip url: %s", sources[0].URL)
+	if display.Title != "FrontDoor" {
+		t.Fatalf("expected container title 'FrontDoor', got %q", display.Title)
+	}
+	if c, _ := attrs["container"].(bool); !c {
+		t.Fatalf("expected container true for stream entry")
 	}
 }
 
@@ -151,7 +176,7 @@ func TestResolveNonexistentStream(t *testing.T) {
 	}
 	mod.lastRefresh = time.Now()
 
-	_, _, err := mod.resolveItem("live-nonexistent", false)
+	_, err := mod.resolveItemSource("live-nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent stream, got nil")
 	}
@@ -159,11 +184,14 @@ func TestResolveNonexistentStream(t *testing.T) {
 		t.Fatalf("expected 'item not found' error, got %q", err.Error())
 	}
 
-	// Also verify dispatch returns a NOT_FOUND-like error reply for a bogus item ID
-	// that doesn't even parse as a valid item.
-	_, _, err = mod.resolveItem("totally-bogus-id", false)
+	// A bogus item ID that doesn't even parse as a valid item also fails.
+	_, err = mod.resolveItemSource("totally-bogus-id")
 	if err == nil {
 		t.Fatal("expected error for bogus item id, got nil")
+	}
+
+	if _, _, ok := mod.describeItem("totally-bogus-id"); ok {
+		t.Fatal("expected describeItem to report not ok for bogus id")
 	}
 }
 

@@ -206,11 +206,13 @@ Full configuration with all options:
 
 The module responds to these command types:
 
-	library.browse       Browse containers, returns items with pagination
-	library.search       Full-text or semantic search
-	library.resolve      Get metadata and playback URLs for an item
-	library.resolveBatch Batch resolve multiple items
-	library.rescan       Trigger manual rescan of filesystem
+	library.browse              Browse containers, returns items with pagination
+	library.search              Full-text or semantic search
+	library.getItem             Get catalog metadata for one item
+	library.getItems            Batch metadata lookup
+	library.resolveSources      Get playable sources for one item
+	library.resolveSourcesBatch Batch source resolution
+	library.rescan              Trigger manual rescan of filesystem
 */
 package fslibrary
 
@@ -837,10 +839,14 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.libraryBrowse(cmd, reply)
 	case "library.search":
 		return m.librarySearch(cmd, reply)
-	case "library.resolve":
-		return m.libraryResolve(cmd, reply)
-	case "library.resolveBatch":
-		return m.libraryResolveBatch(cmd, reply)
+	case "library.getItem":
+		return m.libraryGetItem(cmd, reply)
+	case "library.getItems":
+		return m.libraryGetItems(cmd, reply)
+	case "library.resolveSources":
+		return m.libraryResolveSources(cmd, reply)
+	case "library.resolveSourcesBatch":
+		return m.libraryResolveSourcesBatch(cmd, reply)
 	case "library.rescan":
 		return m.libraryRescan(cmd, reply)
 	default:
@@ -890,133 +896,184 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	return reply
 }
 
-func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
-	var body mu.LibraryResolveBody
+// describeItem returns Display + Attributes for an item id. The bool indicates
+// whether the id refers to anything known (container or media item).
+func (m *Module) describeItem(itemID string) (*mu.DisplayMetadata, map[string]any, bool) {
+	if meta, ok := m.resolveContainerMetadata(itemID); ok {
+		display := &mu.DisplayMetadata{}
+		if v, _ := meta["title"].(string); v != "" {
+			display.Title = v
+		}
+		if artists, ok := meta["artists"].([]string); ok && len(artists) > 0 {
+			display.Artists = artists
+			display.Artist = strings.Join(artists, ", ")
+		}
+		attrs := map[string]any{"container": true}
+		if t, _ := meta["type"].(string); t != "" {
+			attrs["type"] = t
+		}
+		return display, attrs, true
+	}
+	item, ok := m.getItem(itemID)
+	if !ok {
+		return nil, nil, false
+	}
+	display := &mu.DisplayMetadata{
+		Title:      item.Title,
+		Album:      item.Album,
+		DurationMS: item.DurationMS,
+		MediaType:  item.MediaType,
+	}
+	if len(item.Artists) > 0 {
+		display.Artists = item.Artists
+		display.Artist = strings.Join(item.Artists, ", ")
+	}
+	if artURL := m.getItemArtworkURL(item); artURL != "" {
+		display.ArtworkURL = artURL
+	}
+	attrs := map[string]any{"container": false}
+	if item.MediaType != "" {
+		attrs["type"] = item.MediaType
+	}
+	return display, attrs, true
+}
+
+func (m *Module) refMatchesNode(ref mu.LibraryItemRef) bool {
+	return ref.LibraryID == m.config.NodeID
+}
+
+func (m *Module) libraryGetItem(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryGetItemBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-
-	// Try container resolution first (artist:, album:, container:)
-	if meta, ok := m.resolveContainerMetadata(body.ItemID); ok {
-		payload, _ := json.Marshal(mu.LibraryResolveReply{
-			ItemID:   body.ItemID,
-			Metadata: meta,
-			Sources:  []mu.ResolvedSource{}, // Containers have no playable sources
-		})
-		reply.Body = payload
-		return reply
+	if err := body.Ref.Validate(); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
 	}
-
-	// Fall back to media item resolution
-	item, ok := m.getItem(body.ItemID)
+	if !m.refMatchesNode(body.Ref) {
+		return errorReply(cmd, "INVALID", "ref.libraryId does not match this library node")
+	}
+	display, attrs, ok := m.describeItem(body.Ref.ItemID)
 	if !ok {
 		return errorReply(cmd, "NOT_FOUND", "item not found")
 	}
-
-	metadata := map[string]any{
-		"title":     item.Title,
-		"artists":   item.Artists,
-		"album":     item.Album,
-		"duration":  item.DurationMS,
-		"type":      item.MediaType,
-		"mediaType": item.MediaType,
-	}
-
-	// Add artwork URL for audio tracks
-	if artURL := m.getItemArtworkURL(item); artURL != "" {
-		metadata["artworkUrl"] = artURL
-	}
-
-	// If metadataOnly, skip source URL generation
-	if body.MetadataOnly {
-		payload, _ := json.Marshal(mu.LibraryResolveReply{
-			ItemID:   item.ID,
-			Metadata: metadata,
-			Sources:  []mu.ResolvedSource{},
-		})
-		reply.Body = payload
-		return reply
-	}
-
-	sourceURL, err := m.sourceURL(item.ID)
-	if err != nil {
-		return errorReply(cmd, "INVALID", err.Error())
-	}
-	payload, _ := json.Marshal(mu.LibraryResolveReply{
-		ItemID:   item.ID,
-		Metadata: metadata,
-		Sources:  []mu.ResolvedSource{{URL: sourceURL, ByteRange: true}},
+	payload, _ := json.Marshal(mu.LibraryGetItemReply{
+		Ref:        body.Ref,
+		Display:    display,
+		Attributes: attrs,
 	})
 	reply.Body = payload
 	return reply
 }
 
-func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
-	var body mu.LibraryResolveBatchBody
+func (m *Module) libraryGetItems(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryGetItemsBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	items := make([]mu.LibraryResolveBatchItem, 0, len(body.ItemIDs))
-	for _, itemID := range body.ItemIDs {
-		// Try container resolution first
-		if meta, ok := m.resolveContainerMetadata(itemID); ok {
-			items = append(items, mu.LibraryResolveBatchItem{
-				ItemID:   itemID,
-				Metadata: meta,
-				Sources:  []mu.ResolvedSource{},
+	items := make([]mu.LibraryGetItemsReplyItem, 0, len(body.Refs))
+	for _, ref := range body.Refs {
+		if err := ref.Validate(); err != nil {
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
 			})
 			continue
 		}
-
-		// Fall back to media item resolution
-		item, ok := m.getItem(itemID)
+		if !m.refMatchesNode(ref) {
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: "ref.libraryId does not match this library node"},
+			})
+			continue
+		}
+		display, attrs, ok := m.describeItem(ref.ItemID)
 		if !ok {
-			items = append(items, mu.LibraryResolveBatchItem{
-				ItemID: itemID,
-				Err:    &mu.ReplyError{Code: "NOT_FOUND", Message: "item not found"},
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "NOT_FOUND", Message: "item not found"},
 			})
 			continue
 		}
-
-		metadata := map[string]any{
-			"title":     item.Title,
-			"artists":   item.Artists,
-			"album":     item.Album,
-			"duration":  item.DurationMS,
-			"type":      item.MediaType,
-			"mediaType": item.MediaType,
-		}
-
-		// Add artwork URL
-		if artURL := m.getItemArtworkURL(item); artURL != "" {
-			metadata["artworkUrl"] = artURL
-		}
-
-		// If metadataOnly, skip source URL generation
-		if body.MetadataOnly {
-			items = append(items, mu.LibraryResolveBatchItem{
-				ItemID:   item.ID,
-				Metadata: metadata,
-				Sources:  []mu.ResolvedSource{},
-			})
-			continue
-		}
-
-		sourceURL, err := m.sourceURL(item.ID)
-		if err != nil {
-			items = append(items, mu.LibraryResolveBatchItem{
-				ItemID: itemID,
-				Err:    &mu.ReplyError{Code: "INVALID", Message: err.Error()},
-			})
-			continue
-		}
-		items = append(items, mu.LibraryResolveBatchItem{
-			ItemID:   item.ID,
-			Metadata: metadata,
-			Sources:  []mu.ResolvedSource{{URL: sourceURL, ByteRange: true}},
+		items = append(items, mu.LibraryGetItemsReplyItem{
+			Ref:        ref,
+			Display:    display,
+			Attributes: attrs,
 		})
 	}
-	payload, _ := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
+	payload, _ := json.Marshal(mu.LibraryGetItemsReply{Items: items})
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) libraryResolveSources(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveSourcesBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if err := body.Ref.Validate(); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	if !m.refMatchesNode(body.Ref) {
+		return errorReply(cmd, "INVALID", "ref.libraryId does not match this library node")
+	}
+	if _, ok := m.getItem(body.Ref.ItemID); !ok {
+		return errorReply(cmd, "NOT_FOUND", "item not found")
+	}
+	sourceURL, err := m.sourceURL(body.Ref.ItemID)
+	if err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	payload, _ := json.Marshal(mu.LibraryResolveSourcesReply{
+		Ref:     body.Ref,
+		Sources: []mu.ResolvedSource{{URL: sourceURL, ByteRange: true}},
+	})
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) libraryResolveSourcesBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveSourcesBatchBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	items := make([]mu.LibraryResolveSourcesBatchItem, 0, len(body.Refs))
+	for _, ref := range body.Refs {
+		if err := ref.Validate(); err != nil {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
+			})
+			continue
+		}
+		if !m.refMatchesNode(ref) {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: "ref.libraryId does not match this library node"},
+			})
+			continue
+		}
+		if _, ok := m.getItem(ref.ItemID); !ok {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "NOT_FOUND", Message: "item not found"},
+			})
+			continue
+		}
+		sourceURL, err := m.sourceURL(ref.ItemID)
+		if err != nil {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
+			})
+			continue
+		}
+		items = append(items, mu.LibraryResolveSourcesBatchItem{
+			Ref:     ref,
+			Sources: []mu.ResolvedSource{{URL: sourceURL, ByteRange: true}},
+		})
+	}
+	payload, _ := json.Marshal(mu.LibraryResolveSourcesBatchReply{Items: items})
 	reply.Body = payload
 	return reply
 }
@@ -1407,32 +1464,53 @@ func (m *Module) browseFolderNode(info containerInfo, start, count int64) ([]lib
 	copy(itemIDs, node.Items)
 	defaultImg := m.defaultArtURLUnlocked()
 
-	// Collect items under lock
+	// Collect items + their resolved artwork under lock. Subfolders get a
+	// discovered URL by walking their subtree for the first album with cover
+	// art; media items get their album's art directly. Both fall back to the
+	// default placeholder if nothing real is available.
 	type itemData struct {
 		id        string
 		name      string
 		mediaType string
 		duration  int64
+		imageURL  string
 	}
 	var mediaItems []itemData
 	for _, id := range itemIDs {
 		if item, found := m.index.Items[id]; found {
+			imgURL := m.itemArtworkURLUnlocked(item)
+			if imgURL == "" {
+				imgURL = defaultImg
+			}
 			mediaItems = append(mediaItems, itemData{
-				id: item.ID, name: item.Name, mediaType: item.MediaType, duration: item.DurationMS,
+				id: item.ID, name: item.Name, mediaType: item.MediaType,
+				duration: item.DurationMS, imageURL: imgURL,
 			})
 		}
+	}
+	type subDirData struct {
+		path     string
+		imageURL string
+	}
+	subDirImages := make([]subDirData, len(subDirs))
+	for i, sd := range subDirs {
+		img := m.folderArtworkURLUnlocked(sd, info.Type)
+		if img == "" {
+			img = defaultImg
+		}
+		subDirImages[i] = subDirData{path: sd, imageURL: img}
 	}
 	m.mu.RUnlock()
 
 	containerID := containerHash(info.Type, dirPath, "")
-	items := make([]libraryItem, 0, len(subDirs)+len(mediaItems))
-	for _, sd := range subDirs {
+	items := make([]libraryItem, 0, len(subDirImages)+len(mediaItems))
+	for _, sd := range subDirImages {
 		items = append(items, libraryItem{
-			ItemID:      containerHash(info.Type, sd, ""),
-			Name:        filepath.Base(sd),
+			ItemID:      containerHash(info.Type, sd.path, ""),
+			Name:        filepath.Base(sd.path),
 			Type:        "Folder",
 			ContainerID: containerID,
-			ImageURL:    defaultImg,
+			ImageURL:    sd.imageURL,
 		})
 	}
 	for _, mi := range mediaItems {
@@ -1443,7 +1521,7 @@ func (m *Module) browseFolderNode(info containerInfo, start, count int64) ([]lib
 			MediaType:   mi.mediaType,
 			DurationMS:  mi.duration,
 			ContainerID: containerID,
-			ImageURL:    defaultImg,
+			ImageURL:    mi.imageURL,
 		})
 	}
 	return paginate(items, start, count), int64(len(items)), nil
@@ -2937,6 +3015,65 @@ func (m *Module) serveDefaultArt(w http.ResponseWriter, r *http.Request) {
 // defaultArtURLUnlocked returns the URL for the default placeholder image.
 // Caller must hold the read lock.
 func (m *Module) defaultArtURLUnlocked() string {
+	return m.defaultArtURL
+}
+
+// folderArtworkURLUnlocked walks the folder subtree at dirPath depth-first,
+// returning the first item's album-art URL that isn't the default placeholder.
+// Used to give folder rows a real cover instead of the generic placeholder.
+// Caller must hold m.mu (read or write). Returns "" if nothing useful found.
+func (m *Module) folderArtworkURLUnlocked(dirPath string, treeKind string) string {
+	var tree map[string]*folderNode
+	if treeKind == "audiodir" {
+		tree = m.index.AudioFolderTree
+	} else {
+		tree = m.index.VideoFolderTree
+	}
+	return m.walkFolderForArtUnlocked(dirPath, tree, 0)
+}
+
+// walkFolderForArtUnlocked is the recursive helper for folderArtworkURLUnlocked.
+// Bounded depth to keep worst-case work manageable on huge trees.
+func (m *Module) walkFolderForArtUnlocked(dirPath string, tree map[string]*folderNode, depth int) string {
+	if depth > 6 {
+		return ""
+	}
+	node, ok := tree[dirPath]
+	if !ok {
+		return ""
+	}
+	for _, id := range node.Items {
+		item, found := m.index.Items[id]
+		if !found {
+			continue
+		}
+		url := m.itemArtworkURLUnlocked(item)
+		if url != "" && url != m.defaultArtURL {
+			return url
+		}
+	}
+	for _, sd := range node.SubDirs {
+		if url := m.walkFolderForArtUnlocked(sd, tree, depth+1); url != "" {
+			return url
+		}
+	}
+	return ""
+}
+
+// itemArtworkURLUnlocked is the lock-free counterpart of getItemArtworkURL.
+// Caller must hold m.mu.
+func (m *Module) itemArtworkURLUnlocked(item mediaItem) string {
+	if m.baseURL == "" {
+		return ""
+	}
+	if item.MediaType == "Audio" {
+		artistName := firstOr(item.Artists, "Unknown Artist")
+		albumName := item.Album
+		if albumName == "" {
+			albumName = "Unknown Album"
+		}
+		return m.artURLUnlocked(containerHash("album", artistName, albumName))
+	}
 	return m.defaultArtURL
 }
 

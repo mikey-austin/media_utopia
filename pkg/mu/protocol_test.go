@@ -267,7 +267,9 @@ func TestCommandEnvelopeValidation(t *testing.T) {
 	t.Run("non-mutation commands do not require lease", func(t *testing.T) {
 		nonMutationCmds := []string{
 			"session.acquire", "library.browse", "library.search",
-			"library.resolve", "queue.get", "playlist.list",
+			"library.getItem", "library.getItems",
+			"library.resolveSources", "library.resolveSourcesBatch",
+			"queue.get", "playlist.list",
 		}
 		for _, ct := range nonMutationCmds {
 			cmd := validCmd()
@@ -554,10 +556,14 @@ func TestRendererStateSerialization(t *testing.T) {
 			},
 			Current: &CurrentItemState{
 				QueueEntryID: "qe-42",
-				ItemID:       "item-99",
-				Metadata: map[string]interface{}{
-					"title":  "Test Song",
-					"artist": "Test Artist",
+				Ref: &LibraryItemRef{
+					Kind:      LibraryItemKind,
+					LibraryID: "mu:library:jellyfin:mud@home:default",
+					ItemID:    "item-99",
+				},
+				Display: &DisplayMetadata{
+					Title:  "Test Song",
+					Artist: "Test Artist",
 				},
 			},
 			StateVersion: 7,
@@ -638,11 +644,11 @@ func TestRendererStateSerialization(t *testing.T) {
 		if decoded.Current.QueueEntryID != "qe-42" {
 			t.Errorf("Current.QueueEntryID: got %q", decoded.Current.QueueEntryID)
 		}
-		if decoded.Current.ItemID != "item-99" {
-			t.Errorf("Current.ItemID: got %q", decoded.Current.ItemID)
+		if decoded.Current.Ref == nil || decoded.Current.Ref.ItemID != "item-99" {
+			t.Errorf("Current.Ref: got %+v", decoded.Current.Ref)
 		}
-		if decoded.Current.Metadata["title"] != "Test Song" {
-			t.Errorf("Current.Metadata[title]: got %v", decoded.Current.Metadata["title"])
+		if decoded.Current.Display == nil || decoded.Current.Display.Title != "Test Song" {
+			t.Errorf("Current.Display: got %+v", decoded.Current.Display)
 		}
 
 		// Top-level
@@ -703,12 +709,18 @@ func TestRendererStateSerialization(t *testing.T) {
 // ---------- TestQueueAddBodySerialization ----------
 
 func TestQueueAddBodySerialization(t *testing.T) {
+	libID := "mu:library:jellyfin:mud@home:default"
+	mkRef := func(itemID string) *LibraryItemRef {
+		r := NewLibraryItemRef(libID, itemID)
+		return &r
+	}
+
 	t.Run("entries with refs only", func(t *testing.T) {
 		body := QueueAddBody{
 			Position: "end",
 			Entries: []QueueEntry{
-				{Ref: &ItemRef{ID: "item-1"}},
-				{Ref: &ItemRef{ID: "item-2"}},
+				{Ref: mkRef("item-1")},
+				{Ref: mkRef("item-2"), Display: &DisplayMetadata{Title: "Song 2"}},
 			},
 		}
 
@@ -728,11 +740,17 @@ func TestQueueAddBodySerialization(t *testing.T) {
 		if len(decoded.Entries) != 2 {
 			t.Fatalf("Entries length: got %d, want 2", len(decoded.Entries))
 		}
-		if decoded.Entries[0].Ref == nil || decoded.Entries[0].Ref.ID != "item-1" {
+		if decoded.Entries[0].Ref == nil || decoded.Entries[0].Ref.ItemID != "item-1" {
 			t.Errorf("Entries[0].Ref: got %+v", decoded.Entries[0].Ref)
 		}
-		if decoded.Entries[1].Ref == nil || decoded.Entries[1].Ref.ID != "item-2" {
+		if decoded.Entries[0].Ref.Kind != LibraryItemKind {
+			t.Errorf("Entries[0].Ref.Kind: got %q", decoded.Entries[0].Ref.Kind)
+		}
+		if decoded.Entries[1].Ref == nil || decoded.Entries[1].Ref.ItemID != "item-2" {
 			t.Errorf("Entries[1].Ref: got %+v", decoded.Entries[1].Ref)
+		}
+		if decoded.Entries[1].Display == nil || decoded.Entries[1].Display.Title != "Song 2" {
+			t.Errorf("Entries[1].Display: got %+v", decoded.Entries[1].Display)
 		}
 		if decoded.Entries[0].Resolved != nil {
 			t.Error("Entries[0].Resolved: expected nil for ref-only entry")
@@ -745,7 +763,6 @@ func TestQueueAddBodySerialization(t *testing.T) {
 			Entries: []QueueEntry{
 				{
 					Resolved: &ResolvedSource{
-						ItemID:    "item-10",
 						URL:       "http://nas:8080/media/track10.flac",
 						Mime:      "audio/flac",
 						ByteRange: true,
@@ -775,9 +792,6 @@ func TestQueueAddBodySerialization(t *testing.T) {
 		if entry.Resolved == nil {
 			t.Fatal("expected Resolved to be set")
 		}
-		if entry.Resolved.ItemID != "item-10" {
-			t.Errorf("Resolved.ItemID: got %q", entry.Resolved.ItemID)
-		}
 		if entry.Resolved.URL != "http://nas:8080/media/track10.flac" {
 			t.Errorf("Resolved.URL: got %q", entry.Resolved.URL)
 		}
@@ -795,7 +809,7 @@ func TestQueueAddBodySerialization(t *testing.T) {
 			Position: "at",
 			AtIndex:  &idx,
 			Entries: []QueueEntry{
-				{Ref: &ItemRef{ID: "item-x"}},
+				{Ref: mkRef("item-x")},
 			},
 		}
 
@@ -820,7 +834,7 @@ func TestQueueAddBodySerialization(t *testing.T) {
 	t.Run("atIndex omitted when nil", func(t *testing.T) {
 		body := QueueAddBody{
 			Position: "end",
-			Entries:  []QueueEntry{{Ref: &ItemRef{ID: "item-y"}}},
+			Entries:  []QueueEntry{{Ref: mkRef("item-y")}},
 		}
 
 		data, err := json.Marshal(body)
@@ -837,13 +851,13 @@ func TestQueueAddBodySerialization(t *testing.T) {
 		body := QueueAddBody{
 			Position: "end",
 			Entries: []QueueEntry{
-				{Ref: &ItemRef{ID: "item-a"}},
+				{Ref: mkRef("item-a")},
 				{Resolved: &ResolvedSource{
 					URL:       "http://example.com/track.mp3",
 					Mime:      "audio/mpeg",
 					ByteRange: false,
 				}},
-				{Ref: &ItemRef{ID: "item-b"}},
+				{Ref: mkRef("item-b")},
 			},
 		}
 

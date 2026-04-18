@@ -94,9 +94,10 @@ type QueueState struct {
 
 // CurrentItemState describes the current queue entry.
 type CurrentItemState struct {
-	QueueEntryID string                 `json:"queueEntryId"`
-	ItemID       string                 `json:"itemId"`
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	QueueEntryID string           `json:"queueEntryId"`
+	Ref          *LibraryItemRef  `json:"ref,omitempty"`
+	Resolved     *ResolvedSource  `json:"resolved,omitempty"`
+	Display      *DisplayMetadata `json:"display,omitempty"`
 }
 
 // Event is a generic event payload.

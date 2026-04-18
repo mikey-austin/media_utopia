@@ -158,10 +158,19 @@ func libSearchCommand() *cobra.Command {
 }
 
 func libResolveCommand() *cobra.Command {
-	return &cobra.Command{
+	var includeSources bool
+
+	cmd := &cobra.Command{
 		Use:   "resolve [library] <itemId>",
-		Short: "Resolve a library item to playable URLs",
-		Args:  cobra.RangeArgs(1, 2),
+		Short: "Show library item metadata; with --sources also fetch playable URLs",
+		Long: `Show catalog metadata for a library item.
+
+By default only metadata is fetched (library.getItem). Pass --sources to
+additionally resolve playable URLs (library.resolveSources).
+
+The item argument accepts either a bare item id (with [library] selector)
+or a "lib:<selector>:<itemId>" shorthand.`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
@@ -186,13 +195,15 @@ func libResolveCommand() *cobra.Command {
 					selector = ref[:idx]
 				}
 			}
-			result, err := app.service.LibraryResolve(ctx, selector, itemID)
+			result, err := app.service.LibraryResolve(ctx, selector, itemID, includeSources)
 			if err != nil {
 				return err
 			}
 			return app.printer.Print(result)
 		},
 	}
+	cmd.Flags().BoolVar(&includeSources, "sources", false, "also resolve playable source URLs")
+	return cmd
 }
 
 func libRescanCommand() *cobra.Command {

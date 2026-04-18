@@ -456,7 +456,12 @@ func (e *Engine) playCurrent() error {
 		return err
 	}
 	e.State.Playback.Status = "playing"
-	e.State.Current = &mu.CurrentItemState{QueueEntryID: entry.QueueEntryID, ItemID: entry.ItemID, Metadata: entry.Metadata}
+	e.State.Current = &mu.CurrentItemState{
+		QueueEntryID: entry.QueueEntryID,
+		Ref:          entry.Ref,
+		Resolved:     entry.Resolved,
+		Display:      entry.Display,
+	}
 	e.bumpState()
 	return nil
 }
@@ -552,29 +557,10 @@ func resolvedURL(entry QueueEntry) string {
 func toQueueEntries(entries []mu.QueueEntry) []QueueEntry {
 	result := make([]QueueEntry, 0, len(entries))
 	for _, entry := range entries {
-		meta := entry.Metadata
-		if meta == nil {
-			meta = map[string]any{}
-		}
-		result = append(result, QueueEntry{
-			QueueEntryID: fmt.Sprintf("mu:queueentry:renderer:R:%s", idgen.Generator{}.NewID()),
-			ItemID:       itemID(entry),
-			Metadata:     meta,
-			Ref:          entry.Ref,
-			Resolved:     entry.Resolved,
-		})
+		entry.QueueEntryID = fmt.Sprintf("mu:queueentry:renderer:R:%s", idgen.Generator{}.NewID())
+		result = append(result, entry)
 	}
 	return result
-}
-
-func itemID(entry mu.QueueEntry) string {
-	if entry.Ref != nil {
-		return entry.Ref.ID
-	}
-	if entry.Resolved != nil {
-		return entry.Resolved.URL
-	}
-	return ""
 }
 
 func withBody(reply mu.ReplyEnvelope, body any) mu.ReplyEnvelope {

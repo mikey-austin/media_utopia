@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -103,77 +102,6 @@ func TestDriverCommands(t *testing.T) {
 	}
 	if seen["Player.GetProperties"] == 0 {
 		t.Fatalf("expected GetProperties")
-	}
-}
-
-// TestResolveRefsSplitsAtLastColon verifies that library ref parsing uses
-// LastIndex to split "libraryNodeID:itemID", since library node IDs contain
-// colons (e.g. "mu:library:filesystem:home:default"). Using Index instead
-// of LastIndex would split at the first colon and produce wrong results.
-func TestResolveRefsSplitsAtLastColon(t *testing.T) {
-	tests := []struct {
-		name       string
-		ref        string
-		wantLib    string
-		wantItem   string
-		wantErr    bool
-	}{
-		{
-			name:     "multi-colon library node ID",
-			ref:      "lib:mu:library:filesystem:home:default:item123",
-			wantLib:  "mu:library:filesystem:home:default",
-			wantItem: "item123",
-		},
-		{
-			name:     "simple library node ID",
-			ref:      "lib:mu:library:abc123",
-			wantLib:  "mu:library",
-			wantItem: "abc123",
-		},
-		{
-			name:    "no colon after prefix",
-			ref:     "lib:nocolon",
-			wantErr: true,
-		},
-		{
-			name:    "missing lib: prefix",
-			ref:     "mu:library:filesystem:home:default:item123",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Replicate the parsing logic from resolveRefs.
-			ref := tt.ref
-			if !strings.HasPrefix(ref, "lib:") {
-				if !tt.wantErr {
-					t.Fatalf("expected no error but ref lacks lib: prefix")
-				}
-				return
-			}
-			ref = strings.TrimPrefix(ref, "lib:")
-			idx := strings.LastIndex(ref, ":")
-			if idx == -1 {
-				if !tt.wantErr {
-					t.Fatalf("expected no error but LastIndex returned -1")
-				}
-				return
-			}
-			if tt.wantErr {
-				t.Fatalf("expected error but parsing succeeded")
-			}
-
-			libraryID := ref[:idx]
-			itemID := ref[idx+1:]
-
-			if libraryID != tt.wantLib {
-				t.Fatalf("libraryID = %q, want %q", libraryID, tt.wantLib)
-			}
-			if itemID != tt.wantItem {
-				t.Fatalf("itemID = %q, want %q", itemID, tt.wantItem)
-			}
-		})
 	}
 }
 

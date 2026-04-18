@@ -16,8 +16,10 @@ func ShouldDedup(cmdType string) bool {
 	}
 	// Never dedup read-only commands
 	switch cmdType {
-	case "queue.get", "library.browse", "library.search", "library.resolve",
-		"library.resolveBatch", "library.rescan",
+	case "queue.get", "library.browse", "library.search",
+		"library.getItem", "library.getItems",
+		"library.resolveSources", "library.resolveSourcesBatch",
+		"library.rescan",
 		"playlist.list", "playlist.get", "snapshot.list", "snapshot.get":
 		return false
 	}

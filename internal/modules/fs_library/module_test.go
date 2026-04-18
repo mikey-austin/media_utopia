@@ -159,29 +159,35 @@ func TestBrowseSearchResolve(t *testing.T) {
 	}
 	defer mod.shutdownHTTPServer()
 
+	nodeID := "mu:library:filesystem:test:default"
+	trackRef := mu.NewLibraryItemRef(nodeID, trackID)
+
 	cmd = mu.CommandEnvelope{
 		ID:   "r1",
-		Type: "library.resolve",
-		Body: mustJSON(mu.LibraryResolveBody{ItemID: trackID}),
+		Type: "library.resolveSources",
+		Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: trackRef}),
 	}
-	reply = mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	var resolve mu.LibraryResolveReply
-	if err := json.Unmarshal(reply.Body, &resolve); err != nil {
-		t.Fatalf("resolve unmarshal: %v", err)
+	reply = mod.libraryResolveSources(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var sources mu.LibraryResolveSourcesReply
+	if err := json.Unmarshal(reply.Body, &sources); err != nil {
+		t.Fatalf("resolveSources unmarshal: %v", err)
 	}
-	if resolve.ItemID != trackID || len(resolve.Sources) != 1 || resolve.Sources[0].URL == "" {
-		t.Fatalf("resolve unexpected: %+v", resolve)
+	if sources.Ref.ItemID != trackID || len(sources.Sources) != 1 || sources.Sources[0].URL == "" {
+		t.Fatalf("resolveSources unexpected: %+v", sources)
 	}
 
 	cmd = mu.CommandEnvelope{
 		ID:   "rb1",
-		Type: "library.resolveBatch",
-		Body: mustJSON(mu.LibraryResolveBatchBody{ItemIDs: []string{trackID, "missing"}}),
+		Type: "library.resolveSourcesBatch",
+		Body: mustJSON(mu.LibraryResolveSourcesBatchBody{Refs: []mu.LibraryItemRef{
+			trackRef,
+			mu.NewLibraryItemRef(nodeID, "missing"),
+		}}),
 	}
-	reply = mod.libraryResolveBatch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	var batch mu.LibraryResolveBatchReply
+	reply = mod.libraryResolveSourcesBatch(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var batch mu.LibraryResolveSourcesBatchReply
 	if err := json.Unmarshal(reply.Body, &batch); err != nil {
-		t.Fatalf("resolve batch unmarshal: %v", err)
+		t.Fatalf("resolveSourcesBatch unmarshal: %v", err)
 	}
 	if len(batch.Items) != 2 || batch.Items[1].Err == nil {
 		t.Fatalf("expected batch error for missing item, got %+v", batch.Items)
@@ -193,7 +199,7 @@ func mustJSON(v any) []byte {
 	return payload
 }
 
-func TestContainerResolveAndMetadataOnly(t *testing.T) {
+func TestContainerGetItemAndSources(t *testing.T) {
 	root := t.TempDir()
 	audioDir := filepath.Join(root, "TestArtist", "TestAlbum")
 	if err := os.MkdirAll(audioDir, 0o755); err != nil {
@@ -222,25 +228,38 @@ func TestContainerResolveAndMetadataOnly(t *testing.T) {
 	}
 	defer mod.shutdownHTTPServer()
 
+	nodeID := "mu:library:filesystem:test:container"
+	mkRef := func(itemID string) mu.LibraryItemRef {
+		return mu.NewLibraryItemRef(nodeID, itemID)
+	}
+	getItem := func(t *testing.T, id, label string) mu.LibraryGetItemReply {
+		t.Helper()
+		cmd := mu.CommandEnvelope{
+			ID:   "g-" + label,
+			Type: "library.getItem",
+			Body: mustJSON(mu.LibraryGetItemBody{Ref: mkRef(id)}),
+		}
+		reply := mod.libraryGetItem(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+		if reply.Err != nil {
+			t.Fatalf("getItem %s err: %+v", id, reply.Err)
+		}
+		var got mu.LibraryGetItemReply
+		if err := json.Unmarshal(reply.Body, &got); err != nil {
+			t.Fatalf("getItem %s unmarshal: %v", id, err)
+		}
+		return got
+	}
+
 	// Test resolving container:audio
-	cmd := mu.CommandEnvelope{
-		ID:   "c1",
-		Type: "library.resolve",
-		Body: mustJSON(mu.LibraryResolveBody{ItemID: "container:audio"}),
+	audio := getItem(t, "container:audio", "audio")
+	if audio.Ref.ItemID != "container:audio" {
+		t.Errorf("expected itemId container:audio, got %s", audio.Ref.ItemID)
 	}
-	reply := mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	var resolve mu.LibraryResolveReply
-	if err := json.Unmarshal(reply.Body, &resolve); err != nil {
-		t.Fatalf("resolve container:audio unmarshal: %v", err)
+	if audio.Attributes["type"] != "Folder" {
+		t.Errorf("expected type Folder, got %v", audio.Attributes["type"])
 	}
-	if resolve.ItemID != "container:audio" {
-		t.Errorf("expected itemId container:audio, got %s", resolve.ItemID)
-	}
-	if resolve.Metadata["type"] != "Folder" {
-		t.Errorf("expected type Folder, got %v", resolve.Metadata["type"])
-	}
-	if len(resolve.Sources) != 0 {
-		t.Errorf("expected no sources for container, got %d", len(resolve.Sources))
+	if audio.Attributes["container"] != true {
+		t.Errorf("expected container=true, got %v", audio.Attributes["container"])
 	}
 
 	// Browse container:audio → 4 sub-categories
@@ -289,23 +308,12 @@ func TestContainerResolveAndMetadataOnly(t *testing.T) {
 	artistID := browse.Items[0].ItemID
 
 	// Test resolving artist container (hashed ID)
-	cmd = mu.CommandEnvelope{
-		ID:   "c2",
-		Type: "library.resolve",
-		Body: mustJSON(mu.LibraryResolveBody{ItemID: artistID}),
+	artist := getItem(t, artistID, "artist")
+	if artist.Attributes["type"] != "MusicArtist" {
+		t.Errorf("expected type MusicArtist, got %v", artist.Attributes["type"])
 	}
-	reply = mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	if err := json.Unmarshal(reply.Body, &resolve); err != nil {
-		t.Fatalf("resolve artist unmarshal: %v", err)
-	}
-	if resolve.Metadata["type"] != "MusicArtist" {
-		t.Errorf("expected type MusicArtist, got %v", resolve.Metadata["type"])
-	}
-	if resolve.Metadata["title"] != "TestArtist" {
-		t.Errorf("expected title TestArtist, got %v", resolve.Metadata["title"])
-	}
-	if len(resolve.Sources) != 0 {
-		t.Errorf("expected no sources for artist container, got %d", len(resolve.Sources))
+	if artist.Display == nil || artist.Display.Title != "TestArtist" {
+		t.Errorf("expected title TestArtist, got %+v", artist.Display)
 	}
 
 	// Browse artist to get album IDs (hashed)
@@ -324,20 +332,12 @@ func TestContainerResolveAndMetadataOnly(t *testing.T) {
 	albumID := browse.Items[0].ItemID
 
 	// Test resolving album container (hashed ID)
-	cmd = mu.CommandEnvelope{
-		ID:   "c3",
-		Type: "library.resolve",
-		Body: mustJSON(mu.LibraryResolveBody{ItemID: albumID}),
+	album := getItem(t, albumID, "album")
+	if album.Attributes["type"] != "MusicAlbum" {
+		t.Errorf("expected type MusicAlbum, got %v", album.Attributes["type"])
 	}
-	reply = mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	if err := json.Unmarshal(reply.Body, &resolve); err != nil {
-		t.Fatalf("resolve album unmarshal: %v", err)
-	}
-	if resolve.Metadata["type"] != "MusicAlbum" {
-		t.Errorf("expected type MusicAlbum, got %v", resolve.Metadata["type"])
-	}
-	if resolve.Metadata["title"] != "TestAlbum" {
-		t.Errorf("expected title TestAlbum, got %v", resolve.Metadata["title"])
+	if album.Display == nil || album.Display.Title != "TestAlbum" {
+		t.Errorf("expected title TestAlbum, got %+v", album.Display)
 	}
 
 	// Browse album to get track IDs
@@ -355,70 +355,53 @@ func TestContainerResolveAndMetadataOnly(t *testing.T) {
 	}
 	trackID := browse.Items[0].ItemID
 
-	// Test metadataOnly=true returns no sources
-	cmd = mu.CommandEnvelope{
-		ID:   "m1",
-		Type: "library.resolve",
-		Body: mustJSON(mu.LibraryResolveBody{ItemID: trackID, MetadataOnly: true}),
+	// library.getItem returns metadata without sources
+	track := getItem(t, trackID, "track")
+	if track.Ref.ItemID != trackID {
+		t.Errorf("expected itemId %s, got %s", trackID, track.Ref.ItemID)
 	}
-	reply = mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	if err := json.Unmarshal(reply.Body, &resolve); err != nil {
-		t.Fatalf("resolve metadataOnly unmarshal: %v", err)
-	}
-	if resolve.ItemID != trackID {
-		t.Errorf("expected itemId %s, got %s", trackID, resolve.ItemID)
-	}
-	if len(resolve.Sources) != 0 {
-		t.Errorf("expected no sources for metadataOnly, got %d", len(resolve.Sources))
-	}
-	if resolve.Metadata["title"] == nil {
-		t.Error("expected metadata to be populated")
+	if track.Display == nil || track.Display.Title == "" {
+		t.Errorf("expected display to be populated, got %+v", track.Display)
 	}
 
-	// Test metadataOnly=false returns sources
-	cmd = mu.CommandEnvelope{
+	// library.resolveSources returns sources only
+	srcReply := mod.libraryResolveSources(mu.CommandEnvelope{
 		ID:   "m2",
-		Type: "library.resolve",
-		Body: mustJSON(mu.LibraryResolveBody{ItemID: trackID, MetadataOnly: false}),
+		Type: "library.resolveSources",
+		Body: mustJSON(mu.LibraryResolveSourcesBody{Ref: mkRef(trackID)}),
+	}, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var srcs mu.LibraryResolveSourcesReply
+	if err := json.Unmarshal(srcReply.Body, &srcs); err != nil {
+		t.Fatalf("resolveSources unmarshal: %v", err)
 	}
-	reply = mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	if err := json.Unmarshal(reply.Body, &resolve); err != nil {
-		t.Fatalf("resolve full unmarshal: %v", err)
+	if len(srcs.Sources) != 1 {
+		t.Errorf("expected 1 source, got %d", len(srcs.Sources))
 	}
-	if len(resolve.Sources) != 1 {
-		t.Errorf("expected 1 source, got %d", len(resolve.Sources))
-	}
-	if resolve.Sources[0].URL == "" {
+	if srcs.Sources[0].URL == "" {
 		t.Error("expected source URL to be populated")
 	}
 
-	// Test batch with metadataOnly
+	// Test getItems batch returns metadata for both
 	batchCmd := mu.CommandEnvelope{
 		ID:   "batch1",
-		Type: "library.resolveBatch",
-		Body: mustJSON(mu.LibraryResolveBatchBody{
-			ItemIDs:      []string{artistID, trackID},
-			MetadataOnly: true,
+		Type: "library.getItems",
+		Body: mustJSON(mu.LibraryGetItemsBody{
+			Refs: []mu.LibraryItemRef{mkRef(artistID), mkRef(trackID)},
 		}),
 	}
-	batchReply := mod.libraryResolveBatch(batchCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	var batch mu.LibraryResolveBatchReply
+	batchReply := mod.libraryGetItems(batchCmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	var batch mu.LibraryGetItemsReply
 	if err := json.Unmarshal(batchReply.Body, &batch); err != nil {
 		t.Fatalf("batch unmarshal: %v", err)
 	}
 	if len(batch.Items) != 2 {
 		t.Fatalf("expected 2 batch items, got %d", len(batch.Items))
 	}
-	// First item is artist container
-	if batch.Items[0].Metadata["type"] != "MusicArtist" {
-		t.Errorf("expected artist type MusicArtist, got %v", batch.Items[0].Metadata["type"])
+	if batch.Items[0].Attributes["type"] != "MusicArtist" {
+		t.Errorf("expected artist type MusicArtist, got %v", batch.Items[0].Attributes["type"])
 	}
-	if len(batch.Items[0].Sources) != 0 {
-		t.Errorf("expected no sources for artist, got %d", len(batch.Items[0].Sources))
-	}
-	// Second item is track with metadataOnly
-	if len(batch.Items[1].Sources) != 0 {
-		t.Errorf("expected no sources for metadataOnly track, got %d", len(batch.Items[1].Sources))
+	if batch.Items[1].Display == nil || batch.Items[1].Display.Title == "" {
+		t.Errorf("expected track display populated, got %+v", batch.Items[1].Display)
 	}
 }
 
@@ -1540,17 +1523,20 @@ func browseContainer(t *testing.T, mod *Module, containerID string) libraryItems
 	return result
 }
 
-func resolveItem(t *testing.T, mod *Module, itemID string) mu.LibraryResolveReply {
+func resolveItem(t *testing.T, mod *Module, itemID string) mu.LibraryGetItemReply {
 	t.Helper()
 	cmd := mu.CommandEnvelope{
 		ID:   "r",
-		Type: "library.resolve",
-		Body: mustJSON(mu.LibraryResolveBody{ItemID: itemID}),
+		Type: "library.getItem",
+		Body: mustJSON(mu.LibraryGetItemBody{Ref: mu.NewLibraryItemRef(mod.config.NodeID, itemID)}),
 	}
-	reply := mod.libraryResolve(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
-	var result mu.LibraryResolveReply
+	reply := mod.libraryGetItem(cmd, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if reply.Err != nil {
+		t.Fatalf("getItem %s err: %+v", itemID, reply.Err)
+	}
+	var result mu.LibraryGetItemReply
 	if err := json.Unmarshal(reply.Body, &result); err != nil {
-		t.Fatalf("resolve unmarshal: %v", err)
+		t.Fatalf("getItem unmarshal: %v", err)
 	}
 	return result
 }
@@ -1801,11 +1787,11 @@ func TestResolveNewContainers(t *testing.T) {
 		{"container:video:byfolder", "By Folder"},
 	} {
 		r := resolveItem(t, mod, tc.id)
-		if r.Metadata["title"] != tc.title {
-			t.Errorf("resolve %s: expected title %q, got %v", tc.id, tc.title, r.Metadata["title"])
+		if r.Display == nil || r.Display.Title != tc.title {
+			t.Errorf("resolve %s: expected title %q, got %+v", tc.id, tc.title, r.Display)
 		}
-		if r.Metadata["type"] != "Folder" {
-			t.Errorf("resolve %s: expected type Folder, got %v", tc.id, r.Metadata["type"])
+		if r.Attributes["type"] != "Folder" {
+			t.Errorf("resolve %s: expected type Folder, got %v", tc.id, r.Attributes["type"])
 		}
 	}
 
@@ -1815,8 +1801,8 @@ func TestResolveNewContainers(t *testing.T) {
 		t.Fatal("expected at least one genre")
 	}
 	genreResolve := resolveItem(t, mod, genres.Items[0].ItemID)
-	if genreResolve.Metadata["type"] != "MusicGenre" {
-		t.Errorf("expected genre type MusicGenre, got %v", genreResolve.Metadata["type"])
+	if genreResolve.Attributes["type"] != "MusicGenre" {
+		t.Errorf("expected genre type MusicGenre, got %v", genreResolve.Attributes["type"])
 	}
 
 	// Resolve letter container
@@ -1825,8 +1811,8 @@ func TestResolveNewContainers(t *testing.T) {
 		t.Fatal("expected at least one letter")
 	}
 	letterResolve := resolveItem(t, mod, letters.Items[0].ItemID)
-	if letterResolve.Metadata["type"] != "Folder" {
-		t.Errorf("expected letter type Folder, got %v", letterResolve.Metadata["type"])
+	if letterResolve.Attributes["type"] != "Folder" {
+		t.Errorf("expected letter type Folder, got %v", letterResolve.Attributes["type"])
 	}
 
 	// Resolve folder container
@@ -1835,8 +1821,8 @@ func TestResolveNewContainers(t *testing.T) {
 		t.Fatal("expected at least one folder root")
 	}
 	folderResolve := resolveItem(t, mod, folders.Items[0].ItemID)
-	if folderResolve.Metadata["type"] != "Folder" {
-		t.Errorf("expected folder type Folder, got %v", folderResolve.Metadata["type"])
+	if folderResolve.Attributes["type"] != "Folder" {
+		t.Errorf("expected folder type Folder, got %v", folderResolve.Attributes["type"])
 	}
 }
 

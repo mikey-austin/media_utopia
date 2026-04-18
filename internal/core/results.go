@@ -46,12 +46,13 @@ type PlaylistShowResult struct {
 	FullIDs    bool
 }
 
-// PlaylistEntryResult describes a playlist entry with metadata.
+// PlaylistEntryResult describes a playlist entry with its canonical ref,
+// optional resolved source, and a display metadata snapshot.
 type PlaylistEntryResult struct {
 	EntryID  string
-	ItemID   string
-	Metadata map[string]any
-	URL      string
+	Ref      *mu.LibraryItemRef
+	Resolved *mu.ResolvedSource
+	Display  *mu.DisplayMetadata
 }
 
 // SnapshotListResult holds snapshot summaries.
@@ -64,9 +65,11 @@ type SuggestListResult struct {
 	Suggestions []mu.SuggestSummary
 }
 
-// LibraryResolveResult holds a resolved library item.
+// LibraryResolveResult holds the metadata reply for a library item,
+// plus an optional resolved sources reply when the caller asked to include them.
 type LibraryResolveResult struct {
-	Item mu.LibraryResolveReply
+	Item    mu.LibraryGetItemReply
+	Sources *mu.LibraryResolveSourcesReply
 }
 
 // LibraryRescanResult holds the result of a library rescan.

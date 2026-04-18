@@ -170,10 +170,12 @@ func (m *Module) publishPresence() error {
 		Kind:   "library",
 		Name:   m.config.Name,
 		Caps: map[string]any{
-			"resolve":      true,
-			"resolveBatch": true,
-			"browse":       true,
-			"search":       true,
+			"getItem":             true,
+			"getItems":            true,
+			"resolveSources":      true,
+			"resolveSourcesBatch": true,
+			"browse":              true,
+			"search":              true,
 		},
 		TS: time.Now().Unix(),
 	}
@@ -274,10 +276,14 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.libraryBrowse(cmd, reply)
 	case "library.search":
 		return m.librarySearch(cmd, reply)
-	case "library.resolve":
-		return m.libraryResolve(cmd, reply)
-	case "library.resolveBatch":
-		return m.libraryResolveBatch(cmd, reply)
+	case "library.getItem":
+		return m.libraryGetItem(cmd, reply)
+	case "library.getItems":
+		return m.libraryGetItems(cmd, reply)
+	case "library.resolveSources":
+		return m.libraryResolveSources(cmd, reply)
+	case "library.resolveSourcesBatch":
+		return m.libraryResolveSourcesBatch(cmd, reply)
 	default:
 		return errorReply(cmd, "INVALID", "unsupported command")
 	}
@@ -389,28 +395,116 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	return reply
 }
 
-func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
-	var body mu.LibraryResolveBody
+func (m *Module) refMatchesNode(ref mu.LibraryItemRef) bool {
+	return ref.LibraryID == m.config.NodeID
+}
+
+func (m *Module) libraryGetItem(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryGetItemBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
+	if err := body.Ref.Validate(); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	if !m.refMatchesNode(body.Ref) {
+		return errorReply(cmd, "INVALID", "ref.libraryId does not match this library node")
+	}
 	started := time.Now()
-	metadata, sources, err := m.resolveItem(body.ItemID, body.MetadataOnly)
+	display, attrs, err := m.describeItem(body.Ref.ItemID)
 	if err != nil {
 		m.log.Debug(
-			"library resolve failed",
-			zap.String("item", body.ItemID),
-			zap.Bool("metadata_only", body.MetadataOnly),
+			"library getItem failed",
+			zap.String("item", body.Ref.ItemID),
 			zap.Duration("duration", time.Since(started)),
 			zap.Error(err),
 		)
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	payload, _ := json.Marshal(mu.LibraryResolveReply{ItemID: body.ItemID, Metadata: metadata, Sources: sources})
+	payload, _ := json.Marshal(mu.LibraryGetItemReply{
+		Ref:        body.Ref,
+		Display:    display,
+		Attributes: attrs,
+	})
 	m.log.Debug(
-		"library resolve ok",
-		zap.String("item", body.ItemID),
-		zap.Bool("metadata_only", body.MetadataOnly),
+		"library getItem ok",
+		zap.String("item", body.Ref.ItemID),
+		zap.Int("bytes", len(payload)),
+		zap.Duration("duration", time.Since(started)),
+	)
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) libraryGetItems(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryGetItemsBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	items := make([]mu.LibraryGetItemsReplyItem, 0, len(body.Refs))
+	for _, ref := range body.Refs {
+		if err := ref.Validate(); err != nil {
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
+			})
+			continue
+		}
+		if !m.refMatchesNode(ref) {
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: "ref.libraryId does not match this library node"},
+			})
+			continue
+		}
+		display, attrs, err := m.describeItem(ref.ItemID)
+		if err != nil {
+			items = append(items, mu.LibraryGetItemsReplyItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
+			})
+			continue
+		}
+		items = append(items, mu.LibraryGetItemsReplyItem{
+			Ref:        ref,
+			Display:    display,
+			Attributes: attrs,
+		})
+	}
+	payload, _ := json.Marshal(mu.LibraryGetItemsReply{Items: items})
+	reply.Body = payload
+	return reply
+}
+
+func (m *Module) libraryResolveSources(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveSourcesBody
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if err := body.Ref.Validate(); err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	if !m.refMatchesNode(body.Ref) {
+		return errorReply(cmd, "INVALID", "ref.libraryId does not match this library node")
+	}
+	started := time.Now()
+	sources, err := m.resolveItemSources(body.Ref.ItemID)
+	if err != nil {
+		m.log.Debug(
+			"library resolveSources failed",
+			zap.String("item", body.Ref.ItemID),
+			zap.Duration("duration", time.Since(started)),
+			zap.Error(err),
+		)
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	payload, _ := json.Marshal(mu.LibraryResolveSourcesReply{
+		Ref:     body.Ref,
+		Sources: sources,
+	})
+	m.log.Debug(
+		"library resolveSources ok",
+		zap.String("item", body.Ref.ItemID),
 		zap.Int("sources", len(sources)),
 		zap.Int("bytes", len(payload)),
 		zap.Duration("duration", time.Since(started)),
@@ -419,133 +513,140 @@ func (m *Module) libraryResolve(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) 
 	return reply
 }
 
-func (m *Module) libraryResolveBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
-	var body mu.LibraryResolveBatchBody
+func (m *Module) libraryResolveSourcesBatch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body mu.LibraryResolveSourcesBatchBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
-	if len(body.ItemIDs) == 0 {
-		return errorReply(cmd, "INVALID", "itemIds required")
-	}
-	items := make([]mu.LibraryResolveBatchItem, 0, len(body.ItemIDs))
-	for _, itemID := range body.ItemIDs {
-		itemID = strings.TrimSpace(itemID)
-		if itemID == "" {
+	items := make([]mu.LibraryResolveSourcesBatchItem, 0, len(body.Refs))
+	for _, ref := range body.Refs {
+		if err := ref.Validate(); err != nil {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
+			})
 			continue
 		}
-		metadata, sources, err := m.resolveItem(itemID, body.MetadataOnly)
-		entry := mu.LibraryResolveBatchItem{ItemID: itemID, Metadata: metadata, Sources: sources}
-		if err != nil {
-			entry.Err = &mu.ReplyError{Code: "INVALID", Message: err.Error()}
+		if !m.refMatchesNode(ref) {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: "ref.libraryId does not match this library node"},
+			})
+			continue
 		}
-		items = append(items, entry)
+		sources, err := m.resolveItemSources(ref.ItemID)
+		if err != nil {
+			items = append(items, mu.LibraryResolveSourcesBatchItem{
+				Ref: ref,
+				Err: &mu.ReplyError{Code: "INVALID", Message: err.Error()},
+			})
+			continue
+		}
+		items = append(items, mu.LibraryResolveSourcesBatchItem{
+			Ref:     ref,
+			Sources: sources,
+		})
 	}
-	payload, _ := json.Marshal(mu.LibraryResolveBatchReply{Items: items})
+	payload, _ := json.Marshal(mu.LibraryResolveSourcesBatchReply{Items: items})
 	reply.Body = payload
 	return reply
 }
 
 type resolveCacheEntry struct {
-	Metadata     map[string]any      `json:"metadata"`
+	Display      *mu.DisplayMetadata `json:"display,omitempty"`
+	Attributes   map[string]any      `json:"attributes,omitempty"`
 	Sources      []mu.ResolvedSource `json:"sources"`
 	SourcesReady bool                `json:"sourcesReady"`
 }
 
-func (m *Module) resolveItem(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, error) {
-	if metadata, sources, ok := m.cacheGet(itemID, metadataOnly); ok {
-		m.log.Debug("jellyfin cache hit", zap.String("item", itemID), zap.Bool("metadata_only", metadataOnly))
-		return metadata, sources, nil
+// describeItem returns Display + Attributes for the given Jellyfin item id.
+func (m *Module) describeItem(itemID string) (*mu.DisplayMetadata, map[string]any, error) {
+	if display, attrs, ok := m.cacheGetDescription(itemID); ok {
+		m.log.Debug("jellyfin cache hit (describe)", zap.String("item", itemID))
+		return display, attrs, nil
 	}
-	m.log.Debug("jellyfin cache miss", zap.String("item", itemID), zap.Bool("metadata_only", metadataOnly))
+	m.log.Debug("jellyfin cache miss (describe)", zap.String("item", itemID))
 	item, err := m.fetchItem(itemID)
 	if err != nil {
 		return nil, nil, err
 	}
-	metadata := m.buildMetadata(item)
-	sources := []mu.ResolvedSource{}
-	if !metadataOnly {
-		var meta map[string]any
-		sources, meta, err = m.resolveSources(item)
-		if err != nil {
-			return nil, nil, err
-		}
-		for k, v := range meta {
-			if v != nil {
-				metadata[k] = v
-			}
-		}
-	}
-	m.cachePut(itemID, metadata, sources, !metadataOnly)
-	return metadata, sources, nil
+	display, attrs := m.buildDisplay(item)
+	m.cachePutDescription(itemID, display, attrs)
+	return display, attrs, nil
 }
 
-func (m *Module) buildMetadata(item jfItem) map[string]any {
-	metadata := map[string]any{
-		"title":      item.Name,
-		"type":       item.Type,
-		"mediaType":  item.MediaType,
-		"overview":   item.Overview,
-		"durationMs": ticksToMS(item.RunTimeTicks),
+// resolveItemSources returns playable sources for the given Jellyfin item id.
+// For containers (album/playlist/etc.) it expands children into multiple sources.
+func (m *Module) resolveItemSources(itemID string) ([]mu.ResolvedSource, error) {
+	if sources, ok := m.cacheGetSources(itemID); ok {
+		m.log.Debug("jellyfin cache hit (sources)", zap.String("item", itemID))
+		return sources, nil
 	}
-	if item.Album != "" {
-		metadata["album"] = item.Album
+	m.log.Debug("jellyfin cache miss (sources)", zap.String("item", itemID))
+	item, err := m.fetchItem(itemID)
+	if err != nil {
+		return nil, err
+	}
+	sources, err := m.resolveSources(item)
+	if err != nil {
+		return nil, err
+	}
+	m.cachePutSources(itemID, sources)
+	return sources, nil
+}
+
+func (m *Module) buildDisplay(item jfItem) (*mu.DisplayMetadata, map[string]any) {
+	display := &mu.DisplayMetadata{
+		Title:      item.Name,
+		Album:      item.Album,
+		DurationMS: ticksToMS(item.RunTimeTicks),
+		MediaType:  item.MediaType,
 	}
 	if len(item.Artists) > 0 {
-		metadata["artist"] = strings.Join(item.Artists, ", ")
-		metadata["artists"] = item.Artists
+		display.Artists = item.Artists
+		display.Artist = strings.Join(item.Artists, ", ")
 	} else if item.AlbumArtist != "" {
-		metadata["artist"] = item.AlbumArtist
+		display.Artist = item.AlbumArtist
 	}
 	if item.PrimaryImageTag != "" {
-		metadata["artworkUrl"] = m.imageURL(item.ID)
+		display.ArtworkURL = m.imageURL(item.ID)
 	}
-	return metadata
+	attrs := map[string]any{
+		"container": isContainerItem(item),
+	}
+	if item.Type != "" {
+		attrs["type"] = item.Type
+	}
+	if item.Overview != "" {
+		attrs["overview"] = item.Overview
+	}
+	return display, attrs
 }
 
-func (m *Module) cacheGet(itemID string, metadataOnly bool) (map[string]any, []mu.ResolvedSource, bool) {
+func (m *Module) cacheLoad(itemID string) (resolveCacheEntry, bool) {
 	m.ensureCache()
 	if m.cache == nil {
-		return nil, nil, false
+		return resolveCacheEntry{}, false
 	}
 	value, err := m.cache.Get(m.cacheCtx, itemID)
 	if err != nil {
-		return nil, nil, false
+		return resolveCacheEntry{}, false
 	}
 	value, ok := m.cacheDecode(value)
 	if !ok {
-		return nil, nil, false
+		return resolveCacheEntry{}, false
 	}
 	var entry resolveCacheEntry
 	if err := json.Unmarshal(value, &entry); err != nil {
-		return nil, nil, false
+		return resolveCacheEntry{}, false
 	}
-	if metadataOnly {
-		if entry.Metadata == nil {
-			return nil, nil, false
-		}
-		return copyMetadata(entry.Metadata), nil, true
-	}
-	if entry.Metadata == nil || !entry.SourcesReady {
-		return nil, nil, false
-	}
-	return copyMetadata(entry.Metadata), append([]mu.ResolvedSource(nil), entry.Sources...), true
+	return entry, true
 }
 
-func (m *Module) cachePut(itemID string, metadata map[string]any, sources []mu.ResolvedSource, sourcesReady bool) {
-	if metadata == nil {
-		return
-	}
+func (m *Module) cacheStore(itemID string, entry resolveCacheEntry) {
 	m.ensureCache()
 	if m.cache == nil {
 		return
-	}
-	if len(sources) > 0 {
-		sourcesReady = true
-	}
-	entry := resolveCacheEntry{
-		Metadata:     copyMetadata(metadata),
-		Sources:      append([]mu.ResolvedSource(nil), sources...),
-		SourcesReady: sourcesReady,
 	}
 	payload, err := json.Marshal(entry)
 	if err != nil {
@@ -556,12 +657,46 @@ func (m *Module) cachePut(itemID string, metadata map[string]any, sources []mu.R
 	_ = m.cache.Set(m.cacheCtx, itemID, payload, libstore.WithExpiration(ttl))
 }
 
-func copyMetadata(metadata map[string]any) map[string]any {
-	if metadata == nil {
+func (m *Module) cacheGetDescription(itemID string) (*mu.DisplayMetadata, map[string]any, bool) {
+	entry, ok := m.cacheLoad(itemID)
+	if !ok || entry.Display == nil {
+		return nil, nil, false
+	}
+	display := *entry.Display
+	return &display, copyAttributes(entry.Attributes), true
+}
+
+func (m *Module) cachePutDescription(itemID string, display *mu.DisplayMetadata, attrs map[string]any) {
+	entry, _ := m.cacheLoad(itemID)
+	if display != nil {
+		copy := *display
+		entry.Display = &copy
+	}
+	entry.Attributes = copyAttributes(attrs)
+	m.cacheStore(itemID, entry)
+}
+
+func (m *Module) cacheGetSources(itemID string) ([]mu.ResolvedSource, bool) {
+	entry, ok := m.cacheLoad(itemID)
+	if !ok || !entry.SourcesReady {
+		return nil, false
+	}
+	return append([]mu.ResolvedSource(nil), entry.Sources...), true
+}
+
+func (m *Module) cachePutSources(itemID string, sources []mu.ResolvedSource) {
+	entry, _ := m.cacheLoad(itemID)
+	entry.Sources = append([]mu.ResolvedSource(nil), sources...)
+	entry.SourcesReady = true
+	m.cacheStore(itemID, entry)
+}
+
+func copyAttributes(attrs map[string]any) map[string]any {
+	if attrs == nil {
 		return nil
 	}
-	out := make(map[string]any, len(metadata))
-	for k, v := range metadata {
+	out := make(map[string]any, len(attrs))
+	for k, v := range attrs {
 		out[k] = v
 	}
 	return out
@@ -1172,13 +1307,13 @@ func (m *Module) resolveSource(itemID string, item jfItem) (mu.ResolvedSource, e
 	}, nil
 }
 
-func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, map[string]any, error) {
+func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, error) {
 	if !isContainerItem(item) {
 		source, err := m.resolveSource(item.ID, item)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		return []mu.ResolvedSource{source}, nil, nil
+		return []mu.ResolvedSource{source}, nil
 	}
 
 	var children []jfItem
@@ -1189,51 +1324,24 @@ func (m *Module) resolveSources(item jfItem) ([]mu.ResolvedSource, map[string]an
 		children, err = m.fetchChildItems(item.ID, 0, 500)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if len(children) == 0 {
-		return []mu.ResolvedSource{}, nil, nil
+		return []mu.ResolvedSource{}, nil
 	}
 
 	sources := make([]mu.ResolvedSource, 0, len(children))
-	meta := map[string]any{}
 	for _, child := range children {
 		if isContainerItem(child) {
 			continue
 		}
-		if child.MediaType != "" {
-			meta["mediaType"] = child.MediaType
-		}
-		if child.Type != "" {
-			meta["type"] = child.Type
-		}
-		if child.RunTimeTicks > 0 {
-			meta["durationMs"] = ticksToMS(child.RunTimeTicks)
-		}
-		if len(child.Artists) > 0 {
-			meta["artist"] = strings.Join(child.Artists, ", ")
-			meta["artists"] = child.Artists
-		} else if child.AlbumArtist != "" {
-			meta["artist"] = child.AlbumArtist
-		}
-		if child.Album != "" {
-			meta["album"] = child.Album
-		}
-		if child.Name != "" {
-			meta["title"] = child.Name
-		}
 		source, err := m.resolveSource(child.ID, child)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		// Include the child's itemId in the source for proper metadata resolution
-		source.ItemID = child.ID
 		sources = append(sources, source)
 	}
-	if len(sources) == 0 {
-		return []mu.ResolvedSource{}, meta, nil
-	}
-	return sources, meta, nil
+	return sources, nil
 }
 
 func (m *Module) fetchPlaylistItems(playlistID string, start int64, count int64) ([]jfItem, error) {

@@ -126,9 +126,9 @@ func TestQueueLoadPlaylist(t *testing.T) {
 			t.Fatalf("decode playlist request: %v", err)
 		}
 		pl := playlistReply{
-			Entries: []playlistEntry{{
-				EntryID:  "entry-1",
-				Resolved: &mu.ResolvedSource{URL: "https://example.com/track.mp3"},
+			Entries: []mu.QueueEntry{{
+				QueueEntryID: "entry-1",
+				Resolved:     &mu.ResolvedSource{URL: "https://example.com/track.mp3"},
 			}},
 		}
 		body, _ := json.Marshal(pl)
@@ -154,7 +154,7 @@ func TestQueueLoadPlaylist(t *testing.T) {
 	defer tick.Stop()
 	for {
 		state := engine.Queue.Snapshot(0, 10)
-		if len(state.Entries) == 1 && state.Entries[0].ItemID != "" {
+		if len(state.Entries) == 1 && state.Entries[0].Resolved != nil && state.Entries[0].Resolved.URL != "" {
 			return
 		}
 		select {
@@ -219,10 +219,10 @@ func TestQueueLoadSnapshotCommand(t *testing.T) {
 			snap := mu.SnapshotGetReply{
 				SnapshotID: "snap-1",
 				Name:       "Test Snapshot",
-				Items: []string{
-					"https://example.com/track1.mp3",
-					"https://example.com/track2.mp3",
-					"https://example.com/track3.mp3",
+				Entries: []mu.QueueEntry{
+					{Resolved: &mu.ResolvedSource{URL: "https://example.com/track1.mp3"}},
+					{Resolved: &mu.ResolvedSource{URL: "https://example.com/track2.mp3"}},
+					{Resolved: &mu.ResolvedSource{URL: "https://example.com/track3.mp3"}},
 				},
 				Capture: mu.SnapshotCapture{
 					Index:      1,
