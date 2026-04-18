@@ -13,8 +13,6 @@ import androidx.media3.session.MediaSession
 import android.graphics.BitmapFactory
 import com.mediautopia.app.data.protocol.RendererState
 import com.mediautopia.app.data.protocol.artistString
-import com.mediautopia.app.data.protocol.artworkUrl
-import com.mediautopia.app.data.protocol.title
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -87,11 +85,11 @@ class MediaSessionManager(
             forwardingPlayer?.hasLease = newHasLease
         }
 
-        val meta = currentEntry?.metadata
-        if (meta != null && meta.isNotEmpty()) {
-            val title = meta.title() ?: ""
-            val artist = meta.artistString() ?: ""
-            val artUrl = meta.artworkUrl()
+        val display = currentEntry?.display
+        if (display != null) {
+            val title = display.title ?: ""
+            val artist = display.artistString() ?: ""
+            val artUrl = display.artworkUrl
 
             // Download artwork if URL changed.
             if (artUrl != null && artUrl != cachedArtworkUrl) {

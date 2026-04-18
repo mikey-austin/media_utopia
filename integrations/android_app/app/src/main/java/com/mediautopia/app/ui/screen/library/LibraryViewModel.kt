@@ -3,7 +3,8 @@ package com.mediautopia.app.ui.screen.library
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.mediautopia.app.data.protocol.ItemRef
+import com.mediautopia.app.data.protocol.DisplayMetadata
+import com.mediautopia.app.data.protocol.LibraryItemRef
 import com.mediautopia.app.data.protocol.PlaybackPlayBody
 import com.mediautopia.app.data.protocol.QueueAddBody
 import com.mediautopia.app.data.protocol.QueueEntry
@@ -33,11 +34,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.put
 import javax.inject.Inject
 
 enum class LibraryTab { LIBRARIES, PLAYLISTS }
@@ -51,12 +48,11 @@ data class LibraryUiState(
     val isLoading: Boolean = true,
     val hasMore: Boolean = false,
     val error: String? = null,
-    // Playlist tab state.
     val playlists: List<PlaylistInfo> = emptyList(),
     val playlistEntries: List<PlaylistEntryInfo> = emptyList(),
     val selectedPlaylist: PlaylistInfo? = null,
     val selectedPlaylistServer: String? = null,
-    val playlistServers: List<Pair<String, String>> = emptyList(), // nodeId to name
+    val playlistServers: List<Pair<String, String>> = emptyList(),
     val isPlaylistLoading: Boolean = false,
 )
 
@@ -87,26 +83,21 @@ class LibraryViewModel @Inject constructor(
     private val activeRendererId = activeRendererRepository.activeRendererId
         .stateIn(viewModelScope, SharingStarted.Eagerly, ActiveRendererRepository.LOCAL_RENDERER_ID)
 
-    // Debounced search input.
     private val searchInput = MutableSharedFlow<String>(extraBufferCapacity = 1)
 
     private var browseJob: Job? = null
     private var loadMoreJob: Job? = null
 
-    // Which library we're currently browsing (null = show library selector).
     private var selectedLibraryNodeId: String? = null
 
     init {
-        // Show available libraries as the top-level view.
         loadLibraryList()
 
-        // Debounced search handler.
         viewModelScope.launch {
             searchInput
                 .debounce(300)
                 .collectLatest { query ->
                     if (query.isBlank()) {
-                        // Return to current browse view.
                         val currentContainer = _uiState.value.breadcrumbs.lastOrNull()?.containerId ?: ""
                         _uiState.update { it.copy(isSearching = false, searchQuery = "") }
                         browseContainer(currentContainer)
@@ -116,10 +107,6 @@ class LibraryViewModel @Inject constructor(
                 }
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Library list (top-level view)
-    // -------------------------------------------------------------------------
 
     private fun loadLibraryList() {
         viewModelScope.launch {
@@ -138,9 +125,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Select a library and browse its root.
-     */
     fun selectLibrary(libraryNodeId: String, name: String) {
         selectedLibraryNodeId = libraryNodeId
         _uiState.update { state ->
@@ -155,12 +139,7 @@ class LibraryViewModel @Inject constructor(
         browseContainerOnLibrary(libraryNodeId, "")
     }
 
-    // -------------------------------------------------------------------------
-    // Navigation
-    // -------------------------------------------------------------------------
-
     fun navigateTo(containerId: String, label: String) {
-        // If at the library list level, this is a library selection.
         if (selectedLibraryNodeId == null) {
             selectLibrary(containerId, label)
             return
@@ -179,7 +158,6 @@ class LibraryViewModel @Inject constructor(
         val currentBreadcrumbs = _uiState.value.breadcrumbs
         if (currentBreadcrumbs.size <= 1) return false
 
-        // Going back to library list.
         if (currentBreadcrumbs.size == 2 && selectedLibraryNodeId != null) {
             selectedLibraryNodeId = null
             _uiState.update { it.copy(
@@ -211,7 +189,6 @@ class LibraryViewModel @Inject constructor(
         val currentBreadcrumbs = _uiState.value.breadcrumbs
         if (index < 0 || index >= currentBreadcrumbs.size) return
 
-        // Going back to library list.
         if (index == 0) {
             selectedLibraryNodeId = null
             _uiState.update { it.copy(
@@ -236,7 +213,6 @@ class LibraryViewModel @Inject constructor(
             )
         }
 
-        // Index 1 is the library root — browse with empty containerId.
         if (index == 1 && target.containerId.startsWith("__lib__:")) {
             val libId = selectedLibraryNodeId
             if (libId != null) {
@@ -246,10 +222,6 @@ class LibraryViewModel @Inject constructor(
         }
         browseContainer(target.containerId)
     }
-
-    // -------------------------------------------------------------------------
-    // Search
-    // -------------------------------------------------------------------------
 
     fun search(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
@@ -261,10 +233,6 @@ class LibraryViewModel @Inject constructor(
         val currentContainer = _uiState.value.breadcrumbs.lastOrNull()?.containerId ?: ""
         browseContainer(currentContainer)
     }
-
-    // -------------------------------------------------------------------------
-    // Pagination
-    // -------------------------------------------------------------------------
 
     fun loadMore() {
         if (loadMoreJob?.isActive == true) return
@@ -311,73 +279,55 @@ class LibraryViewModel @Inject constructor(
     // Playback actions
     // -------------------------------------------------------------------------
 
-    private fun buildMetadataJson(itemId: String): JsonObject? {
-        val cached = libraryRepository.getCachedMetadata(itemId)
-        if (cached != null) {
-            return buildJsonObject {
-                if (cached.title.isNotEmpty()) put("title", cached.title)
-                if (cached.artist.isNotEmpty()) put("artist", cached.artist)
-                if (cached.album.isNotEmpty()) put("album", cached.album)
-                if (cached.artworkUrl != null) put("artworkUrl", cached.artworkUrl)
-                if (cached.durationMs > 0) put("durationMs", cached.durationMs)
-                if (cached.format.isNotEmpty()) put("format", cached.format)
-            }
-        }
+    private fun findItem(itemId: String): BrowseItem? =
+        _uiState.value.items.find { it.id == itemId }
 
-        // Fall back to BrowseItem data from current UI state.
-        val browseItem = _uiState.value.items.find { it.id == itemId } ?: return null
-        return buildJsonObject {
-            if (browseItem.title.isNotEmpty()) put("title", browseItem.title)
-            val artist = browseItem.metadata["artist"] as? String
-            if (!artist.isNullOrEmpty()) put("artist", artist)
-            val album = browseItem.metadata["album"] as? String
-            if (!album.isNullOrEmpty()) put("album", album)
-            if (browseItem.artworkUrl != null) put("artworkUrl", browseItem.artworkUrl)
-            val durationMs = browseItem.metadata["durationMs"] as? Long ?: 0L
-            if (durationMs > 0) put("durationMs", durationMs)
-        }
+    private fun makeRef(itemId: String): LibraryItemRef? {
+        val cached = findItem(itemId)?.ref
+        if (cached != null) return cached
+        val libId = selectedLibraryNodeId ?: return null
+        return LibraryItemRef(libraryId = libId, itemId = itemId)
     }
 
     private suspend fun buildQueueEntry(itemId: String): QueueEntry {
-        Log.d(tag, "buildQueueEntry: itemId=$itemId, libraryNodeId=$selectedLibraryNodeId")
-        val source = libraryRepository.resolveForPlayback(itemId, selectedLibraryNodeId)
-        Log.d(tag, "buildQueueEntry: resolved=${source != null}, url=${source?.url?.take(80)}")
-        val meta = buildMetadataJson(itemId)
-        Log.d(tag, "buildQueueEntry: metadata keys=${meta?.keys}")
-        return if (source != null) {
-            QueueEntry(
-                ref = ItemRef(id = itemId),
-                resolved = ResolvedSource(
-                    itemId = itemId,
-                    url = source.url,
-                    mime = source.mime,
-                ),
-                metadata = meta,
-            )
-        } else {
-            QueueEntry(ref = ItemRef(id = itemId), metadata = meta)
-        }
+        val ref = makeRef(itemId) ?: error("no library selected for $itemId")
+        Log.d(tag, "buildQueueEntry: ref=${ref.libraryId}/${ref.itemId}")
+        val source = libraryRepository.resolveSources(ref)
+        val display = displayFor(itemId, ref) ?: libraryRepository.getItem(ref)
+        return QueueEntry(
+            ref = ref,
+            resolved = source,
+            display = display,
+        )
     }
 
     private suspend fun buildQueueEntries(itemIds: List<String>): List<QueueEntry> {
-        val sources = libraryRepository.resolveForPlaybackBatch(itemIds, selectedLibraryNodeId)
-        return itemIds.map { itemId ->
-            val source = sources[itemId]
-            val meta = buildMetadataJson(itemId)
-            if (source != null) {
-                QueueEntry(
-                    ref = ItemRef(id = itemId),
-                    resolved = ResolvedSource(
-                        itemId = itemId,
-                        url = source.url,
-                        mime = source.mime,
-                    ),
-                    metadata = meta,
-                )
-            } else {
-                QueueEntry(ref = ItemRef(id = itemId), metadata = meta)
-            }
+        val pairs = itemIds.mapNotNull { id -> makeRef(id)?.let { id to it } }
+        if (pairs.isEmpty()) return emptyList()
+        val refs = pairs.map { it.second }
+        val sources = libraryRepository.resolveSourcesBatch(refs)
+        // Single batched fallback for refs whose display isn't already cached
+        // or attached to the visible browse item.
+        val missingDisplay = pairs
+            .filter { (id, ref) -> displayFor(id, ref) == null }
+            .map { it.second }
+        val fetched: Map<LibraryItemRef, DisplayMetadata> =
+            if (missingDisplay.isNotEmpty()) libraryRepository.getItems(missingDisplay)
+            else emptyMap()
+        return pairs.map { (id, ref) ->
+            QueueEntry(
+                ref = ref,
+                resolved = sources[ref],
+                display = displayFor(id, ref) ?: fetched[ref],
+            )
         }
+    }
+
+    private fun displayFor(itemId: String, ref: LibraryItemRef): DisplayMetadata? {
+        val cached = libraryRepository.getCachedDisplay(ref)
+        if (cached != null) return cached
+        val item = findItem(itemId)
+        return item?.display
     }
 
     fun playItem(itemId: String) {
@@ -386,9 +336,7 @@ class LibraryViewModel @Inject constructor(
             Log.d(tag, "playItem: itemId=$itemId, renderer=$rendererId")
             try {
                 val entry = buildQueueEntry(itemId)
-                Log.d(tag, "playItem: entry built, hasResolved=${entry.resolved != null}")
                 val lease = leaseManager.ensureLease(rendererId)
-                Log.d(tag, "playItem: lease acquired, session=${lease.sessionId}")
 
                 transport.send(
                     nodeId = rendererId,
@@ -422,13 +370,17 @@ class LibraryViewModel @Inject constructor(
                 val entry = buildQueueEntry(itemId)
                 val lease = leaseManager.ensureLease(rendererId)
 
-                // Add to end of queue, then jump to and play the last item.
+                // Insert directly after the current entry and advance, which
+                // works without knowing the resulting queue length. Adding at
+                // "end" and playing index=-1 fails because the renderer's
+                // playback.play has no "play last" semantic — Jump rejects
+                // negative indices outright.
                 transport.send(
                     nodeId = rendererId,
                     cmdType = "queue.add",
                     body = json.encodeToJsonElement(
                         QueueAddBody(
-                            position = "end",
+                            position = "next",
                             entries = listOf(entry),
                         )
                     ),
@@ -437,10 +389,8 @@ class LibraryViewModel @Inject constructor(
 
                 transport.send(
                     nodeId = rendererId,
-                    cmdType = "playback.play",
-                    body = json.encodeToJsonElement(
-                        PlaybackPlayBody(index = -1)
-                    ),
+                    cmdType = "playback.next",
+                    body = json.encodeToJsonElement(mapOf<String, String>()),
                     lease = lease,
                 )
                 snackbarManager.show("Playing")
@@ -453,7 +403,6 @@ class LibraryViewModel @Inject constructor(
     fun addToQueue(itemId: String) {
         viewModelScope.launch {
             val rendererId = activeRendererId.value
-            Log.d(tag, "addToQueue: itemId=$itemId, renderer=$rendererId")
             try {
                 val entry = buildQueueEntry(itemId)
                 val lease = leaseManager.ensureLease(rendererId)
@@ -508,9 +457,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Play all tracks currently displayed in the list.
-     */
     fun playAllVisible() {
         val tracks = _uiState.value.items.filter { !it.isContainer }
         if (tracks.isEmpty()) return
@@ -543,9 +489,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Queue all tracks currently displayed in the list.
-     */
     fun queueAllVisible() {
         val tracks = _uiState.value.items.filter { !it.isContainer }
         if (tracks.isEmpty()) return
@@ -572,6 +515,11 @@ class LibraryViewModel @Inject constructor(
     }
 
     private suspend fun collectContainerItemIds(containerId: String): List<String> {
+        // Walk the container's children. Don't write the discovered tracks
+        // into _uiState.items — that's the visible parent listing, and
+        // appending the container's tracks to it would mash the folder's
+        // contents into the parent screen. buildQueueEntries already falls
+        // back to library.getItems for refs that aren't in the visible list.
         val allItemIds = mutableListOf<String>()
         var start = 0L
         var hasMore = true
@@ -583,16 +531,16 @@ class LibraryViewModel @Inject constructor(
                 count = pageSize,
                 libraryNodeId = selectedLibraryNodeId,
             )
-            allItemIds.addAll(result.items.filter { !it.isContainer }.map { it.id })
+            for (item in result.items) {
+                if (!item.isContainer) {
+                    allItemIds.add(item.id)
+                }
+            }
             hasMore = result.hasMore
             start += pageSize
         }
         return allItemIds
     }
-
-    // -------------------------------------------------------------------------
-    // Internal
-    // -------------------------------------------------------------------------
 
     private fun browseContainerOnLibrary(libraryNodeId: String, containerId: String) {
         browseJob?.cancel()
@@ -684,20 +632,12 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Tab switching
-    // -------------------------------------------------------------------------
-
     fun switchTab(tab: LibraryTab) {
         _uiState.update { it.copy(activeTab = tab) }
         if (tab == LibraryTab.PLAYLISTS) {
             loadPlaylistServers()
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Playlists
-    // -------------------------------------------------------------------------
 
     private var playlistJob: Job? = null
 
@@ -709,14 +649,12 @@ class LibraryViewModel @Inject constructor(
             val serverPairs = servers.map { it.nodeId to it.name }
 
             if (servers.size == 1) {
-                // Single server — load its playlists directly.
                 _uiState.update { it.copy(
                     playlistServers = serverPairs,
                     selectedPlaylistServer = servers.first().nodeId,
                 ) }
                 loadPlaylists(servers.first().nodeId)
             } else {
-                // Multiple or zero — show server picker.
                 _uiState.update { it.copy(
                     playlistServers = serverPairs,
                     selectedPlaylistServer = null,
@@ -776,9 +714,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Load entire playlist: resolve all entries and add to queue.
-     */
     fun loadPlaylist(playlistId: String, mode: String = "replace") {
         viewModelScope.launch {
             val rendererId = activeRendererId.value
@@ -795,7 +730,6 @@ class LibraryViewModel @Inject constructor(
                 val lease = leaseManager.ensureLease(rendererId)
 
                 if (mode == "replace") {
-                    // Clear queue, set entries, then play from the start.
                     transport.send(
                         nodeId = rendererId,
                         cmdType = "queue.set",
@@ -815,7 +749,6 @@ class LibraryViewModel @Inject constructor(
                     )
                     snackbarManager.show("Playing ${queueEntries.size} items")
                 } else {
-                    // Append to existing queue.
                     transport.send(
                         nodeId = rendererId,
                         cmdType = "queue.add",
@@ -833,9 +766,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Enqueue and play a single playlist entry.
-     */
     fun playPlaylistEntry(entry: PlaylistEntryInfo) {
         viewModelScope.launch {
             val rendererId = activeRendererId.value
@@ -865,9 +795,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Add a single playlist entry to the queue.
-     */
     fun queuePlaylistEntry(entry: PlaylistEntryInfo) {
         viewModelScope.launch {
             val rendererId = activeRendererId.value
@@ -891,74 +818,77 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    private fun buildPlaylistEntryMetadata(entry: PlaylistEntryInfo) = buildJsonObject {
-        if (entry.title.isNotEmpty()) put("title", entry.title)
-        if (entry.artist.isNotEmpty()) put("artist", entry.artist)
-        if (entry.album.isNotEmpty()) put("album", entry.album)
-        if (entry.artworkUrl != null) put("artworkUrl", entry.artworkUrl!!)
-        if (entry.durationMs > 0) put("durationMs", entry.durationMs)
+    private fun playlistEntryDisplay(entry: PlaylistEntryInfo): DisplayMetadata? {
+        if (entry.title.isEmpty() && entry.artist.isEmpty() && entry.album.isEmpty()
+            && entry.artworkUrl == null && entry.durationMs <= 0) return null
+        return DisplayMetadata(
+            title = entry.title.ifEmpty { null },
+            artist = entry.artist.ifEmpty { null },
+            album = entry.album.ifEmpty { null },
+            artworkUrl = entry.artworkUrl,
+            durationMs = entry.durationMs.takeIf { it > 0 },
+        )
     }
 
-    /**
-     * Resolve a single playlist entry to a playable QueueEntry with URL.
-     */
     private suspend fun resolvePlaylistEntry(entry: PlaylistEntryInfo): QueueEntry? {
-        val meta = buildPlaylistEntryMetadata(entry)
-
-        // If already resolved with a URL, use it directly.
+        val display = playlistEntryDisplay(entry)
+            ?: entry.ref?.let { libraryRepository.getItem(it) }
         if (entry.url.isNotEmpty()) {
             return QueueEntry(
-                ref = if (entry.itemId.isNotEmpty()) ItemRef(id = entry.itemId) else null,
-                resolved = ResolvedSource(itemId = entry.itemId, url = entry.url, mime = entry.mime),
-                metadata = meta,
+                ref = entry.ref,
+                resolved = ResolvedSource(url = entry.url, mime = entry.mime),
+                display = display,
             )
         }
-
-        // Resolve from library.
-        if (entry.itemId.isNotEmpty()) {
-            val source = libraryRepository.resolveForPlayback(entry.itemId)
-            if (source != null) {
-                return QueueEntry(
-                    ref = ItemRef(id = entry.itemId),
-                    resolved = ResolvedSource(itemId = entry.itemId, url = source.url, mime = source.mime),
-                    metadata = meta,
-                )
-            }
-        }
-        return null
+        val ref = entry.ref ?: return null
+        val source = libraryRepository.resolveSources(ref) ?: return null
+        return QueueEntry(
+            ref = ref,
+            resolved = source,
+            display = display,
+        )
     }
 
-    /**
-     * Resolve a batch of playlist entries to playable QueueEntries.
-     */
     private suspend fun resolvePlaylistEntries(entries: List<PlaylistEntryInfo>): List<QueueEntry> {
-        // Separate already-resolved from needs-resolution.
+        // Backfill display once for every ref-bearing entry that arrived without
+        // one, batched per library. PlaylistRepository.getPlaylist already does
+        // this on the listing path but `loadPlaylist` is also reachable from
+        // contexts (snapshots, deep links, search) that might bypass the listing.
+        val refsNeedingDisplay = entries
+            .mapNotNull { it.ref }
+            .filter { ref -> entries.first { it.ref == ref }.let(::playlistEntryDisplay) == null }
+            .distinct()
+        val fetched: Map<LibraryItemRef, DisplayMetadata> =
+            if (refsNeedingDisplay.isNotEmpty()) libraryRepository.getItems(refsNeedingDisplay)
+            else emptyMap()
+
         val result = mutableListOf<QueueEntry>()
         val needsResolve = mutableListOf<PlaylistEntryInfo>()
 
         for (entry in entries) {
+            val display = playlistEntryDisplay(entry) ?: entry.ref?.let { fetched[it] }
             if (entry.url.isNotEmpty()) {
                 result.add(QueueEntry(
-                    ref = if (entry.itemId.isNotEmpty()) ItemRef(id = entry.itemId) else null,
-                    resolved = ResolvedSource(itemId = entry.itemId, url = entry.url, mime = entry.mime),
-                    metadata = buildPlaylistEntryMetadata(entry),
+                    ref = entry.ref,
+                    resolved = ResolvedSource(url = entry.url, mime = entry.mime),
+                    display = display,
                 ))
-            } else if (entry.itemId.isNotEmpty()) {
+            } else if (entry.ref != null) {
                 needsResolve.add(entry)
             }
         }
 
         if (needsResolve.isNotEmpty()) {
-            val sources = libraryRepository.resolveForPlaybackBatch(needsResolve.map { it.itemId })
+            val refs = needsResolve.mapNotNull { it.ref }
+            val sources = libraryRepository.resolveSourcesBatch(refs)
             for (entry in needsResolve) {
-                val source = sources[entry.itemId]
-                if (source != null) {
-                    result.add(QueueEntry(
-                        ref = ItemRef(id = entry.itemId),
-                        resolved = ResolvedSource(itemId = entry.itemId, url = source.url, mime = source.mime),
-                        metadata = buildPlaylistEntryMetadata(entry),
-                    ))
-                }
+                val ref = entry.ref ?: continue
+                val source = sources[ref] ?: continue
+                result.add(QueueEntry(
+                    ref = ref,
+                    resolved = source,
+                    display = playlistEntryDisplay(entry) ?: fetched[ref],
+                ))
             }
         }
 

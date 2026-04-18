@@ -22,6 +22,7 @@ import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
 import com.mediautopia.app.data.mqtt.MqttTopics
 import com.mediautopia.app.data.protocol.RendererState
+import com.mediautopia.app.data.protocol.artistString
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
@@ -415,12 +416,9 @@ class MqttForegroundService : Service() {
         )
 
         val status = state.playback?.status ?: "stopped"
-        val title = state.current?.metadata?.let { meta ->
-            (meta["title"] as? kotlinx.serialization.json.JsonPrimitive)?.content
-        } ?: "Media Utopia"
-        val artist = state.current?.metadata?.let { meta ->
-            (meta["artist"] as? kotlinx.serialization.json.JsonPrimitive)?.content
-        }
+        val display = state.current?.display
+        val title = display?.title?.takeIf { it.isNotEmpty() } ?: "Media Utopia"
+        val artist = display?.artistString()
 
         return NotificationCompat.Builder(this, MEDIA_CHANNEL_ID)
             .setContentTitle(title)

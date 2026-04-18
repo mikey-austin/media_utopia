@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -709,6 +710,7 @@ private fun ContainerCard(
     onClick: () -> Unit,
     onPlay: () -> Unit,
 ) {
+    val artworkUrl = item.artworkUrl?.takeUnless { isPlaceholderArtwork(it) }
     Column(
         modifier = Modifier
             .clip(CardShape)
@@ -722,9 +724,9 @@ private fun ContainerCard(
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)),
         ) {
-            if (item.artworkUrl != null) {
+            if (artworkUrl != null) {
                 AsyncImage(
-                    model = item.artworkUrl,
+                    model = artworkUrl,
                     contentDescription = item.title,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
@@ -1069,6 +1071,8 @@ private fun ContainerRow(
     onClick: () -> Unit,
     onPlay: () -> Unit,
 ) {
+    val artworkUrl = item.artworkUrl?.takeUnless { isPlaceholderArtwork(it) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1080,29 +1084,24 @@ private fun ContainerRow(
         Box(
             modifier = Modifier
                 .size(48.dp)
-                .clip(ThumbnailShape),
+                .clip(ThumbnailShape)
+                .background(SurfaceContainerHigh),
+            contentAlignment = Alignment.Center,
         ) {
-            if (item.artworkUrl != null) {
+            if (artworkUrl != null) {
                 AsyncImage(
-                    model = item.artworkUrl,
+                    model = artworkUrl,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(SurfaceContainerHigh),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = containerIcon(item.type),
-                        contentDescription = null,
-                        tint = OnSurfaceVariant.copy(alpha = 0.3f),
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
+                Icon(
+                    imageVector = containerIcon(item.type),
+                    contentDescription = null,
+                    tint = OnSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
 
@@ -1127,18 +1126,31 @@ private fun ContainerRow(
             }
         }
 
-        IconButton(
-            onClick = onPlay,
-            modifier = Modifier.size(32.dp),
+        Spacer(modifier = Modifier.width(8.dp))
+
+        // Tinted circular play button so it reads as an actual control,
+        // not a flat glyph against the row.
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Secondary.copy(alpha = 0.15f))
+                .clickable(onClick = onPlay),
+            contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = Icons.Filled.PlayArrow,
                 contentDescription = "Play all",
                 tint = Secondary,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(22.dp),
             )
         }
     }
+}
+
+private fun isPlaceholderArtwork(url: String): Boolean {
+    val lower = url.substringAfterLast('/').lowercase()
+    return lower.startsWith("default.") || lower == "placeholder.png" || lower == "folder.png"
 }
 
 // =============================================================================
@@ -1390,7 +1402,7 @@ private fun PlaylistEntryRow(
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = entry.title.ifEmpty { entry.itemId.takeLast(12) },
+                text = entry.title.ifEmpty { entry.ref?.itemId?.takeLast(12) ?: entry.entryId.takeLast(12) },
                 style = MaterialTheme.typography.bodyMedium,
                 color = OnSurface,
                 maxLines = 1,

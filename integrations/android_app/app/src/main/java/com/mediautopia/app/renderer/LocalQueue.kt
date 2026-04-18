@@ -1,9 +1,12 @@
 package com.mediautopia.app.renderer
 
+import com.mediautopia.app.data.protocol.CurrentItemState
+import com.mediautopia.app.data.protocol.DisplayMetadata
+import com.mediautopia.app.data.protocol.LibraryItemRef
+import com.mediautopia.app.data.protocol.QueueEntry
 import com.mediautopia.app.data.protocol.QueueGetReply
-import com.mediautopia.app.data.protocol.QueueItem
 import com.mediautopia.app.data.protocol.QueueState
-import kotlinx.serialization.json.JsonElement
+import com.mediautopia.app.data.protocol.ResolvedSource
 import java.util.UUID
 import kotlin.random.Random
 
@@ -33,23 +36,10 @@ class LocalQueue {
         repeatMode = repMode
     }
 
-    // -----------------------------------------------------------------
-    // Query
-    // -----------------------------------------------------------------
-
-    /**
-     * Return a snapshot of the queue for queue.get replies.
-     */
     fun snapshot(from: Long, count: Long): QueueGetReply {
         val start = clampIndex(from, entries.size.toLong()).toInt()
         val end = clampIndex(from + count, entries.size.toLong()).toInt()
-        val items = entries.subList(start, end).map { entry ->
-            QueueItem(
-                queueEntryId = entry.queueEntryId,
-                itemId = entry.itemId,
-                metadata = entry.metadata.takeIf { it.isNotEmpty() }?.let { kotlinx.serialization.json.JsonObject(it) },
-            )
-        }
+        val items = entries.subList(start, end).map { it.toWireEntry() }
         return QueueGetReply(revision = revision, index = index, entries = items)
     }
 
@@ -66,10 +56,6 @@ class LocalQueue {
         if (entries.isEmpty() || index < 0 || index >= entries.size) return null
         return entries[index.toInt()]
     }
-
-    // -----------------------------------------------------------------
-    // Mutations
-    // -----------------------------------------------------------------
 
     fun set(startIndex: Long, newEntries: List<LocalQueueEntry>, ifRevision: Long? = null): Boolean {
         if (ifRevision != null && ifRevision != revision) return false
@@ -135,7 +121,6 @@ class LocalQueue {
 
     fun jump(jumpIndex: Long): LocalQueueEntry? {
         val resolvedIndex = if (jumpIndex < 0) {
-            // Negative index counts from end: -1 = last, -2 = second to last, etc.
             (entries.size + jumpIndex).toLong()
         } else jumpIndex
         if (resolvedIndex < 0 || resolvedIndex >= entries.size) return null
@@ -186,14 +171,6 @@ class LocalQueue {
         bumpRevision()
     }
 
-    // -----------------------------------------------------------------
-    // Navigation
-    // -----------------------------------------------------------------
-
-    /**
-     * Move to the next entry respecting repeat mode.
-     * Returns the new entry or null if at end-of-queue without repeat.
-     */
     fun nextEntry(): LocalQueueEntry? {
         if (entries.isEmpty()) return null
         if (repeatMode == "one") return currentEntry()
@@ -208,10 +185,6 @@ class LocalQueue {
         return currentEntry()
     }
 
-    /**
-     * Move to the previous entry respecting repeat mode.
-     * Returns the new entry or null if at start-of-queue without repeat.
-     */
     fun prevEntry(): LocalQueueEntry? {
         if (entries.isEmpty()) return null
         if (repeatMode == "one") return currentEntry()
@@ -226,15 +199,7 @@ class LocalQueue {
         return currentEntry()
     }
 
-    /**
-     * Advance to the next track after the current one finishes. Same as
-     * [nextEntry] but used by the auto-advance path.
-     */
     fun advance(): LocalQueueEntry? = nextEntry()
-
-    // -----------------------------------------------------------------
-    // Internal
-    // -----------------------------------------------------------------
 
     private fun bumpRevision() {
         revision++
@@ -248,10 +213,41 @@ class LocalQueue {
     }
 }
 
+/**
+ * In-memory representation of a queue entry for the local renderer engine.
+ * Carries the structured ref/resolved/display fields so they can be re-emitted
+ * unchanged on snapshot save and queue.get replies.
+ */
 data class LocalQueueEntry(
     val queueEntryId: String = "mu:queueentry:renderer:R:${UUID.randomUUID()}",
-    val itemId: String,
-    val url: String = "",
-    val mime: String = "",
-    val metadata: Map<String, JsonElement> = emptyMap(),
-)
+    val ref: LibraryItemRef? = null,
+    val resolved: ResolvedSource? = null,
+    val display: DisplayMetadata? = null,
+) {
+    val url: String get() = resolved?.url ?: ""
+
+    fun toWireEntry(): QueueEntry = QueueEntry(
+        queueEntryId = queueEntryId,
+        ref = ref,
+        resolved = resolved,
+        display = display,
+    )
+
+    fun toCurrentItemState(): CurrentItemState = CurrentItemState(
+        queueEntryId = queueEntryId,
+        ref = ref,
+        resolved = resolved,
+        display = display,
+    )
+
+    companion object {
+        fun fromWireEntry(entry: QueueEntry): LocalQueueEntry = LocalQueueEntry(
+            queueEntryId = entry.queueEntryId.ifEmpty {
+                "mu:queueentry:renderer:R:${UUID.randomUUID()}"
+            },
+            ref = entry.ref,
+            resolved = entry.resolved,
+            display = entry.display,
+        )
+    }
+}

@@ -4,16 +4,13 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.util.Log
-import com.mediautopia.app.data.cache.MetadataCache
-import com.mediautopia.app.data.cache.ResolvedMetadata
 import com.mediautopia.app.data.mqtt.ConnectionState
 import com.mediautopia.app.data.mqtt.MqttConnectionManager
+import com.mediautopia.app.data.protocol.DisplayMetadata
 import com.mediautopia.app.data.protocol.RendererState
 import com.mediautopia.app.data.protocol.artistString
-import com.mediautopia.app.data.protocol.title
 import com.mediautopia.app.data.cache.SettingsDataStore
 import com.mediautopia.app.data.repository.ActiveRendererRepository
-import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
 import com.mediautopia.app.data.repository.RendererStateRepository
 import com.mediautopia.app.domain.model.Node
@@ -26,14 +23,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 
@@ -65,8 +58,6 @@ class RenderersViewModel @Inject constructor(
     private val activeRendererRepository: ActiveRendererRepository,
     private val rendererStateRepository: RendererStateRepository,
     private val mqttConnectionManager: MqttConnectionManager,
-    private val libraryRepository: LibraryRepository,
-    private val metadataCache: MetadataCache,
     private val leaseManager: LeaseManager,
     private val snackbarManager: SnackbarManager,
     private val settingsDataStore: SettingsDataStore,
@@ -78,8 +69,6 @@ class RenderersViewModel @Inject constructor(
 
     // Per-renderer state observations, keyed by nodeId.
     private val rendererStates = ConcurrentHashMap<String, RendererState>()
-    private val rendererMetadata = ConcurrentHashMap<String, ResolvedMetadata>()
-    private val resolvedItemIds = ConcurrentHashMap<String, String>() // nodeId -> last resolved itemId
     private val _statesUpdated = MutableStateFlow(0L) // bumped to trigger recomposition
     private val _clockTick = MutableStateFlow(0L)     // bumped every second for lease countdowns
     private val observedRenderers = mutableSetOf<String>()
@@ -188,14 +177,12 @@ class RenderersViewModel @Inject constructor(
         isConnected: Boolean,
     ): RendererItem {
         val playbackStatus = state?.playback?.status ?: "stopped"
-        val resolved = rendererMetadata[node.nodeId]
-        val inlineMeta = state?.current?.metadata
-        val title = resolved?.title?.ifBlank { null } ?: inlineMeta?.title()
-        val artist = resolved?.artist?.ifBlank { null } ?: inlineMeta?.artistString()
+        val display: DisplayMetadata? = state?.current?.display
+        val title = display?.title?.takeIf { it.isNotEmpty() }
+        val artist = display?.artistString()
         val leaseOwner = state?.session?.owner
 
         val status: String
-        val formatBadge: String?
         val currentTrack: String?
 
         when (playbackStatus) {
@@ -206,7 +193,6 @@ class RenderersViewModel @Inject constructor(
                 } else {
                     "Playing"
                 }
-                formatBadge = buildFormatBadge(inlineMeta)
                 currentTrack = title
             }
             "paused" -> {
@@ -216,12 +202,10 @@ class RenderersViewModel @Inject constructor(
                 } else {
                     "Paused"
                 }
-                formatBadge = buildFormatBadge(inlineMeta)
                 currentTrack = title
             }
             else -> {
                 status = if (isConnected) "Ready to stream" else "Standby"
-                formatBadge = null
                 currentTrack = null
             }
         }
@@ -232,7 +216,7 @@ class RenderersViewModel @Inject constructor(
             isLocal = false,
             isActive = isActive,
             status = status,
-            formatBadge = formatBadge,
+            formatBadge = null,
             currentTrack = currentTrack,
             leaseOwner = leaseOwner,
             isOwnLease = leaseOwner != null && leaseOwner == appIdentity.value,
@@ -250,34 +234,8 @@ class RenderersViewModel @Inject constructor(
             viewModelScope.launch {
                 rendererStateRepository.observeState(node.nodeId).collect { state ->
                     rendererStates[node.nodeId] = state
-                    // Resolve metadata if current item changed.
-                    val itemId = state.current?.itemId
-                    if (itemId != null && itemId != resolvedItemIds[node.nodeId]) {
-                        resolvedItemIds[node.nodeId] = itemId
-                        resolveMetadata(node.nodeId, itemId)
-                    }
                     _statesUpdated.value = System.currentTimeMillis()
                 }
-            }
-        }
-    }
-
-    private fun resolveMetadata(nodeId: String, itemId: String) {
-        viewModelScope.launch {
-            val cached = metadataCache.get(itemId)
-            if (cached != null) {
-                rendererMetadata[nodeId] = cached
-                _statesUpdated.value = System.currentTimeMillis()
-                return@launch
-            }
-            try {
-                val resolved = libraryRepository.resolve(itemId)
-                if (resolved != null) {
-                    rendererMetadata[nodeId] = resolved
-                    _statesUpdated.value = System.currentTimeMillis()
-                }
-            } catch (e: Exception) {
-                Log.w(tag, "Failed to resolve metadata for $itemId: ${e.message}")
             }
         }
     }
@@ -333,22 +291,4 @@ class RenderersViewModel @Inject constructor(
         }
     }
 
-    private fun buildFormatBadge(metadata: Map<String, JsonElement>?): String? {
-        metadata ?: return null
-        val bitDepth = metadata["bitDepth"]?.asPrimitiveOrNull()
-        val sampleRate = metadata["sampleRate"]?.asPrimitiveOrNull()
-        if (bitDepth != null && sampleRate != null) {
-            val rate = sampleRate.replace("[^0-9]".toRegex(), "")
-            val rateVal = rate.toLongOrNull() ?: return null
-            val rateStr = if (rateVal >= 1000) "${rateVal / 1000}KHZ" else "${rateVal}HZ"
-            return "${bitDepth}-BIT / $rateStr"
-        }
-        return null
-    }
-
-    companion object {
-        private fun JsonElement?.asPrimitiveOrNull(): String? {
-            return (this as? JsonPrimitive)?.contentOrNull
-        }
-    }
 }

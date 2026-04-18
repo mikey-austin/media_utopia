@@ -518,15 +518,7 @@ class LocalRendererService(
     }
 
     private suspend fun saveSnapshot(eng: LocalRendererEngine, state: RendererState) {
-        val entries = eng.queue.entries.map { e ->
-            com.mediautopia.app.data.cache.QueueEntrySnapshot(
-                queueEntryId = e.queueEntryId,
-                itemId = e.itemId,
-                url = e.url,
-                mime = e.mime,
-                metadata = e.metadata,
-            )
-        }
+        val entries = eng.queue.entries.map { it.toWireEntry() }
         val snapshot = com.mediautopia.app.data.cache.QueueSnapshot(
             entries = entries,
             index = eng.queue.index,

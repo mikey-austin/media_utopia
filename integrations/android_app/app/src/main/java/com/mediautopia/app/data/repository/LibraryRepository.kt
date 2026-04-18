@@ -2,28 +2,27 @@ package com.mediautopia.app.data.repository
 
 import android.util.Log
 import com.mediautopia.app.data.cache.MetadataCache
-import com.mediautopia.app.data.cache.ResolvedMetadata
+import com.mediautopia.app.data.protocol.DisplayMetadata
 import com.mediautopia.app.data.protocol.LibraryBrowseBody
-import com.mediautopia.app.data.protocol.LibraryResolveBatchBody
-import com.mediautopia.app.data.protocol.LibraryResolveBatchReply
-import com.mediautopia.app.data.protocol.LibraryResolveBody
-import com.mediautopia.app.data.protocol.LibraryResolveReply
+import com.mediautopia.app.data.protocol.LibraryGetItemBody
+import com.mediautopia.app.data.protocol.LibraryGetItemReply
+import com.mediautopia.app.data.protocol.LibraryGetItemsBody
+import com.mediautopia.app.data.protocol.LibraryGetItemsReply
+import com.mediautopia.app.data.protocol.LibraryItemRef
+import com.mediautopia.app.data.protocol.LibraryResolveSourcesBatchBody
+import com.mediautopia.app.data.protocol.LibraryResolveSourcesBatchReply
+import com.mediautopia.app.data.protocol.LibraryResolveSourcesBody
+import com.mediautopia.app.data.protocol.LibraryResolveSourcesReply
 import com.mediautopia.app.data.protocol.LibrarySearchBody
-import com.mediautopia.app.data.protocol.album
-import com.mediautopia.app.data.protocol.artistString
-import com.mediautopia.app.data.protocol.artworkUrl
-import com.mediautopia.app.data.protocol.format
-import com.mediautopia.app.data.protocol.title
+import com.mediautopia.app.data.protocol.ResolvedSource
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -36,6 +35,11 @@ data class BrowseResult(
     val hasMore: Boolean,
 )
 
+/**
+ * BrowseItem is the controller's view of one library entry. For non-container
+ * items [ref] is the structured wire reference used to enqueue or resolve.
+ * Containers carry their own [id]/[type] for in-library navigation.
+ */
 data class BrowseItem(
     val id: String,
     val type: String,
@@ -43,6 +47,8 @@ data class BrowseItem(
     val subtitle: String = "",
     val artworkUrl: String? = null,
     val isContainer: Boolean = false,
+    val ref: LibraryItemRef? = null,
+    val display: DisplayMetadata? = null,
     val metadata: Map<String, Any> = emptyMap(),
 )
 
@@ -56,19 +62,11 @@ class LibraryRepository @Inject constructor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    // Container type markers (case-insensitive match).
     private val containerPatterns = listOf("container", "artist", "album", "folder")
-
-    // Types that are explicitly containers despite not matching patterns above.
     private val explicitContainerTypes = setOf("podcast")
-
-    // Types that are explicitly NOT containers even if they match a pattern.
     private val explicitLeafTypes = setOf("podcastepisode")
 
-    /**
-     * Get cached metadata for an item (after resolve has been called).
-     */
-    fun getCachedMetadata(itemId: String): ResolvedMetadata? = metadataCache.get(itemId)
+    fun getCachedDisplay(ref: LibraryItemRef): DisplayMetadata? = metadataCache.get(ref)
 
     // -------------------------------------------------------------------------
     // Browse
@@ -102,7 +100,7 @@ class LibraryRepository @Inject constructor(
             return BrowseResult(items = emptyList(), hasMore = false)
         }
 
-        return parseBrowseReply(reply.body!!, count)
+        return parseBrowseReply(reply.body!!, libraryNode, count)
     }
 
     // -------------------------------------------------------------------------
@@ -137,232 +135,152 @@ class LibraryRepository @Inject constructor(
             return emptyList()
         }
 
-        return parseBrowseReply(reply.body!!, count).items
+        return parseBrowseReply(reply.body!!, libraryNode, count).items
     }
 
     // -------------------------------------------------------------------------
-    // Resolve (single)
+    // Display metadata (catalog only)
     // -------------------------------------------------------------------------
 
-    suspend fun resolve(itemId: String, libraryNodeId: String? = null): ResolvedMetadata? {
-        // Check cache first.
-        metadataCache.get(itemId)?.let { return it }
+    suspend fun getItem(ref: LibraryItemRef): DisplayMetadata? {
+        metadataCache.get(ref)?.let { return it }
 
-        val libraryNode = libraryNodeId ?: findLibraryForItem(itemId) ?: return null
-        // Strip the lib:{libraryNodeId}: prefix for the resolve command.
-        val localItemId = stripLibPrefix(itemId, libraryNode)
-
-        val body = json.encodeToJsonElement(
-            LibraryResolveBody(itemId = localItemId, metadataOnly = true)
-        )
+        val body = json.encodeToJsonElement(LibraryGetItemBody(ref = ref))
 
         val reply = try {
             transport.send(
-                nodeId = libraryNode,
-                cmdType = "library.resolve",
+                nodeId = ref.libraryId,
+                cmdType = "library.getItem",
                 body = body,
             )
         } catch (e: Exception) {
-            Log.e(tag, "resolve failed for $itemId: ${e.message}")
-            metadataCache.markFailed(itemId)
+            Log.e(tag, "getItem failed for ${ref.itemId}: ${e.message}")
+            metadataCache.markFailed(ref)
             return null
         }
 
         if (!reply.ok || reply.body == null) {
-            Log.w(tag, "resolve reply not ok for $itemId: ${reply.err?.message}")
-            metadataCache.markFailed(itemId)
+            Log.w(tag, "getItem reply not ok for ${ref.itemId}: ${reply.err?.message}")
+            metadataCache.markFailed(ref)
             return null
         }
 
-        val resolveReply = json.decodeFromJsonElement<LibraryResolveReply>(reply.body!!)
-        val metadata = parseResolvedMetadata(resolveReply.metadata)
-        metadataCache.put(itemId, metadata)
-        return metadata
+        val parsed = json.decodeFromJsonElement<LibraryGetItemReply>(reply.body!!)
+        val display = parsed.display ?: DisplayMetadata()
+        metadataCache.put(ref, display)
+        return display
     }
 
-    // -------------------------------------------------------------------------
-    // Resolve batch
-    // -------------------------------------------------------------------------
+    suspend fun getItems(refs: List<LibraryItemRef>): Map<LibraryItemRef, DisplayMetadata> {
+        val result = mutableMapOf<LibraryItemRef, DisplayMetadata>()
+        val uncached = mutableListOf<LibraryItemRef>()
 
-    suspend fun resolveBatch(itemIds: List<String>): Map<String, ResolvedMetadata> {
-        val result = mutableMapOf<String, ResolvedMetadata>()
-        val uncached = mutableListOf<String>()
-
-        // Collect cached entries and identify uncached.
-        for (id in itemIds) {
-            val cached = metadataCache.get(id)
+        for (ref in refs) {
+            val cached = metadataCache.get(ref)
             if (cached != null) {
-                result[id] = cached
-            } else if (metadataCache.shouldRetry(id)) {
-                uncached.add(id)
+                result[ref] = cached
+            } else if (metadataCache.shouldRetry(ref)) {
+                uncached.add(ref)
             }
         }
 
         if (uncached.isEmpty()) return result
 
-        // Group uncached items by their library node.
-        val byLibrary = mutableMapOf<String, MutableList<String>>()
-        for (id in uncached) {
-            val lib = findLibraryForItem(id) ?: continue
-            byLibrary.getOrPut(lib) { mutableListOf() }.add(id)
-        }
+        val byLibrary = uncached.groupBy { it.libraryId }
 
-        // Resolve each library's items in batches of 20.
-        for ((libraryNode, items) in byLibrary) {
-        for (batch in items.chunked(20)) {
-            // Strip lib: prefix for the resolve command.
-            val localIds = batch.map { stripLibPrefix(it, libraryNode) }
-            // Build reverse map: local ID -> full item ID.
-            val localToFull = localIds.zip(batch).toMap()
+        for ((libraryNode, libRefs) in byLibrary) {
+            for (batch in libRefs.chunked(20)) {
+                val body = json.encodeToJsonElement(LibraryGetItemsBody(refs = batch))
 
-            val body = json.encodeToJsonElement(
-                LibraryResolveBatchBody(itemIds = localIds, metadataOnly = true)
-            )
-
-            val reply = try {
-                transport.send(
-                    nodeId = libraryNode,
-                    cmdType = "library.resolveBatch",
-                    body = body,
-                )
-            } catch (e: Exception) {
-                Log.e(tag, "resolveBatch failed: ${e.message}")
-                batch.forEach { metadataCache.markFailed(it) }
-                continue
-            }
-
-            if (!reply.ok || reply.body == null) {
-                Log.w(tag, "resolveBatch reply not ok: ${reply.err?.message}")
-                batch.forEach { metadataCache.markFailed(it) }
-                continue
-            }
-
-            val batchReply = json.decodeFromJsonElement<LibraryResolveBatchReply>(reply.body!!)
-            val batchResults = mutableMapOf<String, ResolvedMetadata>()
-
-            for (item in batchReply.items) {
-                // Map local ID back to full item ID.
-                val fullId = localToFull[item.itemId] ?: item.itemId
-                if (item.err != null) {
-                    metadataCache.markFailed(fullId)
+                val reply = try {
+                    transport.send(
+                        nodeId = libraryNode,
+                        cmdType = "library.getItems",
+                        body = body,
+                    )
+                } catch (e: Exception) {
+                    Log.e(tag, "getItems failed: ${e.message}")
+                    batch.forEach { metadataCache.markFailed(it) }
                     continue
                 }
-                val metadata = parseResolvedMetadata(item.metadata)
-                batchResults[fullId] = metadata
-                result[fullId] = metadata
-            }
 
-            metadataCache.putAll(batchResults)
+                if (!reply.ok || reply.body == null) {
+                    Log.w(tag, "getItems reply not ok: ${reply.err?.message}")
+                    batch.forEach { metadataCache.markFailed(it) }
+                    continue
+                }
+
+                val batchReply = json.decodeFromJsonElement<LibraryGetItemsReply>(reply.body!!)
+                val batchResults = mutableMapOf<LibraryItemRef, DisplayMetadata>()
+                for (item in batchReply.items) {
+                    if (item.err != null) {
+                        metadataCache.markFailed(item.ref)
+                        continue
+                    }
+                    val display = item.display ?: DisplayMetadata()
+                    batchResults[item.ref] = display
+                    result[item.ref] = display
+                }
+                metadataCache.putAll(batchResults)
+            }
         }
-        } // end byLibrary loop
 
         return result
     }
 
     // -------------------------------------------------------------------------
-    // Resolve for playback (returns source URLs)
+    // Source resolution (playback URLs)
     // -------------------------------------------------------------------------
 
-    data class PlaybackSource(
-        val itemId: String,
-        val url: String,
-        val mime: String = "",
-    )
-
-    /**
-     * Resolve a single item for playback, returning the source URL.
-     */
-    suspend fun resolveForPlayback(itemId: String, libraryNodeId: String? = null): PlaybackSource? {
-        val libraryNode = libraryNodeId ?: findLibraryForItem(itemId) ?: return null
-        val localItemId = stripLibPrefix(itemId, libraryNode)
-
-        val body = json.encodeToJsonElement(
-            LibraryResolveBody(itemId = localItemId, metadataOnly = false)
-        )
+    suspend fun resolveSources(ref: LibraryItemRef): ResolvedSource? {
+        val body = json.encodeToJsonElement(LibraryResolveSourcesBody(ref = ref))
 
         val reply = try {
             transport.send(
-                nodeId = libraryNode,
-                cmdType = "library.resolve",
+                nodeId = ref.libraryId,
+                cmdType = "library.resolveSources",
                 body = body,
             )
         } catch (e: Exception) {
-            Log.e(tag, "resolveForPlayback failed for $itemId: ${e.message}")
+            Log.e(tag, "resolveSources failed for ${ref.itemId}: ${e.message}")
             return null
         }
 
         if (!reply.ok || reply.body == null) {
-            Log.w(tag, "resolveForPlayback reply not ok for $itemId: ${reply.err?.message}")
+            Log.w(tag, "resolveSources reply not ok for ${ref.itemId}: ${reply.err?.message}")
             return null
         }
 
-        val resolveReply = json.decodeFromJsonElement<LibraryResolveReply>(reply.body!!)
-
-        // Cache metadata as a side effect.
-        val metadata = parseResolvedMetadata(resolveReply.metadata)
-        metadataCache.put(itemId, metadata)
-
-        val source = resolveReply.sources?.firstOrNull() ?: return null
-        return PlaybackSource(
-            itemId = itemId,
-            url = source.url,
-            mime = source.mime,
-        )
+        val parsed = json.decodeFromJsonElement<LibraryResolveSourcesReply>(reply.body!!)
+        return parsed.sources.firstOrNull()
     }
 
-    /**
-     * Resolve a batch of items for playback, returning source URLs.
-     */
-    suspend fun resolveForPlaybackBatch(
-        itemIds: List<String>,
-        libraryNodeId: String? = null,
-    ): Map<String, PlaybackSource> {
-        val result = mutableMapOf<String, PlaybackSource>()
+    suspend fun resolveSourcesBatch(refs: List<LibraryItemRef>): Map<LibraryItemRef, ResolvedSource> {
+        val result = mutableMapOf<LibraryItemRef, ResolvedSource>()
+        val byLibrary = refs.groupBy { it.libraryId }
 
-        // Group by library node.
-        val byLibrary = mutableMapOf<String, MutableList<String>>()
-        for (id in itemIds) {
-            val lib = libraryNodeId ?: findLibraryForItem(id) ?: continue
-            byLibrary.getOrPut(lib) { mutableListOf() }.add(id)
-        }
-
-        for ((libraryNode, items) in byLibrary) {
-            for (batch in items.chunked(20)) {
-                val localIds = batch.map { stripLibPrefix(it, libraryNode) }
-                val localToFull = localIds.zip(batch).toMap()
-
-                val body = json.encodeToJsonElement(
-                    LibraryResolveBatchBody(itemIds = localIds, metadataOnly = false)
-                )
+        for ((libraryNode, libRefs) in byLibrary) {
+            for (batch in libRefs.chunked(20)) {
+                val body = json.encodeToJsonElement(LibraryResolveSourcesBatchBody(refs = batch))
 
                 val reply = try {
                     transport.send(
                         nodeId = libraryNode,
-                        cmdType = "library.resolveBatch",
+                        cmdType = "library.resolveSourcesBatch",
                         body = body,
                     )
                 } catch (e: Exception) {
-                    Log.e(tag, "resolveForPlaybackBatch failed: ${e.message}")
+                    Log.e(tag, "resolveSourcesBatch failed: ${e.message}")
                     continue
                 }
 
                 if (!reply.ok || reply.body == null) continue
 
-                val batchReply = json.decodeFromJsonElement<LibraryResolveBatchReply>(reply.body!!)
+                val batchReply = json.decodeFromJsonElement<LibraryResolveSourcesBatchReply>(reply.body!!)
                 for (item in batchReply.items) {
-                    val fullId = localToFull[item.itemId] ?: item.itemId
                     if (item.err != null) continue
-
-                    // Cache metadata.
-                    val metadata = parseResolvedMetadata(item.metadata)
-                    metadataCache.put(fullId, metadata)
-
-                    val source = item.sources?.firstOrNull() ?: continue
-                    result[fullId] = PlaybackSource(
-                        itemId = fullId,
-                        url = source.url,
-                        mime = source.mime,
-                    )
+                    val source = item.sources.firstOrNull() ?: continue
+                    result[item.ref] = source
                 }
             }
         }
@@ -380,7 +298,6 @@ class LibraryRepository @Inject constructor(
             Log.w(tag, "No library nodes available")
             return null
         }
-        // Prefer filesystem library (no auth needed), then jellyfin.
         val providerPriority = listOf("filesystem", "jellyfin")
         val preferred = providerPriority.firstNotNullOfOrNull { provider ->
             libraries.firstOrNull { it.nodeId.contains(provider) }
@@ -388,39 +305,11 @@ class LibraryRepository @Inject constructor(
         return (preferred ?: libraries.first()).nodeId
     }
 
-    /**
-     * Extract the library node ID from an item ID.
-     * Item IDs have the format `lib:{libraryNodeId}:{itemHash}`.
-     * The library node ID itself contains colons, so we match against
-     * known library nodes.
-     */
-    suspend fun findLibraryForItem(itemId: String): String? {
-        if (!itemId.startsWith("lib:")) return findLibraryNode()
-        val stripped = itemId.removePrefix("lib:")
-        val libraries = nodeRepository.libraries.first()
-        for (lib in libraries) {
-            if (stripped.startsWith(lib.nodeId + ":")) {
-                return lib.nodeId
-            }
-        }
-        return libraries.firstOrNull()?.nodeId
-    }
-
-    /**
-     * Strip the `lib:{libraryNodeId}:` prefix from an external item reference,
-     * returning the local item ID that the library expects.
-     * e.g., `lib:mu:library:filesystem:venus:music:audio:abc123` -> `audio:abc123`
-     */
-    private fun stripLibPrefix(itemId: String, libraryNodeId: String): String {
-        val prefix = "lib:$libraryNodeId:"
-        return if (itemId.startsWith(prefix)) {
-            itemId.removePrefix(prefix)
-        } else {
-            itemId
-        }
-    }
-
-    private fun parseBrowseReply(body: JsonElement, requestedCount: Long): BrowseResult {
+    private fun parseBrowseReply(
+        body: JsonElement,
+        libraryNodeId: String,
+        requestedCount: Long,
+    ): BrowseResult {
         val obj = body.jsonObject
         val itemsArray = obj["items"]?.jsonArray ?: JsonArray(emptyList())
         val total = obj["total"]?.jsonPrimitive?.longOrNull ?: 0
@@ -428,7 +317,7 @@ class LibraryRepository @Inject constructor(
         val count = obj["count"]?.jsonPrimitive?.longOrNull ?: itemsArray.size.toLong()
 
         val items = itemsArray.map { element ->
-            parseLibraryItem(element.jsonObject)
+            parseLibraryItem(element.jsonObject, libraryNodeId)
         }
 
         val hasMore = (start + count) < total
@@ -436,7 +325,7 @@ class LibraryRepository @Inject constructor(
         return BrowseResult(items = items, hasMore = hasMore)
     }
 
-    private fun parseLibraryItem(obj: JsonObject): BrowseItem {
+    private fun parseLibraryItem(obj: JsonObject, libraryNodeId: String): BrowseItem {
         val itemId = obj["itemId"]?.jsonPrimitive?.contentOrNull ?: ""
         val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: ""
         val type = obj["type"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -459,20 +348,38 @@ class LibraryRepository @Inject constructor(
             }
         }
 
-        // Build subtitle from available metadata.
         val subtitle = when {
             artists.isNotEmpty() -> artists.joinToString(", ")
             overview.isNotEmpty() -> overview
             else -> ""
         }
 
-        // Metadata map for downstream use.
         val metadata = buildMap<String, Any> {
             if (artists.isNotEmpty()) put("artist", artists.joinToString(", "))
             if (album.isNotEmpty()) put("album", album)
             if (durationMs > 0) put("durationMs", durationMs)
             if (mediaType.isNotEmpty()) put("mediaType", mediaType)
             if (imageUrl != null) put("artworkUrl", imageUrl)
+        }
+
+        val ref = if (!isContainer && itemId.isNotEmpty()) {
+            LibraryItemRef(libraryId = libraryNodeId, itemId = itemId)
+        } else null
+
+        val display = if (!isContainer) {
+            DisplayMetadata(
+                title = name.ifEmpty { null },
+                artist = artists.joinToString(", ").ifEmpty { null },
+                artists = artists.takeIf { it.isNotEmpty() },
+                album = album.ifEmpty { null },
+                artworkUrl = imageUrl,
+                durationMs = durationMs.takeIf { it > 0 },
+                mediaType = mediaType.ifEmpty { null },
+            )
+        } else null
+
+        if (ref != null && display != null) {
+            metadataCache.put(ref, display)
         }
 
         return BrowseItem(
@@ -482,36 +389,9 @@ class LibraryRepository @Inject constructor(
             subtitle = subtitle,
             artworkUrl = imageUrl,
             isContainer = isContainer,
+            ref = ref,
+            display = display,
             metadata = metadata,
         )
-    }
-
-    private fun parseResolvedMetadata(
-        metadata: Map<String, JsonElement>?,
-    ): ResolvedMetadata {
-        if (metadata == null) return ResolvedMetadata()
-
-        return ResolvedMetadata(
-            title = metadata.title() ?: "",
-            artist = metadata.artistString() ?: "",
-            album = metadata.album() ?: "",
-            artworkUrl = metadata.artworkUrl(),
-            format = metadata.format() ?: "",
-            sampleRate = metadata.intValue("sampleRate"),
-            bitDepth = metadata.intValue("bitDepth"),
-            durationMs = metadata.longValue("durationMs"),
-        )
-    }
-
-    private fun Map<String, JsonElement>.stringValue(key: String): String? {
-        return (this[key] as? JsonPrimitive)?.contentOrNull
-    }
-
-    private fun Map<String, JsonElement>.intValue(key: String): Int {
-        return (this[key] as? JsonPrimitive)?.intOrNull ?: 0
-    }
-
-    private fun Map<String, JsonElement>.longValue(key: String): Long {
-        return (this[key] as? JsonPrimitive)?.longOrNull ?: 0
     }
 }

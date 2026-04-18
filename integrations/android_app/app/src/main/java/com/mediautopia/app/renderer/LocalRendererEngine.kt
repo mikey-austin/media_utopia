@@ -91,15 +91,7 @@ class LocalRendererEngine(
 
     fun restoreFromSnapshot(snapshot: com.mediautopia.app.data.cache.QueueSnapshot) {
         engineLock.write {
-            val entries = snapshot.entries.map { e ->
-                LocalQueueEntry(
-                    queueEntryId = e.queueEntryId,
-                    itemId = e.itemId,
-                    url = e.url,
-                    mime = e.mime,
-                    metadata = e.metadata,
-                )
-            }
+            val entries = snapshot.entries.map { LocalQueueEntry.fromWireEntry(it) }
             queue.entries = entries.toMutableList()
             queue.index = snapshot.index.coerceIn(0, (entries.size - 1).toLong().coerceAtLeast(0))
             queue.restoreState(
@@ -117,11 +109,7 @@ class LocalRendererEngine(
             if (entries.isNotEmpty()) {
                 val entry = queue.currentEntry()
                 if (entry != null) {
-                    currentItem = CurrentItemState(
-                        queueEntryId = entry.queueEntryId,
-                        itemId = entry.itemId,
-                        metadata = entry.metadata.takeIf { it.isNotEmpty() }?.let { kotlinx.serialization.json.JsonObject(it) },
-                    )
+                    currentItem = entry.toCurrentItemState()
                 }
             }
 
@@ -573,11 +561,7 @@ class LocalRendererEngine(
         }
         driver.play(url, 0)
         playbackStatus = "playing"
-        currentItem = CurrentItemState(
-            queueEntryId = entry.queueEntryId,
-            itemId = entry.itemId,
-            metadata = entry.metadata.takeIf { it.isNotEmpty() }?.let { kotlinx.serialization.json.JsonObject(it) },
-        )
+        currentItem = entry.toCurrentItemState()
         bumpState()
         return ackReply(cmd)
     }
@@ -617,11 +601,7 @@ class LocalRendererEngine(
             return
         }
         driver.play(url, 0)
-        currentItem = CurrentItemState(
-            queueEntryId = next.queueEntryId,
-            itemId = next.itemId,
-            metadata = next.metadata.takeIf { it.isNotEmpty() }?.let { kotlinx.serialization.json.JsonObject(it) },
-        )
+        currentItem = next.toCurrentItemState()
         bumpState()
     }
 
@@ -698,18 +678,7 @@ class LocalRendererEngine(
     // -----------------------------------------------------------------
 
     private fun toLocalEntries(entries: List<com.mediautopia.app.data.protocol.QueueEntry>): List<LocalQueueEntry> {
-        return entries.map { entry ->
-            val itemId = entry.ref?.id ?: entry.resolved?.url ?: ""
-            val url = entry.resolved?.url ?: ""
-            val mime = entry.resolved?.mime ?: ""
-            val meta: Map<String, kotlinx.serialization.json.JsonElement> = entry.metadata ?: emptyMap()
-            LocalQueueEntry(
-                itemId = itemId,
-                url = url,
-                mime = mime,
-                metadata = meta,
-            )
-        }
+        return entries.map { LocalQueueEntry.fromWireEntry(it) }
     }
 
     // -----------------------------------------------------------------

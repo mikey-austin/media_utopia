@@ -5,23 +5,23 @@ import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.mediautopia.app.data.protocol.QueueEntry
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import javax.inject.Inject
 import javax.inject.Singleton
 
 private val Context.queueDataStore by preferencesDataStore(name = "mu_queue")
 
 /**
- * Persisted queue snapshot. Compatible with the MU snapshot protocol format
- * so it can later be used for snapshot.save/restore.
+ * Persisted queue snapshot. Mirrors the MU snapshot wire format so it
+ * can later be uploaded via snapshot.save without conversion.
  */
 @Serializable
 data class QueueSnapshot(
-    val entries: List<QueueEntrySnapshot> = emptyList(),
+    val entries: List<QueueEntry> = emptyList(),
     val index: Long = 0,
     val revision: Long = 0,
     val shuffle: Boolean = false,
@@ -31,15 +31,6 @@ data class QueueSnapshot(
     val mute: Boolean = false,
     val positionMs: Long = 0,
     val playbackStatus: String = "stopped",
-)
-
-@Serializable
-data class QueueEntrySnapshot(
-    val queueEntryId: String,
-    val itemId: String,
-    val url: String = "",
-    val mime: String = "",
-    val metadata: Map<String, JsonElement> = emptyMap(),
 )
 
 @Singleton

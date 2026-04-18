@@ -46,8 +46,10 @@ fun shouldDedup(cmdType: String): Boolean {
     if (cmdType.startsWith("session.")) return false
     return when (cmdType) {
         "queue.get",
-        "library.browse", "library.search", "library.resolve",
-        "library.resolveBatch", "library.rescan",
+        "library.browse", "library.search",
+        "library.getItem", "library.getItems",
+        "library.resolveSources", "library.resolveSourcesBatch",
+        "library.rescan",
         "playlist.list", "playlist.get",
         "snapshot.list", "snapshot.get",
         -> false

@@ -3,14 +3,10 @@ package com.mediautopia.app.ui.screen.queue
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.mediautopia.app.data.cache.MetadataCache
-import com.mediautopia.app.data.cache.ResolvedMetadata
+import com.mediautopia.app.data.protocol.LibraryItemRef
+import com.mediautopia.app.data.protocol.QueueEntry
 import com.mediautopia.app.data.protocol.QueueGetBody
-import com.mediautopia.app.data.protocol.artistString
-import com.mediautopia.app.data.protocol.artworkUrl
-import com.mediautopia.app.data.protocol.title
 import com.mediautopia.app.data.protocol.QueueGetReply
-import com.mediautopia.app.data.protocol.QueueItem
 import com.mediautopia.app.data.protocol.QueueMoveBody
 import com.mediautopia.app.data.protocol.QueueRemoveBody
 import com.mediautopia.app.data.protocol.QueueRepeatBody
@@ -18,6 +14,7 @@ import com.mediautopia.app.data.protocol.QueueSetShuffleBody
 import com.mediautopia.app.data.protocol.QueueShuffleBody
 import com.mediautopia.app.data.protocol.PlaybackPlayBody
 import com.mediautopia.app.data.protocol.RendererState
+import com.mediautopia.app.data.protocol.artistString
 import com.mediautopia.app.data.repository.ActiveRendererRepository
 import com.mediautopia.app.data.repository.LibraryRepository
 import com.mediautopia.app.data.repository.NodeRepository
@@ -37,12 +34,7 @@ import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.longOrNull
 import javax.inject.Inject
 
 data class QueueUiState(
@@ -53,11 +45,12 @@ data class QueueUiState(
     val shuffle: Boolean = false,
     val repeatMode: String = "",
     val isLoading: Boolean = true,
+    val canMutate: Boolean = true,
 )
 
 data class QueueEntryUi(
     val queueEntryId: String,
-    val itemId: String,
+    val ref: LibraryItemRef? = null,
     val index: Int,
     val title: String,
     val artist: String,
@@ -73,7 +66,6 @@ class QueueViewModel @Inject constructor(
     private val rendererStateRepository: RendererStateRepository,
     private val nodeRepository: NodeRepository,
     private val libraryRepository: LibraryRepository,
-    private val metadataCache: MetadataCache,
     private val leaseManager: LeaseManager,
     private val transport: com.mediautopia.app.data.transport.TransportRouter,
 ) : ViewModel() {
@@ -99,16 +91,23 @@ class QueueViewModel @Inject constructor(
         rendererState,
         _entries,
         _isLoading,
-    ) { state, entries, isLoading ->
+        leaseManager.leaseInfos,
+        activeRendererId,
+    ) { state, entries, isLoading, leaseInfos, activeId ->
         val queue = state?.queue
         val currentIndex = queue?.index ?: 0
 
-        // Mark the active entry.
         val markedEntries = entries.mapIndexed { i, entry ->
             entry.copy(isActive = i.toLong() == currentIndex)
         }
 
         val totalDurationMs = markedEntries.sumOf { it.durationMs }
+
+        // Mutations (remove, move, clear, shuffle, repeat) require holding
+        // the renderer's lease. Without it the renderer rejects the command,
+        // which would desync the optimistic local state from the server.
+        val leaseOwner = state?.session?.owner
+        val canMutate = leaseOwner == null || leaseInfos[activeId] != null
 
         QueueUiState(
             entries = markedEntries,
@@ -118,6 +117,7 @@ class QueueViewModel @Inject constructor(
             shuffle = queue?.shuffle ?: false,
             repeatMode = queue?.repeatMode ?: "",
             isLoading = isLoading,
+            canMutate = canMutate,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -125,8 +125,9 @@ class QueueViewModel @Inject constructor(
         initialValue = QueueUiState(),
     )
 
+    private fun canMutateNow(): Boolean = uiState.value.canMutate
+
     init {
-        // Watch for queue revision changes to trigger fetches.
         viewModelScope.launch {
             rendererState
                 .map { it?.queue?.revision }
@@ -139,7 +140,6 @@ class QueueViewModel @Inject constructor(
                 }
         }
 
-        // Reload when renderer changes.
         viewModelScope.launch {
             activeRendererRepository.activeRendererId
                 .distinctUntilChanged()
@@ -152,10 +152,6 @@ class QueueViewModel @Inject constructor(
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Queue fetching
-    // -------------------------------------------------------------------------
-
     private fun fetchQueue() = fetchQueueFor(activeRendererId.value)
 
     private fun fetchQueueFor(rendererId: String) {
@@ -165,7 +161,7 @@ class QueueViewModel @Inject constructor(
                 Log.d(tag, "fetchQueueFor: rendererId=$rendererId")
 
                 val body = json.encodeToJsonElement(
-                    QueueGetBody(from = 0, count = 200, resolve = "metadata")
+                    QueueGetBody(from = 0, count = 200, resolve = "")
                 )
                 val reply = transport.send(
                     nodeId = rendererId,
@@ -179,15 +175,14 @@ class QueueViewModel @Inject constructor(
                     return@launch
                 }
 
-                val queueReply = json.decodeFromJsonElement<QueueGetReply>(reply.body!!)
+                val queueReply = json.decodeFromJsonElement(
+                    QueueGetReply.serializer(),
+                    reply.body!!,
+                )
                 Log.d(tag, "queue.get success: ${queueReply.entries.size} entries, rev=${queueReply.revision}")
                 lastRevision = queueReply.revision
 
-                val entries = buildEntries(queueReply.entries)
-                _entries.value = entries
-
-                // Resolve missing metadata in background.
-                resolveMissingMetadata(rendererId, queueReply.entries, entries)
+                _entries.value = buildEntries(queueReply.entries)
             } catch (e: Exception) {
                 Log.e(tag, "fetchQueue failed: ${e.message}")
             } finally {
@@ -196,32 +191,19 @@ class QueueViewModel @Inject constructor(
         }
     }
 
-    private fun buildEntries(items: List<QueueItem>): List<QueueEntryUi> {
+    private fun buildEntries(items: List<QueueEntry>): List<QueueEntryUi> {
         return items.mapIndexed { index, item ->
-            // Priority: inline metadata from response, then cache.
-            val inlineMeta = item.metadata
-            val cached = metadataCache.get(item.itemId)
-
-            val title = inlineMeta?.title()
-                ?: cached?.title
-                ?: item.itemId.substringAfterLast(":")
-            val artist = inlineMeta?.artistString()
-                ?: cached?.artist
-                ?: ""
-            val artworkUrl = inlineMeta?.artworkUrl()
-                ?: cached?.artworkUrl
-            val durationMs = inlineMeta?.longValue("durationMs")
-                ?: cached?.durationMs
-                ?: 0
-
-            // Cache inline metadata if present and not already cached.
-            if (inlineMeta != null && cached == null) {
-                cacheFromInline(item.itemId, inlineMeta)
-            }
+            val display = item.display
+            val title = display?.title?.takeIf { it.isNotEmpty() }
+                ?: item.ref?.itemId?.substringAfterLast(":")
+                ?: "Unknown"
+            val artist = display?.artistString() ?: ""
+            val artworkUrl = display?.artworkUrl
+            val durationMs = display?.durationMs ?: 0L
 
             QueueEntryUi(
                 queueEntryId = item.queueEntryId,
-                itemId = item.itemId,
+                ref = item.ref,
                 index = index,
                 title = title,
                 artist = artist,
@@ -231,64 +213,14 @@ class QueueViewModel @Inject constructor(
         }
     }
 
-    private fun cacheFromInline(itemId: String, metadata: Map<String, JsonElement>) {
-        val resolved = ResolvedMetadata(
-            title = metadata.stringValue("title") ?: "",
-            artist = metadata.stringValue("artist") ?: "",
-            album = metadata.stringValue("album") ?: "",
-            artworkUrl = metadata.stringValue("artworkUrl"),
-            format = metadata.stringValue("format") ?: "",
-            sampleRate = metadata.stringValue("sampleRate")?.replace("[^0-9]".toRegex(), "")?.toIntOrNull() ?: 0,
-            bitDepth = metadata.stringValue("bitDepth")?.replace("[^0-9]".toRegex(), "")?.toIntOrNull() ?: 0,
-            durationMs = metadata.longValue("durationMs") ?: 0,
-        )
-        metadataCache.put(itemId, resolved)
-    }
-
-    private fun resolveMissingMetadata(
-        rendererId: String,
-        rawItems: List<QueueItem>,
-        currentEntries: List<QueueEntryUi>,
-    ) {
-        // Find item IDs that have no metadata (no inline, no cache).
-        val missingIds = rawItems.filter { item ->
-            item.metadata == null && metadataCache.get(item.itemId) == null && metadataCache.shouldRetry(item.itemId)
-        }.map { it.itemId }.distinct()
-
-        if (missingIds.isEmpty()) return
-
-        viewModelScope.launch {
-            try {
-                // Use LibraryRepository which handles lib: prefix stripping
-                // and routing to the correct library node.
-                val resolved = libraryRepository.resolveBatch(missingIds)
-
-                // Update entries with newly resolved metadata.
-                _entries.value = _entries.value.map { entry ->
-                    val meta = resolved[entry.itemId] ?: metadataCache.get(entry.itemId)
-                    if (meta != null && entry.itemId in missingIds) {
-                        entry.copy(
-                            title = meta.title.ifEmpty { entry.title },
-                            artist = meta.artist,
-                            artworkUrl = meta.artworkUrl ?: entry.artworkUrl,
-                            durationMs = if (meta.durationMs > 0) meta.durationMs else entry.durationMs,
-                        )
-                    } else entry
-                }
-            } catch (e: Exception) {
-                Log.e(tag, "resolveMissingMetadata failed: ${e.message}")
-            }
-        }
-    }
-
     // -------------------------------------------------------------------------
     // Queue mutations
     // -------------------------------------------------------------------------
 
     fun moveTrack(fromIndex: Int, toIndex: Int) {
         if (fromIndex == toIndex) return
+        if (!canMutateNow()) return
 
-        // Optimistic UI update.
         val current = _entries.value.toMutableList()
         if (fromIndex !in current.indices || toIndex !in current.indices) return
         val item = current.removeAt(fromIndex)
@@ -311,7 +243,7 @@ class QueueViewModel @Inject constructor(
                 )
                 if (!reply.ok) {
                     Log.e(tag, "queue.move failed: ${reply.err?.message}")
-                    fetchQueue() // Revert by re-fetching.
+                    fetchQueue()
                 }
             } catch (e: Exception) {
                 Log.e(tag, "moveTrack failed: ${e.message}")
@@ -320,9 +252,11 @@ class QueueViewModel @Inject constructor(
         }
     }
 
-    fun removeTrack(index: Int) {
+    fun removeTrack(queueEntryId: String) {
+        if (!canMutateNow()) return
         val current = _entries.value.toMutableList()
-        if (index !in current.indices) return
+        val index = current.indexOfFirst { it.queueEntryId == queueEntryId }
+        if (index < 0) return
 
         val removed = current.removeAt(index)
         _entries.value = current.mapIndexed { i, e -> e.copy(index = i) }
@@ -331,6 +265,9 @@ class QueueViewModel @Inject constructor(
             val rendererId = activeRendererId.value
             try {
                 val lease = leaseManager.ensureLease(rendererId)
+                // Send the queueEntryId; the server uses it as a stable key
+                // and the index hint avoids a scan when the local view of the
+                // queue still matches the renderer's revision.
                 val body = json.encodeToJsonElement(
                     QueueRemoveBody(queueEntryId = removed.queueEntryId, index = index.toLong())
                 )
@@ -348,6 +285,7 @@ class QueueViewModel @Inject constructor(
     }
 
     fun clearQueue() {
+        if (!canMutateNow()) return
         _entries.value = emptyList()
 
         viewModelScope.launch {
@@ -368,6 +306,7 @@ class QueueViewModel @Inject constructor(
     }
 
     fun shuffleQueue() {
+        if (!canMutateNow()) return
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             try {
@@ -388,6 +327,7 @@ class QueueViewModel @Inject constructor(
     }
 
     fun toggleShuffle() {
+        if (!canMutateNow()) return
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             val currentShuffle = rendererState.value?.queue?.shuffle ?: false
@@ -408,6 +348,7 @@ class QueueViewModel @Inject constructor(
     }
 
     fun toggleRepeat() {
+        if (!canMutateNow()) return
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             val currentMode = rendererState.value?.queue?.repeatMode ?: ""
@@ -432,7 +373,11 @@ class QueueViewModel @Inject constructor(
         }
     }
 
-    fun jumpToTrack(index: Int) {
+    fun jumpToTrack(queueEntryId: String) {
+        if (!canMutateNow()) return
+        val current = _entries.value
+        val index = current.indexOfFirst { it.queueEntryId == queueEntryId }
+        if (index < 0) return
         viewModelScope.launch {
             val rendererId = activeRendererId.value
             try {
@@ -449,18 +394,6 @@ class QueueViewModel @Inject constructor(
                 Log.e(tag, "jumpToTrack failed: ${e.message}")
             }
         }
-    }
-
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
-
-    private fun Map<String, JsonElement>.stringValue(key: String): String? {
-        return (this[key] as? JsonPrimitive)?.contentOrNull
-    }
-
-    private fun Map<String, JsonElement>.longValue(key: String): Long? {
-        return (this[key] as? JsonPrimitive)?.longOrNull
     }
 
     companion object {

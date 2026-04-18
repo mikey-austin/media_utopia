@@ -1,5 +1,8 @@
 package com.mediautopia.app.data.protocol
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -52,6 +55,42 @@ data class PlaybackSetMuteBody(
     val mute: Boolean,
 )
 
+// --- Library item reference ---
+
+/**
+ * Canonical wire reference to a library-backed media item. Encoded as
+ * { "kind": "libraryItem", "libraryId": "...", "itemId": "..." }. The
+ * server validates that `kind == "libraryItem"`, so we force-emit it
+ * even when callers use a Json config without `encodeDefaults = true`.
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class LibraryItemRef(
+    @EncodeDefault val kind: String = LIBRARY_ITEM_KIND,
+    val libraryId: String,
+    val itemId: String,
+) {
+    companion object {
+        const val LIBRARY_ITEM_KIND = "libraryItem"
+    }
+}
+
+/**
+ * Denormalized UI snapshot carried alongside library refs so controllers
+ * can render queue and now-playing without follow-up catalog lookups.
+ * All fields are optional; consumers must tolerate missing values.
+ */
+@Serializable
+data class DisplayMetadata(
+    val title: String? = null,
+    val artist: String? = null,
+    val artists: List<String>? = null,
+    val album: String? = null,
+    val artworkUrl: String? = null,
+    val durationMs: Long? = null,
+    val mediaType: String? = null,
+)
+
 // --- Queue ---
 
 @Serializable
@@ -65,14 +104,7 @@ data class QueueGetBody(
 data class QueueGetReply(
     val revision: Long,
     val index: Long,
-    val entries: List<QueueItem>,
-)
-
-@Serializable
-data class QueueItem(
-    val queueEntryId: String,
-    val itemId: String,
-    val metadata: JsonObject? = null,
+    val entries: List<QueueEntry>,
 )
 
 @Serializable
@@ -147,19 +179,14 @@ data class QueueLoadSuggestionBody(
 
 @Serializable
 data class QueueEntry(
-    val ref: ItemRef? = null,
+    val queueEntryId: String = "",
+    val ref: LibraryItemRef? = null,
     val resolved: ResolvedSource? = null,
-    val metadata: JsonObject? = null,
-)
-
-@Serializable
-data class ItemRef(
-    val id: String,
+    val display: DisplayMetadata? = null,
 )
 
 @Serializable
 data class ResolvedSource(
-    val itemId: String = "",
     val url: String,
     val mime: String = "",
     val byteRange: Boolean = false,
@@ -183,35 +210,61 @@ data class LibrarySearchBody(
 )
 
 @Serializable
-data class LibraryResolveBody(
-    val itemId: String,
-    val metadataOnly: Boolean = false,
+data class LibraryGetItemBody(
+    val ref: LibraryItemRef,
 )
 
 @Serializable
-data class LibraryResolveReply(
-    val itemId: String,
-    val metadata: JsonObject? = null,
-    val sources: List<ResolvedSource>? = null,
+data class LibraryGetItemReply(
+    val ref: LibraryItemRef,
+    val display: DisplayMetadata? = null,
+    val attributes: JsonObject? = null,
 )
 
 @Serializable
-data class LibraryResolveBatchBody(
-    val itemIds: List<String>,
-    val metadataOnly: Boolean = false,
+data class LibraryGetItemsBody(
+    val refs: List<LibraryItemRef>,
 )
 
 @Serializable
-data class LibraryResolveBatchItem(
-    val itemId: String,
-    val metadata: JsonObject? = null,
-    val sources: List<ResolvedSource>? = null,
+data class LibraryGetItemsReplyItem(
+    val ref: LibraryItemRef,
+    val display: DisplayMetadata? = null,
+    val attributes: JsonObject? = null,
     val err: ReplyError? = null,
 )
 
 @Serializable
-data class LibraryResolveBatchReply(
-    val items: List<LibraryResolveBatchItem>,
+data class LibraryGetItemsReply(
+    val items: List<LibraryGetItemsReplyItem>,
+)
+
+@Serializable
+data class LibraryResolveSourcesBody(
+    val ref: LibraryItemRef,
+)
+
+@Serializable
+data class LibraryResolveSourcesReply(
+    val ref: LibraryItemRef,
+    val sources: List<ResolvedSource> = emptyList(),
+)
+
+@Serializable
+data class LibraryResolveSourcesBatchBody(
+    val refs: List<LibraryItemRef>,
+)
+
+@Serializable
+data class LibraryResolveSourcesBatchItem(
+    val ref: LibraryItemRef,
+    val sources: List<ResolvedSource> = emptyList(),
+    val err: ReplyError? = null,
+)
+
+@Serializable
+data class LibraryResolveSourcesBatchReply(
+    val items: List<LibraryResolveSourcesBatchItem>,
 )
 
 // --- Playlist ---
@@ -270,7 +323,7 @@ data class PlaylistDeleteBody(
 @Serializable
 data class PlaylistReplaceItemsBody(
     val playlistId: String,
-    val items: List<String>,
+    val entries: List<QueueEntry>,
 )
 
 // --- Snapshot ---
@@ -281,7 +334,7 @@ data class SnapshotSaveBody(
     val rendererId: String,
     val sessionId: String,
     val capture: SnapshotCapture,
-    val items: List<String> = emptyList(),
+    val entries: List<QueueEntry> = emptyList(),
 )
 
 @Serializable
@@ -319,7 +372,7 @@ data class SnapshotGetReply(
     val snapshotId: String,
     val name: String,
     val revision: Long,
-    val items: List<String> = emptyList(),
+    val entries: List<QueueEntry> = emptyList(),
     val capture: SnapshotCapture,
 )
 

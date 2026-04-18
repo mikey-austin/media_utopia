@@ -87,11 +87,11 @@ fun QueueSheet(
 private fun QueueContent(
     state: QueueUiState,
     onMoveTrack: (Int, Int) -> Unit,
-    onRemoveTrack: (Int) -> Unit,
+    onRemoveTrack: (String) -> Unit,
     onClearQueue: () -> Unit,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
-    onJumpToTrack: (Int) -> Unit,
+    onJumpToTrack: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -116,6 +116,7 @@ private fun QueueContent(
         } else {
             TrackList(
                 entries = state.entries,
+                canMutate = state.canMutate,
                 onMoveTrack = onMoveTrack,
                 onRemoveTrack = onRemoveTrack,
                 onJumpToTrack = onJumpToTrack,
@@ -234,9 +235,10 @@ private fun ActionChip(
 @Composable
 private fun TrackList(
     entries: List<QueueEntryUi>,
+    canMutate: Boolean,
     onMoveTrack: (Int, Int) -> Unit,
-    onRemoveTrack: (Int) -> Unit,
-    onJumpToTrack: (Int) -> Unit,
+    onRemoveTrack: (String) -> Unit,
+    onJumpToTrack: (String) -> Unit,
 ) {
     val lazyListState = rememberLazyListState()
     val reorderableLazyListState = rememberReorderableLazyListState(lazyListState) { from, to ->
@@ -262,13 +264,27 @@ private fun TrackList(
                     label = "dragElevation",
                 )
 
-                SwipeToDismissTrackRow(
-                    entry = entry,
-                    elevation = elevation,
-                    onRemove = { onRemoveTrack(index) },
-                    onTap = { onJumpToTrack(index) },
-                    dragModifier = Modifier.draggableHandle(),
-                )
+                if (canMutate) {
+                    SwipeToDismissTrackRow(
+                        entry = entry,
+                        elevation = elevation,
+                        onRemove = { onRemoveTrack(entry.queueEntryId) },
+                        onTap = { onJumpToTrack(entry.queueEntryId) },
+                        dragModifier = Modifier.draggableHandle(),
+                    )
+                } else {
+                    // Foreign lease — no mutations allowed, so render the row
+                    // bare. SwipeToDismissBox would still let the gesture
+                    // settle into the dismissed position even with
+                    // enableDismissFromEndToStart=false, leaving phantom
+                    // REMOVED panels in the list.
+                    TrackRow(
+                        entry = entry,
+                        elevation = elevation,
+                        onTap = { onJumpToTrack(entry.queueEntryId) },
+                        dragModifier = Modifier,
+                    )
+                }
             }
         }
     }
