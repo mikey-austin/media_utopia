@@ -1677,7 +1677,13 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 	// sorting costs.  This should be well above any practical pagination window.
 	const maxSearchResults = 1000 // Increase from 500 to accommodate larger libraries
 
-	items := make([]libraryItem, 0)
+	type scoredItem struct {
+		result libraryItem
+		score  int
+	}
+
+	scored := make([]scoredItem, 0)
+	queryLower := strings.ToLower(query)
 	for _, item := range m.index.Items {
 		if !containsAllTerms(item, terms) {
 			continue
@@ -1691,7 +1697,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 			}
 			artURL = m.artURLUnlocked(containerHash("album", artistName, albumName))
 		}
-		items = append(items, libraryItem{
+		result := libraryItem{
 			ItemID:     item.ID,
 			Name:       item.Name,
 			Type:       item.MediaType,
@@ -1700,31 +1706,17 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 			Album:      item.Album,
 			DurationMS: item.DurationMS,
 			ImageURL:   artURL,
-		})
-		if len(items) >= maxSearchResults {
-			break
 		}
-	}
-	// Score results by relevance instead of sorting alphabetically
-	type scoredItem struct {
-		item  libraryItem
-		score int
-	}
 
-	scored := make([]scoredItem, len(items))
-	queryLower := strings.ToLower(query)
-	for i, it := range items {
 		s := 0
-		nameLower := strings.ToLower(it.Name)
+		nameLower := strings.ToLower(item.Name)
 
-		// Exact name match (highest priority)
 		if nameLower == queryLower {
 			s += 100
 		} else if strings.HasPrefix(nameLower, queryLower) {
 			s += 80
 		}
 
-		// Check if all terms appear in the name/title
 		allInName := true
 		for _, term := range terms {
 			if !strings.Contains(nameLower, term) {
@@ -1736,8 +1728,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 			s += 50
 		}
 
-		// Check artist match
-		for _, artist := range it.Artists {
+		for _, artist := range item.Artists {
 			artistLower := strings.ToLower(artist)
 			for _, term := range terms {
 				if strings.Contains(artistLower, term) {
@@ -1747,9 +1738,8 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 			}
 		}
 
-		// Check album match
-		if it.Album != "" {
-			albumLower := strings.ToLower(it.Album)
+		if item.Album != "" {
+			albumLower := strings.ToLower(item.Album)
 			for _, term := range terms {
 				if strings.Contains(albumLower, term) {
 					s += 10
@@ -1758,23 +1748,52 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 			}
 		}
 
-		// Shorter names score higher (more relevant matches tend to be shorter)
+		// LLMGenre boost: query terms hitting the album's classified genre
+		// rank higher than incidental matches in liner notes / tags.
+		if item.MediaType == "Audio" {
+			artistName := firstOr(item.Artists, "")
+			if enrich := m.enrichMeta[artistName+"|"+item.Album]; enrich != nil && enrich.LLMGenre != "" {
+				lg := strings.ToLower(enrich.LLMGenre)
+				for _, term := range terms {
+					if strings.Contains(lg, term) {
+						s += 30
+						break
+					}
+				}
+			}
+		}
+
+		// Composer boost: matches the per-track composer field directly.
+		if item.Composer != "" {
+			cl := strings.ToLower(item.Composer)
+			for _, term := range terms {
+				if strings.Contains(cl, term) {
+					s += 25
+					break
+				}
+			}
+		}
+
 		if len(nameLower) < 30 {
 			s += 5
 		}
 
-		scored[i] = scoredItem{item: it, score: s}
+		scored = append(scored, scoredItem{result: result, score: s})
+		if len(scored) >= maxSearchResults {
+			break
+		}
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
 		if scored[i].score != scored[j].score {
-			return scored[i].score > scored[j].score // Higher score first
+			return scored[i].score > scored[j].score
 		}
-		return strings.ToLower(scored[i].item.Name) < strings.ToLower(scored[j].item.Name)
+		return strings.ToLower(scored[i].result.Name) < strings.ToLower(scored[j].result.Name)
 	})
 
+	items := make([]libraryItem, len(scored))
 	for i, si := range scored {
-		items[i] = si.item
+		items[i] = si.result
 	}
 	total = int64(len(items))
 	return paginate(items, start, count), total

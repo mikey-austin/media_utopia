@@ -3768,6 +3768,73 @@ func TestMediaItemCarriesComposerAndEmbeddedGenre(t *testing.T) {
 	}
 }
 
+func TestSearchBoostsGenreAndComposerMatches(t *testing.T) {
+	cfg := Config{
+		NodeID:    "mu:library:filesystem:test:default",
+		TopicBase: "mu",
+		Roots:     []string{t.TempDir()},
+		ScanMode:  "manual",
+	}
+	m, err := NewModule(zap.NewNop(), nil, cfg)
+	if err != nil {
+		t.Fatalf("NewModule: %v", err)
+	}
+
+	// Both items match the query "classical" — only the Bach track gets the
+	// genre-boost via LLMGenre on its enrichment record. The decoy track
+	// has "classical" in its searchable text but no enrichment.
+	bachID := "audio:bach"
+	decoyClassicalID := "audio:decoy_classical"
+	bachComposerID := "audio:bach_composer"
+	decoyBachID := "audio:decoy_bach"
+
+	m.index.Items[bachID] = mediaItem{
+		ID: bachID, Name: "Aria", Title: "Aria", MediaType: "Audio",
+		Artists:    []string{"Glenn Gould"},
+		Album:      "Goldberg",
+		SearchText: "aria glenn gould goldberg classical",
+	}
+	m.index.Items[decoyClassicalID] = mediaItem{
+		ID: decoyClassicalID, Name: "Aria", Title: "Aria", MediaType: "Audio",
+		Artists:    []string{"Other Artist"},
+		Album:      "Random Album That Mentions Classical In Liner Notes",
+		SearchText: "aria other artist random album that mentions classical in liner notes",
+	}
+	m.enrichMeta["Glenn Gould|Goldberg"] = &AlbumMetadata{LLMGenre: "Classical"}
+
+	items, _ := m.search("classical", 0, 10)
+	if len(items) < 2 {
+		t.Fatalf("expected both tracks to match; got %d", len(items))
+	}
+	if items[0].ItemID != bachID {
+		t.Fatalf("expected LLMGenre-matched track first; got %+v", items)
+	}
+
+	// Composer-boost test: both tracks contain "bach" in their search text,
+	// but only one has it as the Composer field.
+	m.index.Items[bachComposerID] = mediaItem{
+		ID: bachComposerID, Name: "Suite", Title: "Suite", MediaType: "Audio",
+		Artists:    []string{"Glenn Gould"},
+		Album:      "Cello Suites",
+		Composer:   "Johann Sebastian Bach",
+		SearchText: "suite glenn gould cello suites johann sebastian bach",
+	}
+	m.index.Items[decoyBachID] = mediaItem{
+		ID: decoyBachID, Name: "Tribute", Title: "Tribute", MediaType: "Audio",
+		Artists:    []string{"Random Tribute Band"},
+		Album:      "Bach Covers",
+		SearchText: "tribute random tribute band bach covers",
+	}
+
+	items2, _ := m.search("bach", 0, 10)
+	if len(items2) < 2 {
+		t.Fatalf("expected both bach tracks to match; got %d", len(items2))
+	}
+	if items2[0].ItemID != bachComposerID {
+		t.Fatalf("expected composer-matched track first; got %+v", items2)
+	}
+}
+
 func TestBuildSearchTextIncludesLLMGenreAndComposer(t *testing.T) {
 	item := mediaItem{
 		Name:          "Aria",
