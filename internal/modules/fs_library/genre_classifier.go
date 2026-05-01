@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // ClassifyInput is the per-album input to a GenreClassifier.
@@ -334,4 +336,80 @@ func rollupGenreFromCandidates(candidates []string) string {
 		}
 	}
 	return ""
+}
+
+// backfillGenres classifies every album in metas that does not yet have an
+// LLMGenre. Mirrors backfillSummaries: snapshot candidates under RLock,
+// classify outside the lock, write sidecars, and swap in updated metadata
+// under write lock. No-op if Module.genreClassifier is nil.
+func (m *Module) backfillGenres(ctx context.Context, metas map[string]*AlbumMetadata, dirs map[string]string) {
+	if m.genreClassifier == nil {
+		return
+	}
+
+	var candidates []string
+	m.mu.RLock()
+	for key, meta := range metas {
+		if meta == nil || meta.LLMGenre != "" {
+			continue
+		}
+		candidates = append(candidates, key)
+	}
+	m.mu.RUnlock()
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	m.log.Info("genre backfill starting", zap.Int("albums", len(candidates)))
+	classified := 0
+	for _, key := range candidates {
+		if ctx.Err() != nil {
+			break
+		}
+		m.mu.RLock()
+		meta := metas[key]
+		m.mu.RUnlock()
+		dir := dirs[key]
+
+		in := ClassifyInput{
+			Artist: meta.Artist,
+			Album:  meta.Album,
+		}
+		if meta.MusicBrainz != nil {
+			in.MBGenres = meta.MusicBrainz.Genres
+		}
+
+		genre, err := m.genreClassifier.Classify(ctx, in)
+		if err != nil {
+			m.log.Debug("genre classify failed",
+				zap.String("artist", meta.Artist),
+				zap.String("album", meta.Album),
+				zap.Error(err))
+			continue
+		}
+		if genre == "" {
+			continue
+		}
+
+		updated := *meta
+		updated.LLMGenre = genre
+
+		if dir != "" {
+			if err := writeSidecar(dir, &updated); err != nil {
+				m.log.Warn("genre backfill sidecar write failed",
+					zap.String("dir", dir),
+					zap.Error(err))
+				continue
+			}
+		}
+
+		m.mu.Lock()
+		metas[key] = &updated
+		m.mu.Unlock()
+		classified++
+	}
+	m.log.Info("genre backfill complete",
+		zap.Int("classified", classified),
+		zap.Int("total", len(candidates)))
 }

@@ -412,6 +412,10 @@ type Module struct {
 	// Summary generator (Ollama)
 	summaryGen *OllamaGenerator
 
+	// Genre classifier (Ollama-backed). May be nil; in that case the
+	// rollup-map fallback in buildGenreIndex still runs.
+	genreClassifier GenreClassifier
+
 	// Embedded art cache keyed by file path
 	artCache   map[string]*artCacheEntry
 	artCacheMu sync.RWMutex

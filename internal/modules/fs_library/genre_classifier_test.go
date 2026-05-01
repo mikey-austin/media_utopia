@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 type stubGenerator struct {
@@ -145,6 +147,61 @@ func TestOllamaClassifierUnparseableResponse(t *testing.T) {
 	}
 	if got != "Other" {
 		t.Fatalf("got %q, want Other (parser fallback)", got)
+	}
+}
+
+type recordingClassifier struct {
+	calls   []ClassifyInput
+	respond func(in ClassifyInput) (string, error)
+}
+
+func (r *recordingClassifier) Classify(_ context.Context, in ClassifyInput) (string, error) {
+	r.calls = append(r.calls, in)
+	if r.respond != nil {
+		return r.respond(in)
+	}
+	return "Classical", nil
+}
+
+func TestBackfillGenresOnlyMissing(t *testing.T) {
+	m := &Module{log: zap.NewNop()}
+	rc := &recordingClassifier{}
+	m.genreClassifier = rc
+
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	metas := map[string]*AlbumMetadata{
+		"A|X": {Version: currentSidecarVersion, Artist: "A", Album: "X"},
+		"B|Y": {Version: currentSidecarVersion, Artist: "B", Album: "Y", LLMGenre: "Jazz"},
+	}
+	dirs := map[string]string{"A|X": dir1, "B|Y": dir2}
+
+	m.backfillGenres(context.Background(), metas, dirs)
+
+	if len(rc.calls) != 1 {
+		t.Fatalf("Classify called %d times, want 1", len(rc.calls))
+	}
+	if rc.calls[0].Artist != "A" || rc.calls[0].Album != "X" {
+		t.Fatalf("classified wrong album: %+v", rc.calls[0])
+	}
+	if metas["A|X"].LLMGenre != "Classical" {
+		t.Fatalf("LLMGenre = %q, want Classical", metas["A|X"].LLMGenre)
+	}
+	out, err := readSidecar(dir1)
+	if err != nil {
+		t.Fatalf("readSidecar: %v", err)
+	}
+	if out.LLMGenre != "Classical" {
+		t.Fatalf("persisted LLMGenre = %q, want Classical", out.LLMGenre)
+	}
+}
+
+func TestBackfillGenresNoClassifierIsNoOp(t *testing.T) {
+	m := &Module{log: zap.NewNop()}
+	metas := map[string]*AlbumMetadata{"A|X": {Artist: "A", Album: "X"}}
+	m.backfillGenres(context.Background(), metas, map[string]string{"A|X": t.TempDir()})
+	if metas["A|X"].LLMGenre != "" {
+		t.Fatalf("classified without classifier: %q", metas["A|X"].LLMGenre)
 	}
 }
 
