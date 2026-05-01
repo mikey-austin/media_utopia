@@ -3744,3 +3744,26 @@ func TestRunManualScanModeSkipsInitialScan(t *testing.T) {
 		t.Fatalf("scanCount = %d, want 0 in manual mode", got)
 	}
 }
+
+func TestTagMetadataCarriesComposerAndGenre(t *testing.T) {
+	meta := tagMetadata{
+		Title:         "Goldberg Variations",
+		Artists:       []string{"Glenn Gould"},
+		Album:         "Bach: Goldberg Variations",
+		Composer:      "Johann Sebastian Bach",
+		EmbeddedGenre: "Classical",
+	}
+	if meta.Composer != "Johann Sebastian Bach" {
+		t.Fatalf("Composer = %q", meta.Composer)
+	}
+	if meta.EmbeddedGenre != "Classical" {
+		t.Fatalf("EmbeddedGenre = %q", meta.EmbeddedGenre)
+	}
+}
+
+func TestMediaItemCarriesComposerAndEmbeddedGenre(t *testing.T) {
+	item := mediaItem{Composer: "Bach", EmbeddedGenre: "Baroque"}
+	if item.Composer != "Bach" || item.EmbeddedGenre != "Baroque" {
+		t.Fatalf("fields not carried: %+v", item)
+	}
+}

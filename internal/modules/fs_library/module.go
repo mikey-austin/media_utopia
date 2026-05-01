@@ -535,6 +535,16 @@ type mediaItem struct {
 	// Album is the album name from metadata.
 	Album string `json:"album,omitempty"`
 
+	// Composer is the file's Composer tag (TCOM/COMPOSER), if present.
+	// Used to surface classical-music albums in search by composer name even
+	// when the album-level artist is the performer.
+	Composer string `json:"composer,omitempty"`
+
+	// EmbeddedGenre is the raw genre value from the file's tags. Used as
+	// input to the LLM genre classifier and as the fallback signal when no
+	// LLM classification has been cached.
+	EmbeddedGenre string `json:"embeddedGenre,omitempty"`
+
 	// MediaType is "Audio" or "Video".
 	MediaType string `json:"mediaType"`
 
@@ -2652,6 +2662,8 @@ func (m *Module) buildItemFromInfo(path string, info os.FileInfo, mediaType stri
 		Title:          meta.Title,
 		Artists:        meta.Artists,
 		Album:          meta.Album,
+		Composer:       meta.Composer,
+		EmbeddedGenre:  meta.EmbeddedGenre,
 		MediaType:      mediaType,
 		DurationMS:     meta.DurationMS,
 		Mtime:          info.ModTime(),
@@ -2660,11 +2672,13 @@ func (m *Module) buildItemFromInfo(path string, info os.FileInfo, mediaType stri
 }
 
 type tagMetadata struct {
-	Title      string
-	Artists    []string
-	Album      string
-	DurationMS int64
-	ArtExt     string // embedded art extension (e.g. ".jpg"), empty if none
+	Title         string
+	Artists       []string
+	Album         string
+	Composer      string
+	EmbeddedGenre string
+	DurationMS    int64
+	ArtExt        string // embedded art extension (e.g. ".jpg"), empty if none
 }
 
 func readTags(path string) (tagMetadata, error) {
@@ -2691,11 +2705,13 @@ func readTags(path string) (tagMetadata, error) {
 	}
 
 	return tagMetadata{
-		Title:      strings.TrimSpace(metadata.Title()),
-		Artists:    artists,
-		Album:      strings.TrimSpace(metadata.Album()),
-		DurationMS: 0,
-		ArtExt:     artExt,
+		Title:         strings.TrimSpace(metadata.Title()),
+		Artists:       artists,
+		Album:         strings.TrimSpace(metadata.Album()),
+		Composer:      strings.TrimSpace(metadata.Composer()),
+		EmbeddedGenre: strings.TrimSpace(metadata.Genre()),
+		DurationMS:    0,
+		ArtExt:        artExt,
 	}, nil
 }
 
