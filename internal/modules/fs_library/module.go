@@ -362,6 +362,10 @@ type Config struct {
 	// SummaryEndpoint is the Ollama API URL for summary generation.
 	// Defaults to EmbeddingEndpoint if empty.
 	SummaryEndpoint string
+
+	// GenreModel is the Ollama model used for top-level genre classification.
+	// Defaults to SummaryModel when empty.
+	GenreModel string
 }
 
 // cmdWork represents a command to be processed by a worker.
@@ -699,25 +703,51 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		log.Warn("acoustid_api_key is set but chromaprint build tag is not enabled; fingerprint fallback will be inactive")
 	}
 
+	// Initialize genre classifier if a generator is available. GenreModel
+	// falls back to SummaryModel; SummaryEndpoint to EmbeddingEndpoint. The
+	// classifier is wholly optional — when nil, buildGenreIndex's rollup-map
+	// fallback still runs.
+	var genreClassifier GenreClassifier
+	{
+		genreModel := cfg.GenreModel
+		if genreModel == "" {
+			genreModel = cfg.SummaryModel
+		}
+		if genreModel != "" {
+			endpoint := cfg.SummaryEndpoint
+			if endpoint == "" {
+				endpoint = cfg.EmbeddingEndpoint
+			}
+			if endpoint != "" {
+				gen := NewOllamaGenerator(endpoint, genreModel)
+				genreClassifier = NewOllamaGenreClassifier(gen)
+				log.Info("genre classifier initialized",
+					zap.String("model", genreModel),
+					zap.String("endpoint", endpoint))
+			}
+		}
+	}
+
 	return &Module{
-		log:           log,
-		client:        client,
-		config:        cfg,
-		cmdTopic:      cmdTopic,
-		cmdQueue:      make(chan cmdWork, 64),
-		dedup:         mu.NewCommandDedup(128),
+		log:             log,
+		client:          client,
+		config:          cfg,
+		cmdTopic:        cmdTopic,
+		cmdQueue:        make(chan cmdWork, 64),
+		dedup:           mu.NewCommandDedup(128),
 		index: &libraryIndex{
 			Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}, Containers: map[string]containerInfo{},
 			GenreAlbums: map[string][]genreAlbumRef{}, ArtistLetters: map[string][]string{},
 			AudioFolderTree: map[string]*folderNode{}, VideoFolderTree: map[string]*folderNode{},
 		},
-		embedProvider: embedProvider,
-		embedCache:    embedCache,
-		vectorIndex:   NewVectorIndex(),
-		dupeIndex:     NewDuplicateIndex(),
-		enrichMeta:    make(map[string]*AlbumMetadata),
-		summaryGen:    summaryGen,
-		artCache:      make(map[string]*artCacheEntry),
+		embedProvider:   embedProvider,
+		embedCache:      embedCache,
+		vectorIndex:     NewVectorIndex(),
+		dupeIndex:       NewDuplicateIndex(),
+		enrichMeta:      make(map[string]*AlbumMetadata),
+		summaryGen:      summaryGen,
+		genreClassifier: genreClassifier,
+		artCache:        make(map[string]*artCacheEntry),
 	}, nil
 }
 
@@ -2657,6 +2687,11 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 	// Backfill summaries for existing sidecars that have metadata but no generated summary
 	if m.summaryGen != nil {
 		go m.backfillSummaries(ctx, enrichMeta, enrichDirs)
+	}
+
+	// Backfill LLM-classified top-level genre for sidecars missing it.
+	if m.genreClassifier != nil {
+		go m.backfillGenres(ctx, enrichMeta, enrichDirs)
 	}
 
 	// Skip persisting the index when nothing changed — avoids rewriting the
