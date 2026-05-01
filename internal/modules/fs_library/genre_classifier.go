@@ -101,3 +101,161 @@ func parseGenreResponse(s string) string {
 
 	return "Other"
 }
+
+// genreRollup maps lowercased fine-grained genre/tag strings to a top-level
+// allowlist entry. Used when the LLM is unavailable. Each pattern is matched
+// as a substring (case-insensitive), so "Alternative Rock" hits "rock". Order
+// matters: more specific patterns must precede more general ones (e.g.,
+// "deep house" before "house").
+var genreRollup = []struct {
+	pattern string
+	target  string
+}{
+	// Classical
+	{"baroque", "Classical"},
+	{"romantic", "Classical"},
+	{"chamber", "Classical"},
+	{"symphony", "Classical"},
+	{"symphonic", "Classical"},
+	{"opera", "Classical"},
+	{"concerto", "Classical"},
+	{"sonata", "Classical"},
+	{"early music", "Classical"},
+	{"medieval", "Classical"},
+	{"renaissance", "Classical"},
+	{"orchestral", "Classical"},
+	{"choral", "Classical"},
+	{"classical", "Classical"},
+
+	// Jazz
+	{"bebop", "Jazz"},
+	{"post-bop", "Jazz"},
+	{"hard bop", "Jazz"},
+	{"big band", "Jazz"},
+	{"smooth jazz", "Jazz"},
+	{"free jazz", "Jazz"},
+	{"swing", "Jazz"},
+	{"fusion", "Jazz"},
+	{"jazz", "Jazz"},
+
+	// Rock
+	{"shoegaze", "Rock"},
+	{"grunge", "Rock"},
+	{"punk", "Rock"},
+	{"hardcore", "Rock"},
+	{"emo", "Rock"},
+	{"indie", "Rock"},
+	{"alternative", "Rock"},
+	{"prog", "Rock"},
+	{"psychedelic", "Rock"},
+	{"garage", "Rock"},
+	{"rock", "Rock"},
+
+	// Pop (must precede Hip-Hop "hip-hop pop"-style edge cases? unlikely)
+	{"k-pop", "Pop"},
+	{"j-pop", "Pop"},
+	{"synth-pop", "Pop"},
+	{"synthpop", "Pop"},
+	{"dance-pop", "Pop"},
+	{"electropop", "Pop"},
+	{"pop", "Pop"},
+
+	// Hip-Hop
+	{"hip-hop", "Hip-Hop"},
+	{"hip hop", "Hip-Hop"},
+	{"gangsta rap", "Hip-Hop"},
+	{"trap", "Hip-Hop"},
+	{"rap", "Hip-Hop"},
+
+	// Electronic
+	{"trance", "Electronic"},
+	{"techno", "Electronic"},
+	{"deep house", "Electronic"},
+	{"house music", "Electronic"},
+	{"house", "Electronic"},
+	{"drum and bass", "Electronic"},
+	{"dubstep", "Electronic"},
+	{"ambient", "Electronic"},
+	{"idm", "Electronic"},
+	{"breakbeat", "Electronic"},
+	{"electronica", "Electronic"},
+	{"electronic", "Electronic"},
+
+	// Folk
+	{"singer-songwriter", "Folk"},
+	{"acoustic", "Folk"},
+	{"americana", "Folk"},
+	{"bluegrass", "Folk"},
+	{"folk", "Folk"},
+
+	// Country
+	{"honky-tonk", "Country"},
+	{"country", "Country"},
+
+	// Metal
+	{"black metal", "Metal"},
+	{"death metal", "Metal"},
+	{"doom metal", "Metal"},
+	{"thrash", "Metal"},
+	{"metalcore", "Metal"},
+	{"metal", "Metal"},
+
+	// R&B/Soul
+	{"r&b", "R&B/Soul"},
+	{"rnb", "R&B/Soul"},
+	{"neo-soul", "R&B/Soul"},
+	{"motown", "R&B/Soul"},
+	{"soul", "R&B/Soul"},
+	{"funk", "R&B/Soul"},
+
+	// Blues
+	{"delta blues", "Blues"},
+	{"chicago blues", "Blues"},
+	{"blues", "Blues"},
+
+	// Reggae
+	{"dancehall", "Reggae"},
+	{"reggae", "Reggae"},
+	{"dub", "Reggae"},
+	{"ska", "Reggae"},
+
+	// World
+	{"flamenco", "World"},
+	{"afrobeat", "World"},
+	{"bossa nova", "World"},
+	{"celtic", "World"},
+	{"latin", "World"},
+	{"world", "World"},
+
+	// Soundtrack
+	{"film score", "Soundtrack"},
+	{"video game", "Soundtrack"},
+	{"soundtrack", "Soundtrack"},
+	{"score", "Soundtrack"},
+}
+
+// rollupGenre returns a genreAllowlist entry for the given raw text by
+// substring-matching against genreRollup. Returns "" if no match.
+func rollupGenre(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return ""
+	}
+	for _, e := range genreRollup {
+		if strings.Contains(s, e.pattern) {
+			return e.target
+		}
+	}
+	return ""
+}
+
+// rollupGenreFromCandidates tries each candidate string in order, returning
+// the first non-empty rollup match.
+func rollupGenreFromCandidates(candidates []string) string {
+	for _, c := range candidates {
+		if g := rollupGenre(c); g != "" {
+			return g
+		}
+	}
+	return ""
+}
