@@ -3226,17 +3226,6 @@ func containerHash(containerType, artist, album string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// titleCase capitalizes the first letter of each word.
-func titleCase(s string) string {
-	words := strings.Fields(s)
-	for i, w := range words {
-		if len(w) > 0 {
-			words[i] = strings.ToUpper(w[:1]) + w[1:]
-		}
-	}
-	return strings.Join(words, " ")
-}
-
 // artistFirstLetter returns the uppercase first letter of a name, or "#" for non-letter starts.
 func artistFirstLetter(name string) string {
 	if name == "" {
@@ -3249,46 +3238,26 @@ func artistFirstLetter(name string) string {
 	return "#"
 }
 
-// buildGenreIndex populates GenreAlbums from enrichment metadata.
-// Albums without enrichment genres are placed under "Unknown".
+// buildGenreIndex populates idx.GenreAlbums by grouping albums under their
+// classified top-level genre. Precedence per album:
+//
+//  1. AlbumMetadata.LLMGenre (cached classifier output) — preferred.
+//  2. Rollup-map lookup on MB genres + tags + ArtistInfo genres + tags
+//     (fallback when the LLM has not yet classified the album).
+//  3. "Unknown".
+//
+// Each album lands in exactly one bucket so browse-by-genre stays clean.
 func buildGenreIndex(idx *libraryIndex, enrichMeta map[string]*AlbumMetadata) {
 	idx.GenreAlbums = make(map[string][]genreAlbumRef)
 	for artistName, artist := range idx.Audio {
 		for albumName := range artist.Albums {
 			key := artistName + "|" + albumName
 			meta := enrichMeta[key]
-			var genres []string
-			if meta != nil && meta.MusicBrainz != nil {
-				genres = append(genres, meta.MusicBrainz.Genres...)
-			}
-			if meta != nil && meta.ArtistInfo != nil {
-				genres = append(genres, meta.ArtistInfo.Genres...)
-			}
-			// Deduplicate and normalize
-			seen := make(map[string]bool)
-			var unique []string
-			for _, g := range genres {
-				g = strings.TrimSpace(g)
-				if g == "" {
-					continue
-				}
-				low := strings.ToLower(g)
-				if !seen[low] {
-					seen[low] = true
-					// Title-case the genre for display
-					unique = append(unique, titleCase(low))
-				}
-			}
-			if len(unique) == 0 {
-				unique = []string{"Unknown"}
-			}
+			genre := classifyAlbumBucket(meta)
 			ref := genreAlbumRef{Artist: artistName, Album: albumName}
-			for _, genre := range unique {
-				idx.GenreAlbums[genre] = append(idx.GenreAlbums[genre], ref)
-			}
+			idx.GenreAlbums[genre] = append(idx.GenreAlbums[genre], ref)
 		}
 	}
-	// Sort albums within each genre
 	for genre, albums := range idx.GenreAlbums {
 		sort.Slice(albums, func(i, j int) bool {
 			if albums[i].Artist != albums[j].Artist {
@@ -3297,10 +3266,32 @@ func buildGenreIndex(idx *libraryIndex, enrichMeta map[string]*AlbumMetadata) {
 			return albums[i].Album < albums[j].Album
 		})
 		idx.GenreAlbums[genre] = albums
-		// Register genre container
 		hash := containerHash("genre", genre, "")
 		idx.Containers[hash] = containerInfo{Type: "genre", Artist: genre}
 	}
+}
+
+// classifyAlbumBucket picks the single bucket an album lives in for browse.
+func classifyAlbumBucket(meta *AlbumMetadata) string {
+	if meta == nil {
+		return "Unknown"
+	}
+	if meta.LLMGenre != "" {
+		return meta.LLMGenre
+	}
+	var candidates []string
+	if meta.MusicBrainz != nil {
+		candidates = append(candidates, meta.MusicBrainz.Genres...)
+		candidates = append(candidates, meta.MusicBrainz.Tags...)
+	}
+	if meta.ArtistInfo != nil {
+		candidates = append(candidates, meta.ArtistInfo.Genres...)
+		candidates = append(candidates, meta.ArtistInfo.Tags...)
+	}
+	if g := rollupGenreFromCandidates(candidates); g != "" {
+		return g
+	}
+	return "Unknown"
 }
 
 // buildArtistLetterIndex groups artists by first character.

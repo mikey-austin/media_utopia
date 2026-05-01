@@ -3768,6 +3768,65 @@ func TestMediaItemCarriesComposerAndEmbeddedGenre(t *testing.T) {
 	}
 }
 
+func TestBuildGenreIndexUsesLLMGenre(t *testing.T) {
+	idx := &libraryIndex{
+		Audio: map[string]artistEntry{
+			"Glenn Gould": {Name: "Glenn Gould", Albums: map[string]albumEntry{
+				"Goldberg Variations": {Name: "Goldberg Variations"},
+			}},
+			"Miles Davis": {Name: "Miles Davis", Albums: map[string]albumEntry{
+				"Kind of Blue": {Name: "Kind of Blue"},
+			}},
+			"Unknown": {Name: "Unknown", Albums: map[string]albumEntry{
+				"Mystery": {Name: "Mystery"},
+			}},
+		},
+		GenreAlbums: map[string][]genreAlbumRef{},
+		Containers:  map[string]containerInfo{},
+	}
+	enrich := map[string]*AlbumMetadata{
+		"Glenn Gould|Goldberg Variations": {LLMGenre: "Classical"},
+		"Miles Davis|Kind of Blue":        {LLMGenre: "Jazz"},
+	}
+	buildGenreIndex(idx, enrich)
+
+	if got := idx.GenreAlbums["Classical"]; len(got) != 1 || got[0].Artist != "Glenn Gould" {
+		t.Fatalf("Classical bucket = %+v", got)
+	}
+	if got := idx.GenreAlbums["Jazz"]; len(got) != 1 || got[0].Artist != "Miles Davis" {
+		t.Fatalf("Jazz bucket = %+v", got)
+	}
+	if got := idx.GenreAlbums["Unknown"]; len(got) != 1 || got[0].Artist != "Unknown" {
+		t.Fatalf("Unknown bucket = %+v", got)
+	}
+	if len(idx.GenreAlbums) != 3 {
+		ks := make([]string, 0, len(idx.GenreAlbums))
+		for k := range idx.GenreAlbums {
+			ks = append(ks, k)
+		}
+		t.Fatalf("expected exactly 3 genre buckets, got %d: %v", len(idx.GenreAlbums), ks)
+	}
+}
+
+func TestBuildGenreIndexRollupFallback(t *testing.T) {
+	idx := &libraryIndex{
+		Audio: map[string]artistEntry{
+			"X": {Name: "X", Albums: map[string]albumEntry{"A": {Name: "A"}}},
+		},
+		GenreAlbums: map[string][]genreAlbumRef{},
+		Containers:  map[string]containerInfo{},
+	}
+	enrich := map[string]*AlbumMetadata{
+		"X|A": {
+			MusicBrainz: &MBMetadata{Genres: []string{"baroque"}},
+		},
+	}
+	buildGenreIndex(idx, enrich)
+	if got := idx.GenreAlbums["Classical"]; len(got) != 1 {
+		t.Fatalf("expected Classical bucket via rollup, got %v", idx.GenreAlbums)
+	}
+}
+
 func TestAlbumMetadataLLMGenreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	in := &AlbumMetadata{
