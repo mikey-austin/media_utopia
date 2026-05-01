@@ -31,6 +31,11 @@ type AlbumMetadata struct {
 	Discogs     *DiscogsMetadata  `json:"discogs"`
 	ArtistInfo  *ArtistInfo       `json:"artist_info,omitempty"`
 	Description *AlbumDescription `json:"description,omitempty"`
+
+	// LLMGenre is the locally-classified top-level genre — one of the strings
+	// in genreAllowlist (genre_classifier.go). Populated by the genre
+	// classifier backfill goroutine; absent in older sidecars.
+	LLMGenre string `json:"llm_genre,omitempty"`
 }
 
 // ArtistInfo holds enriched artist metadata from MusicBrainz and Discogs.

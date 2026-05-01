@@ -3767,3 +3767,23 @@ func TestMediaItemCarriesComposerAndEmbeddedGenre(t *testing.T) {
 		t.Fatalf("fields not carried: %+v", item)
 	}
 }
+
+func TestAlbumMetadataLLMGenreRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	in := &AlbumMetadata{
+		Version:  currentSidecarVersion,
+		Artist:   "Glenn Gould",
+		Album:    "Bach: Goldberg Variations",
+		LLMGenre: "Classical",
+	}
+	if err := writeSidecar(dir, in); err != nil {
+		t.Fatalf("writeSidecar: %v", err)
+	}
+	out, err := readSidecar(dir)
+	if err != nil {
+		t.Fatalf("readSidecar: %v", err)
+	}
+	if out.LLMGenre != "Classical" {
+		t.Fatalf("LLMGenre = %q, want Classical", out.LLMGenre)
+	}
+}
