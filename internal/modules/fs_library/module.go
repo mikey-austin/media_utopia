@@ -2095,10 +2095,22 @@ func (m *Module) buildEmbeddings(ctx context.Context, items map[string]mediaItem
 }
 
 // buildSearchText creates the lowercased search text for a media item.
-// Called once at scan time to precompute the searchable string.
+// Called once at scan time to precompute the searchable string. Includes
+// LLM-classified genre, composer, and embedded genre tags so queries for
+// "classical" or composer names hit albums whose external metadata is
+// fine-grained or missing.
 func buildSearchText(item mediaItem, enrich *AlbumMetadata) string {
 	parts := []string{item.Name, item.Title, item.Album, strings.Join(item.Artists, " ")}
+	if item.Composer != "" {
+		parts = append(parts, item.Composer)
+	}
+	if item.EmbeddedGenre != "" {
+		parts = append(parts, item.EmbeddedGenre)
+	}
 	if enrich != nil {
+		if enrich.LLMGenre != "" {
+			parts = append(parts, enrich.LLMGenre)
+		}
 		if mb := enrich.MusicBrainz; mb != nil {
 			parts = append(parts, strings.Join(mb.Genres, " "))
 			parts = append(parts, strings.Join(mb.Tags, " "))

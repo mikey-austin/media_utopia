@@ -3768,6 +3768,40 @@ func TestMediaItemCarriesComposerAndEmbeddedGenre(t *testing.T) {
 	}
 }
 
+func TestBuildSearchTextIncludesLLMGenreAndComposer(t *testing.T) {
+	item := mediaItem{
+		Name:          "Aria",
+		Title:         "Aria",
+		Album:         "Goldberg Variations",
+		Artists:       []string{"Glenn Gould"},
+		Composer:      "Johann Sebastian Bach",
+		EmbeddedGenre: "Baroque",
+	}
+	enrich := &AlbumMetadata{LLMGenre: "Classical"}
+	txt := buildSearchText(item, enrich)
+	for _, want := range []string{"glenn gould", "goldberg", "classical", "bach", "baroque"} {
+		if !strings.Contains(txt, want) {
+			t.Fatalf("buildSearchText missing %q in %q", want, txt)
+		}
+	}
+}
+
+func TestBuildSearchTextNilEnrichmentStillIncludesLocalFields(t *testing.T) {
+	item := mediaItem{
+		Name:          "Aria",
+		Title:         "Aria",
+		Composer:      "Bach",
+		EmbeddedGenre: "Classical",
+	}
+	txt := buildSearchText(item, nil)
+	if !strings.Contains(txt, "bach") {
+		t.Fatalf("missing composer: %q", txt)
+	}
+	if !strings.Contains(txt, "classical") {
+		t.Fatalf("missing embedded genre: %q", txt)
+	}
+}
+
 func TestBuildGenreIndexUsesLLMGenre(t *testing.T) {
 	idx := &libraryIndex{
 		Audio: map[string]artistEntry{
