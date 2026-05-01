@@ -1,6 +1,22 @@
 package fslibrary
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+type stubGenerator struct {
+	response   string
+	err        error
+	lastPrompt string
+}
+
+func (s *stubGenerator) Generate(ctx context.Context, prompt string) (string, error) {
+	s.lastPrompt = prompt
+	return s.response, s.err
+}
 
 func TestParseGenreResponse(t *testing.T) {
 	cases := []struct {
@@ -65,6 +81,70 @@ func TestRollupGenre(t *testing.T) {
 				t.Fatalf("rollupGenre(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildGenrePrompt(t *testing.T) {
+	in := ClassifyInput{
+		Artist:        "Glenn Gould",
+		Album:         "Bach: Goldberg Variations",
+		TrackTitles:   []string{"Aria", "Variation 1"},
+		EmbeddedGenre: "Classical",
+		MBGenres:      []string{"baroque", "early music"},
+	}
+	p := buildGenrePrompt(in)
+	if !strings.Contains(p, "Glenn Gould") {
+		t.Fatal("prompt missing artist")
+	}
+	if !strings.Contains(p, "Bach: Goldberg Variations") {
+		t.Fatal("prompt missing album")
+	}
+	if !strings.Contains(p, "baroque") {
+		t.Fatal("prompt missing MBGenres")
+	}
+	for _, g := range genreAllowlist {
+		if !strings.Contains(p, g) {
+			t.Fatalf("prompt missing allowlist entry %q", g)
+		}
+	}
+}
+
+func TestOllamaClassifierClassifyHappyPath(t *testing.T) {
+	gen := &stubGenerator{response: "Classical"}
+	c := &ollamaGenreClassifier{gen: gen}
+	got, err := c.Classify(context.Background(), ClassifyInput{Artist: "Bach", Album: "Mass in B Minor"})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got != "Classical" {
+		t.Fatalf("got %q, want Classical", got)
+	}
+	if gen.lastPrompt == "" {
+		t.Fatal("prompt was not sent")
+	}
+}
+
+func TestOllamaClassifierClassifyError(t *testing.T) {
+	gen := &stubGenerator{err: errors.New("boom")}
+	c := &ollamaGenreClassifier{gen: gen}
+	got, err := c.Classify(context.Background(), ClassifyInput{Artist: "X", Album: "Y"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got != "" {
+		t.Fatalf("got %q, want \"\"", got)
+	}
+}
+
+func TestOllamaClassifierUnparseableResponse(t *testing.T) {
+	gen := &stubGenerator{response: "I cannot determine that."}
+	c := &ollamaGenreClassifier{gen: gen}
+	got, err := c.Classify(context.Background(), ClassifyInput{Artist: "X", Album: "Y"})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got != "Other" {
+		t.Fatalf("got %q, want Other (parser fallback)", got)
 	}
 }
 

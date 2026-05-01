@@ -6,7 +6,83 @@
 // unreachable, a static rollup map is used as a fallback at index-build time.
 package fslibrary
 
-import "strings"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
+
+// ClassifyInput is the per-album input to a GenreClassifier.
+type ClassifyInput struct {
+	Artist        string
+	Album         string
+	TrackTitles   []string
+	EmbeddedGenre string
+	MBGenres      []string
+}
+
+// GenreClassifier classifies an album into one of genreAllowlist.
+// Implementations may use a local LLM, a rule-based fallback, or both.
+type GenreClassifier interface {
+	Classify(ctx context.Context, in ClassifyInput) (string, error)
+}
+
+// promptGenerator is the minimal surface ollamaGenreClassifier needs from
+// OllamaGenerator. Splitting it out lets tests use a stub.
+type promptGenerator interface {
+	Generate(ctx context.Context, prompt string) (string, error)
+}
+
+// ollamaGenreClassifier is a GenreClassifier backed by an Ollama text model.
+type ollamaGenreClassifier struct {
+	gen promptGenerator
+}
+
+// NewOllamaGenreClassifier wraps an OllamaGenerator. Returns nil if gen is nil.
+func NewOllamaGenreClassifier(gen *OllamaGenerator) GenreClassifier {
+	if gen == nil {
+		return nil
+	}
+	return &ollamaGenreClassifier{gen: gen}
+}
+
+func (c *ollamaGenreClassifier) Classify(ctx context.Context, in ClassifyInput) (string, error) {
+	prompt := buildGenrePrompt(in)
+	raw, err := c.gen.Generate(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return parseGenreResponse(raw), nil
+}
+
+// buildGenrePrompt formats the classification request as a single prompt.
+func buildGenrePrompt(in ClassifyInput) string {
+	var trackList string
+	if len(in.TrackTitles) > 0 {
+		n := len(in.TrackTitles)
+		if n > 10 {
+			n = 10
+		}
+		trackList = strings.Join(in.TrackTitles[:n], "; ")
+	}
+	mbStr := strings.Join(in.MBGenres, ", ")
+
+	return fmt.Sprintf(`You are a music classifier. Given an album, return the single best top-level genre.
+
+Valid genres (return EXACTLY one of these, with nothing else):
+%s
+
+Album:
+Artist: %s
+Title: %s
+Sample track titles: %s
+Embedded genre tag: %s
+Existing fine-grained genres: %s
+
+Reply with just the genre name. No explanation.`,
+		strings.Join(genreAllowlist, ", "),
+		in.Artist, in.Album, trackList, in.EmbeddedGenre, mbStr)
+}
 
 // genreAllowlist is the fixed taxonomy. Order is the order shown to the LLM
 // in the prompt and the order asserted by tests.
