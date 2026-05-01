@@ -414,8 +414,8 @@ type Module struct {
 	cmdQueue chan cmdWork
 	dedup    *mu.CommandDedup
 
-	mu      sync.RWMutex
-	scanMu        sync.Mutex // serializes concurrent scans
+	mu            sync.RWMutex
+	scanMu        sync.Mutex   // serializes concurrent scans
 	scanCount     atomic.Int64 // incremented on every scanInner call; for tests
 	index         *libraryIndex
 	baseURL       string
@@ -752,12 +752,12 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 
 	return &Module{
-		log:             log,
-		client:          client,
-		config:          cfg,
-		cmdTopic:        cmdTopic,
-		cmdQueue:        make(chan cmdWork, 64),
-		dedup:           mu.NewCommandDedup(128),
+		log:      log,
+		client:   client,
+		config:   cfg,
+		cmdTopic: cmdTopic,
+		cmdQueue: make(chan cmdWork, 64),
+		dedup:    mu.NewCommandDedup(128),
 		index: &libraryIndex{
 			Items: map[string]mediaItem{}, Audio: map[string]artistEntry{}, Containers: map[string]containerInfo{},
 			GenreAlbums: map[string][]genreAlbumRef{}, ArtistLetters: map[string][]string{},
