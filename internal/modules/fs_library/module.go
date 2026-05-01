@@ -302,6 +302,14 @@ type Config struct {
 	// Default: 900000 (15 minutes).
 	ScanIntervalMS int64
 
+	// ScanMode controls automatic scanning:
+	//   "auto"   - Initial scan at startup, then periodic rescans every
+	//              ScanIntervalMS (default).
+	//   "manual" - No initial scan and no periodic ticker. The persisted
+	//              index loads as normal, and the user must invoke
+	//              library.rescan to scan.
+	ScanMode string
+
 	// MetadataMode is reserved for future metadata handling options.
 	MetadataMode string
 
@@ -381,6 +389,7 @@ type Module struct {
 
 	mu      sync.RWMutex
 	scanMu        sync.Mutex // serializes concurrent scans
+	scanCount     atomic.Int64 // incremented on every scanInner call; for tests
 	index         *libraryIndex
 	baseURL       string
 	artURLPrefix  string            // pre-computed baseURL + "/art/", set once in startHTTPServer
@@ -700,8 +709,10 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 
 // Run starts the module.
 func (m *Module) Run(ctx context.Context) error {
-	if err := m.publishPresence(); err != nil {
-		return err
+	if m.client != nil {
+		if err := m.publishPresence(); err != nil {
+			return err
+		}
 	}
 	if err := m.startHTTPServer(); err != nil {
 		return err
@@ -709,8 +720,12 @@ func (m *Module) Run(ctx context.Context) error {
 	if err := m.loadIndex(); err != nil {
 		m.log.Debug("index load failed", zap.Error(err))
 	}
-	if err := m.scanCtx(ctx); err != nil && ctx.Err() == nil {
-		m.log.Warn("initial scan failed", zap.Error(err))
+	if m.config.ScanMode != "manual" {
+		if err := m.scanCtx(ctx); err != nil && ctx.Err() == nil {
+			m.log.Warn("initial scan failed", zap.Error(err))
+		}
+	} else {
+		m.log.Info("scan_mode=manual: skipping initial scan")
 	}
 
 	// Start command worker pool
@@ -724,17 +739,23 @@ func (m *Module) Run(ctx context.Context) error {
 		}()
 	}
 
-	handler := func(_ paho.Client, msg paho.Message) {
-		m.handleMessage(msg)
+	if m.client != nil {
+		handler := func(_ paho.Client, msg paho.Message) {
+			m.handleMessage(msg)
+		}
+		if err := m.client.Subscribe(m.cmdTopic, 1, handler); err != nil {
+			return err
+		}
+		defer m.client.Unsubscribe(m.cmdTopic)
 	}
-	if err := m.client.Subscribe(m.cmdTopic, 1, handler); err != nil {
-		return err
-	}
-	defer m.client.Unsubscribe(m.cmdTopic)
 
-	scanInterval := time.Duration(m.config.ScanIntervalMS) * time.Millisecond
-	ticker := time.NewTicker(scanInterval)
-	defer ticker.Stop()
+	var tickerC <-chan time.Time
+	if m.config.ScanMode != "manual" {
+		scanInterval := time.Duration(m.config.ScanIntervalMS) * time.Millisecond
+		ticker := time.NewTicker(scanInterval)
+		defer ticker.Stop()
+		tickerC = ticker.C
+	}
 
 	for {
 		select {
@@ -742,7 +763,7 @@ func (m *Module) Run(ctx context.Context) error {
 			m.shutdownHTTPServer()
 			wg.Wait()
 			return nil
-		case <-ticker.C:
+		case <-tickerC:
 			if err := m.scanCtx(ctx); err != nil && ctx.Err() == nil {
 				m.log.Warn("scan failed", zap.Error(err))
 			}
@@ -2116,6 +2137,7 @@ func (m *Module) scan() error {
 }
 
 func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
+	m.scanCount.Add(1)
 	m.scanMu.Lock()
 	defer m.scanMu.Unlock()
 

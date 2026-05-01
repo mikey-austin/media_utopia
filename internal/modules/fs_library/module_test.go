@@ -3712,3 +3712,35 @@ func TestContainerHash(t *testing.T) {
 		t.Errorf("hash length = %d, want 32 (MD5 hex)", len(h1))
 	}
 }
+
+func TestRunManualScanModeSkipsInitialScan(t *testing.T) {
+	cfg := Config{
+		NodeID:         "mu:library:filesystem:test:default",
+		TopicBase:      "mu",
+		Name:           "test",
+		Roots:          []string{t.TempDir()},
+		ScanMode:       "manual",
+		ScanIntervalMS: 100,
+	}
+	m, err := NewModule(zap.NewNop(), nil, cfg)
+	if err != nil {
+		t.Fatalf("NewModule: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- m.Run(ctx) }()
+
+	<-ctx.Done()
+	select {
+	case <-runErr:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after context cancel")
+	}
+
+	if got := m.scanCount.Load(); got != 0 {
+		t.Fatalf("scanCount = %d, want 0 in manual mode", got)
+	}
+}
