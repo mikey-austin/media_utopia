@@ -39,3 +39,5 @@ include_exts = [".mp3", ".flac", ".ogg", ".wav", ".m4a"]
 http_listen = ":8484"
 http_base_url = "http://localhost:8484"
 metadata_mode = "ffprobe"
+# scan_mode = "manual"        # disable automatic scanning; rescans are user-triggered
+# genre_model = "gemma3:12b"  # local Ollama model for genre classification (defaults to summary_model)

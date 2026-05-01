@@ -199,6 +199,29 @@ Full configuration with all options:
 	discogs_token = ""                    # optional Discogs personal access token
 	summary_model = "gemma3:12b"          # Ollama model for LLM album summaries (default: gemma3:12b)
 	summary_endpoint = ""                 # Ollama API URL for summaries (default: embedding_endpoint)
+	genre_model = ""                      # Ollama model for top-level genre classification (default: summary_model)
+	scan_mode = "auto"                    # "auto" or "manual"; "manual" disables initial scan + periodic ticker
+
+# Genre Classification
+
+Albums are grouped under a fixed flat list of 15 top-level genres for
+browse-by-genre: Classical, Jazz, Rock, Pop, Hip-Hop, Electronic, Folk,
+Country, Metal, R&B/Soul, Blues, Reggae, World, Soundtrack, Other.
+
+A local Ollama model classifies each album once and the result is cached
+in the album's .mu_album_metadata.json sidecar (llm_genre field). When
+the LLM is unreachable, a static rollup map maps fine-grained
+MusicBrainz/embedded tags ("baroque", "shoegaze", "deep house", etc.) to
+the matching top-level family at index-build time, so browse-by-genre
+remains useful even without the LLM. The cached classification
+supersedes the rollup once it lands.
+
+# Manual Scan Mode
+
+Setting scan_mode = "manual" disables automatic scanning entirely. The
+persisted index loads at startup, MQTT subscribers come up, but no
+filesystem walk runs until the user invokes library.rescan. Use this on
+low-power hosts where periodic scans interfere with playback.
 
 # Commands
 
