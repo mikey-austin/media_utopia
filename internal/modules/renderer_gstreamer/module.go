@@ -125,6 +125,11 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 // Run starts the renderer module.
 func (m *Module) Run(ctx context.Context) error {
 	m.ctx = ctx
+	defer func() {
+		if err := m.engine.Driver.Stop(); err != nil {
+			m.log.Warn("failed to stop renderer driver", zap.Error(err))
+		}
+	}()
 
 	if err := m.publishPresence(); err != nil {
 		return err

@@ -64,13 +64,36 @@ func NewDriver(pipeline string, device string, crossfade time.Duration) (*Driver
 func (d *Driver) pipelineCleanupLoop() {
 	for el := range d.cleanupCh {
 		start := time.Now()
-		_ = el.SetState(gst.StateNull)
+		err := teardownPipeline(el)
 		if dur := time.Since(start); dur > 500*time.Millisecond {
 			// Slow teardown suggests PipeWire pressure or network
 			// stream buffering — log for diagnostics.
-			fmt.Fprintf(os.Stderr, "gstreamer: slow pipeline teardown: %s\n", dur)
+			fmt.Fprintf(os.Stderr, "gstreamer: slow pipeline teardown: %s err=%v\n", dur, err)
 		}
 	}
+}
+
+func teardownPipeline(el *gst.Element) error {
+	if el == nil {
+		return nil
+	}
+	bus := el.GetBus()
+	if bus != nil {
+		// Drop queued messages before teardown; stale bus messages otherwise
+		// keep references to elements/pads longer than necessary.
+		bus.SetFlushing(true)
+	}
+	if err := el.SetState(gst.StateNull); err != nil {
+		return err
+	}
+	ret, state := el.GetState(gst.StateNull, gst.ClockTime(5*time.Second))
+	if ret == gst.StateChangeFailure {
+		return fmt.Errorf("state change to NULL failed (state=%s)", state)
+	}
+	if state != gst.StateNull {
+		return fmt.Errorf("timed out waiting for NULL (ret=%s state=%s)", ret, state)
+	}
+	return nil
 }
 
 // Play starts playback for the URL.
@@ -90,7 +113,7 @@ func (d *Driver) Play(url string, positionMS int64) error {
 		return err
 	}
 	if err := d.startPipeline(pipeline, volumeEl); err != nil {
-		_ = pipeline.SetState(gst.StateNull)
+		_ = teardownPipeline(pipeline)
 		return err
 	}
 
