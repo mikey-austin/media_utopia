@@ -216,10 +216,14 @@ func (d *Driver) busWatch(ctx context.Context, bus *gst.Bus) {
 		if msg == nil {
 			continue
 		}
+		// NOTE: do NOT call msg.Unref() here. go-gst's TimedPopFiltered
+		// wraps the C message via FromGstMessageUnsafeFull, which installs
+		// a finalizer that unrefs on GC. An explicit Unref would
+		// double-unref the underlying GstMessage and trip a GLib CRITICAL
+		// — under G_DEBUG=fatal-criticals that aborts the whole process.
 		switch msg.Type() {
 		case gst.MessageEOS:
 			d.emit(Event{Kind: EventEOS})
-			msg.Unref()
 			return // pipeline is finished, stop watching
 		case gst.MessageError:
 			gerr := msg.ParseError()
@@ -228,7 +232,6 @@ func (d *Driver) busWatch(ctx context.Context, bus *gst.Bus) {
 				text = gerr.Error()
 			}
 			d.emit(Event{Kind: EventError, Message: text})
-			msg.Unref()
 			return // pipeline will be torn down by the consumer
 		case gst.MessageWarning:
 			gerr := msg.ParseWarning()
@@ -238,7 +241,6 @@ func (d *Driver) busWatch(ctx context.Context, bus *gst.Bus) {
 			}
 			d.emit(Event{Kind: EventWarning, Message: text})
 		}
-		msg.Unref()
 	}
 }
 
