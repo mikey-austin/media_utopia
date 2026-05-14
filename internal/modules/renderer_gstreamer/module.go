@@ -53,10 +53,6 @@ type Module struct {
 	engine              *renderercore.Engine
 	config              Config
 	cmdTopic            string
-	mu                  sync.RWMutex
-	eosSeen             string
-	eosCurrentID        string
-	eosCurrentStartedAt time.Time
 	publishTimeoutUntil int64
 
 	// Async command processing
@@ -73,6 +69,13 @@ type Module struct {
 	debounceChan chan struct{} // signals state change for debouncer
 
 	dedup *mu.CommandDedup
+}
+
+// driverEventSource is implemented by drivers that expose async events
+// (EOS / errors / pipewire health). The Module wires this up if present so
+// EOS no longer needs to be detected by polling position vs duration.
+type driverEventSource interface {
+	Events() <-chan Event
 }
 
 // NewModule creates a renderer module.
@@ -102,7 +105,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 	engine := renderercore.NewEngine(cfg.NodeID, cfg.Name, driver)
 	if cfg.Volume > 0 {
-		engine.State.Playback.Volume = cfg.Volume
+		engine.SetInitialVolume(cfg.Volume)
 	}
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
@@ -126,6 +129,18 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 func (m *Module) Run(ctx context.Context) error {
 	m.ctx = ctx
 	defer func() {
+		// Prefer Close() when the driver supports it. Close performs a
+		// synchronous teardown so that pipewire observes a clean
+		// SetState(Null) disconnect before the process exits. Without
+		// that, pipewire only sees a socket EOF and leaves stale node /
+		// buffer state in the daemon — known to accumulate across nightly
+		// container restarts and eventually break audio for all clients.
+		if closer, ok := m.engine.Driver.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				m.log.Warn("failed to close renderer driver", zap.Error(err))
+			}
+			return
+		}
 		if err := m.engine.Driver.Stop(); err != nil {
 			m.log.Warn("failed to stop renderer driver", zap.Error(err))
 		}
@@ -166,6 +181,13 @@ func (m *Module) Run(ctx context.Context) error {
 
 	go m.runPositionUpdates(ctx)
 	go m.runStateDebouncer(ctx)
+	// Drive EOS / error / warning / pipewire-down handling from the
+	// driver's bus events when supported. This is what replaces the old
+	// `advanceOnEndLocked` position-poll heuristic and its
+	// minPlaybackBeforeEOS workaround.
+	if src, ok := m.engine.Driver.(driverEventSource); ok {
+		go m.consumeDriverEvents(ctx, src.Events())
+	}
 
 	cmdHandler := func(_ paho.Client, msg paho.Message) {
 		m.handleMessage(msg)
@@ -302,33 +324,18 @@ func (m *Module) processCommand(cmd mu.CommandEnvelope, recvTime time.Time) {
 		return
 	}
 
-	// Use read lock for commands that only query state without mutation.
-	readOnly := cmd.Type == "queue.get"
-
-	// Track mutex acquisition time for contention diagnostics
-	lockStart := time.Now()
-	if readOnly {
-		m.mu.RLock()
-	} else {
-		m.mu.Lock()
-	}
-	lockWait := time.Since(lockStart)
-
+	// The engine manages its own state locking (stateMu) and releases it
+	// around driver calls — we no longer wrap dispatch in a module-level
+	// lock. Workers therefore parallelise: state mutations serialise on
+	// stateMu (briefly), driver operations don't.
 	dispatchStart := time.Now()
 	reply := m.dispatch(cmd)
 	dispatchDuration := time.Since(dispatchStart)
-	if readOnly {
-		m.mu.RUnlock()
-	} else {
-		m.mu.Unlock()
-	}
-
 	totalDuration := time.Since(recvTime)
 
 	m.log.Debug("command completed",
 		zap.String("id", cmd.ID),
 		zap.String("type", cmd.Type),
-		zap.Duration("lock_wait", lockWait),
 		zap.Duration("dispatch", dispatchDuration),
 		zap.Duration("total", totalDuration),
 		zap.Bool("ok", reply.OK))
@@ -337,7 +344,6 @@ func (m *Module) processCommand(cmd mu.CommandEnvelope, recvTime time.Time) {
 		m.log.Warn("slow command",
 			zap.String("id", cmd.ID),
 			zap.String("type", cmd.Type),
-			zap.Duration("lock_wait", lockWait),
 			zap.Duration("dispatch", dispatchDuration),
 			zap.Duration("total", totalDuration))
 	}
@@ -457,44 +463,20 @@ func (m *Module) runPositionUpdates(ctx context.Context) {
 }
 
 func (m *Module) updatePlaybackState() {
-	// Query driver position outside the lock — the driver has its own
-	// synchronisation and this avoids holding our mutex during the
-	// (potentially slow) GStreamer query.
 	posMS, durMS, ok := m.engine.Driver.Position()
-
-	// Single lock acquisition: check state and update in one section.
-	m.mu.Lock()
-	playing := m.engine.State.Playback != nil && m.engine.State.Playback.Status == "playing"
-	if !playing {
-		m.eosSeen = ""
-		m.mu.Unlock()
-		return
-	}
 	if !ok {
-		m.mu.Unlock()
 		return
 	}
-	m.engine.State.Playback.PositionMS = posMS
-	if durMS > 0 {
-		m.engine.State.Playback.DurationMS = durMS
+	if !m.engine.UpdatePosition(posMS, durMS) {
+		return
 	}
-	m.engine.State.TS = time.Now().Unix()
-	m.advanceOnEndLocked(posMS, durMS)
-	m.mu.Unlock()
-
 	if m.config.PublishState {
 		m.scheduleStatePublish()
 	}
 }
 
 func (m *Module) buildStatePayload() ([]byte, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.buildStatePayloadLocked()
-}
-
-func (m *Module) buildStatePayloadLocked() ([]byte, error) {
-	return json.Marshal(m.engine.State)
+	return m.engine.SnapshotState()
 }
 
 func (m *Module) publishStatePayload(payload []byte) error {
@@ -530,38 +512,50 @@ func (m *Module) markPublishTimeout(err error) {
 	}
 }
 
-// minPlaybackBeforeEOS is the floor we require between a track starting and
-// declaring it ended. Protects against drivers (or test sinks like fakesink)
-// that report position=duration immediately after Play.
-const minPlaybackBeforeEOS = 750 * time.Millisecond
-
-func (m *Module) advanceOnEndLocked(positionMS int64, durationMS int64) {
-	if durationMS <= 0 || positionMS <= 0 {
-		return
+// consumeDriverEvents bridges async driver events into engine state changes.
+// EOS triggers the queue advance directly (instead of the old position-poll
+// heuristic), errors and warnings get logged, pipewire-down events surface
+// in the renderer state.
+func (m *Module) consumeDriverEvents(ctx context.Context, events <-chan Event) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				return // driver closed
+			}
+			switch ev.Kind {
+			case EventEOS:
+				m.log.Debug("gst EOS — advancing queue")
+				m.engine.AdvanceAfterEnd()
+				if m.config.PublishState {
+					m.scheduleStatePublish()
+				}
+			case EventError:
+				m.log.Warn("gst pipeline error", zap.String("message", ev.Message))
+				// Treat unrecoverable pipeline errors like EOS for now —
+				// advance to the next track rather than wedging on the
+				// broken one. If pipewire is the underlying issue, the
+				// healthcheck loop will handle teardown separately.
+				m.engine.AdvanceAfterEnd()
+				if m.config.PublishState {
+					m.scheduleStatePublish()
+				}
+			case EventWarning:
+				// Most commonly: pipewiresink falling back to the default
+				// sink because target-object didn't exist. Logged loudly
+				// so misroutings are visible without needing pw-top.
+				m.log.Warn("gst pipeline warning", zap.String("message", ev.Message))
+			case EventPipewireDown:
+				m.log.Error("pipewire unreachable; current pipeline torn down — will rebuild on next Play",
+					zap.String("message", ev.Message))
+				if m.config.PublishState {
+					m.scheduleStatePublish()
+				}
+			}
+		}
 	}
-	if positionMS < durationMS-250 {
-		m.eosSeen = ""
-		return
-	}
-	currentID := ""
-	if m.engine.State.Current != nil {
-		currentID = m.engine.State.Current.QueueEntryID
-	}
-	if currentID == "" {
-		return
-	}
-	if m.eosCurrentID != currentID {
-		m.eosCurrentID = currentID
-		m.eosCurrentStartedAt = time.Now()
-	}
-	if time.Since(m.eosCurrentStartedAt) < minPlaybackBeforeEOS {
-		return
-	}
-	if m.eosSeen == currentID {
-		return
-	}
-	m.eosSeen = currentID
-	m.engine.AdvanceAfterEnd()
 }
 
 func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
@@ -632,11 +626,8 @@ func (m *Module) handleQueueLoadPlaylist(cmd mu.CommandEnvelope) mu.ReplyEnvelop
 		return errorReply(cmd, "INVALID", "mode must be replace|append|next")
 	}
 
-	// --- Phase 2: State mutation under lock ---
-	m.mu.Lock()
-	reply := m.engine.HandleCommand(queueCmd)
-	m.mu.Unlock()
-	return reply
+	// --- Phase 2: State mutation (engine manages its own locking) ---
+	return m.engine.HandleCommand(queueCmd)
 }
 
 func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
@@ -707,18 +698,15 @@ func (m *Module) handleQueueLoadSnapshot(cmd mu.CommandEnvelope) mu.ReplyEnvelop
 		return errorReply(cmd, "INVALID", "mode must be replace|append|next")
 	}
 
-	// --- Phase 2: State mutation under lock ---
-	m.mu.Lock()
+	// --- Phase 2: State mutation (engine manages its own locking) ---
 	reply := m.engine.HandleCommand(queueCmd)
 	if reply.OK {
 		m.engine.Queue.SetRepeat(capture.Repeat)
 		if capture.RepeatMode != "" {
 			m.engine.Queue.SetRepeatMode(capture.RepeatMode)
 		}
-		m.engine.State.Playback.PositionMS = capture.PositionMS
-		m.engine.State.TS = time.Now().Unix()
+		m.engine.SetPlaybackPosition(capture.PositionMS)
 	}
-	m.mu.Unlock()
 	return reply
 }
 
