@@ -55,7 +55,14 @@ type Driver struct {
 	// this channel; if the channel were too small a fadeOut waiting on
 	// ctx.Done() would block on send while pinning the pipeline (and its
 	// pipewire client node).
+	//
+	// cleanupStop tells the serial loop to stop consuming so Close can tear
+	// the remaining pipelines down *concurrently within a hard budget* — the
+	// serial 5s-per-pipeline drain used to push total teardown past docker's
+	// 30s stop grace, which got mud SIGKILLed mid-disconnect and left a stale
+	// client node that wedged the pipewire daemon.
 	cleanupCh   chan *gst.Element
+	cleanupStop chan struct{}
 	cleanupDone chan struct{}
 
 	// events carries EOS / error / warning / pipewire-down notifications
@@ -111,6 +118,7 @@ func NewDriver(pipeline string, device string, crossfade time.Duration) (*Driver
 		fades:        make(map[*fadeJob]struct{}),
 		busCancels:   make(map[*gst.Element]context.CancelFunc),
 		cleanupCh:    make(chan *gst.Element, 16),
+		cleanupStop:  make(chan struct{}),
 		cleanupDone:  make(chan struct{}),
 		events:       make(chan Event, 16),
 		healthCancel: healthCancel,
@@ -144,7 +152,15 @@ func (d *Driver) emit(ev Event) {
 // It runs until cleanupCh is closed by Close().
 func (d *Driver) pipelineCleanupLoop() {
 	defer close(d.cleanupDone)
-	for el := range d.cleanupCh {
+	for {
+		var el *gst.Element
+		select {
+		case <-d.cleanupStop:
+			// Close is taking over: it drains whatever is still queued and
+			// tears it down concurrently within a bounded budget.
+			return
+		case el = <-d.cleanupCh:
+		}
 		// Stop the bus watcher first — otherwise it would spin polling
 		// the flushed bus until Close, holding a reference to the
 		// element. Done under the lock so a concurrent Close sees a
@@ -326,6 +342,20 @@ func (d *Driver) probePipewire() bool {
 const (
 	healthcheckInterval         = 30 * time.Second
 	healthcheckFailureThreshold = 2 // ~60s of unhealth before we react
+
+	// teardownConfirmTimeout bounds how long a single teardown waits for the
+	// NULL state to confirm. SetState(NULL) posts the client-node disconnect to
+	// pipewire immediately; GetState only waits for the daemon to acknowledge,
+	// so when pipewire is slow we cap the wait rather than letting each
+	// pipeline cost a full 5s.
+	teardownConfirmTimeout = 3 * time.Second
+
+	// closeTeardownBudget is the hard ceiling on Driver.Close's concurrent
+	// teardown of all outstanding pipelines. It MUST stay comfortably under the
+	// mud container's docker stop grace (30s) so we always exit cleanly instead
+	// of being SIGKILLed mid-disconnect — a SIGKILL abandons the pipewiresink
+	// client node and is what wedges the pipewire daemon over time.
+	closeTeardownBudget = 8 * time.Second
 )
 
 func teardownPipeline(el *gst.Element) error {
@@ -341,7 +371,7 @@ func teardownPipeline(el *gst.Element) error {
 	if err := el.SetState(gst.StateNull); err != nil {
 		return err
 	}
-	ret, state := el.GetState(gst.StateNull, gst.ClockTime(5*time.Second))
+	ret, state := el.GetState(gst.StateNull, gst.ClockTime(teardownConfirmTimeout))
 	if ret == gst.StateChangeFailure {
 		return fmt.Errorf("state change to NULL failed (state=%s)", state)
 	}
@@ -349,6 +379,39 @@ func teardownPipeline(el *gst.Element) error {
 		return fmt.Errorf("timed out waiting for NULL (ret=%s state=%s)", ret, state)
 	}
 	return nil
+}
+
+// teardownConcurrent posts SetState(NULL) to every pipeline at once, then waits
+// up to budget for them to confirm NULL. Posting the disconnect to all sinks
+// immediately (rather than serially) means a slow or hung pipewire can never
+// stretch shutdown past the budget: the daemon receives every client-node
+// disconnect request right away, and the GetState confirmation is best-effort.
+// This is the shutdown counterpart to the serial cleanup loop used at runtime.
+func teardownConcurrent(pipelines []*gst.Element, budget time.Duration) {
+	var wg sync.WaitGroup
+	for _, el := range pipelines {
+		if el == nil {
+			continue
+		}
+		if bus := el.GetBus(); bus != nil {
+			bus.SetFlushing(true)
+		}
+		_ = el.SetState(gst.StateNull) // post the disconnect immediately
+		wg.Add(1)
+		go func(el *gst.Element) {
+			defer wg.Done()
+			el.GetState(gst.StateNull, gst.ClockTime(budget))
+		}(el)
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(budget):
+	}
 }
 
 // Play starts playback for the URL.
@@ -426,12 +489,15 @@ func (d *Driver) Stop() error {
 	return d.stopCurrentLocked()
 }
 
-// Close shuts the driver down synchronously: in-flight fades are cancelled
-// and awaited, the current pipeline is torn down to NULL on the calling
-// goroutine, and the cleanup loop is drained. This is what gives pipewire a
-// clean client-disconnect (SetState(Null)) rather than a socket EOF — the
-// latter leaves stale node/buffer state in the daemon that accumulates
-// across restarts.
+// Close shuts the driver down: in-flight fades are cancelled and awaited, the
+// healthcheck and bus watchers are stopped, and every outstanding pipeline
+// (the survivor plus anything still queued for cleanup) is torn down to NULL
+// concurrently within closeTeardownBudget. Posting SetState(Null) to every
+// pipewiresink is what gives pipewire a clean client-disconnect rather than a
+// socket EOF; the latter leaves stale node/buffer state in the daemon that
+// accumulates across restarts and eventually wedges it. The bounded,
+// concurrent teardown guarantees Close returns well inside docker's stop
+// grace so the process is never SIGKILLed mid-disconnect.
 //
 // After Close returns, further Play/Stop/etc. calls return an error. Close
 // is idempotent.
@@ -442,24 +508,20 @@ func (d *Driver) Close() error {
 		d.closed = true
 		d.cancelAllFadesLocked()
 		d.cancelPendingSeekLocked()
-		current := d.current
+		survivor := d.current
 		d.current = nil
 		d.volumeEl = nil
-		// Capture and clear the survivor's bus-watch cancel — cleanup
-		// loop won't process it (we teardown synchronously below).
-		var currentBusCancel context.CancelFunc
-		if current != nil {
-			currentBusCancel = d.busCancels[current]
-			delete(d.busCancels, current)
+		// Cancel every live bus watcher up front so none spin on a flushed
+		// bus while we tear pipelines down. Includes the survivor's.
+		for el, cancel := range d.busCancels {
+			cancel()
+			delete(d.busCancels, el)
 		}
 		d.mu.Unlock()
 
-		// Stop healthcheck loop and the survivor's bus watcher.
+		// Stop the healthcheck loop.
 		if d.healthCancel != nil {
 			d.healthCancel()
-		}
-		if currentBusCancel != nil {
-			currentBusCancel()
 		}
 
 		// Wait for cancelled fades to push their pipelines into cleanupCh
@@ -467,22 +529,33 @@ func (d *Driver) Close() error {
 		// cleanupCh from fade goroutines.
 		d.fadesWG.Wait()
 
-		// Tear down the survivor synchronously.
-		if current != nil {
-			err = teardownPipeline(current)
-		}
-
-		// Signal the cleanup loop to drain queued pipelines and exit.
-		// It will cancel each pipeline's bus watcher in turn.
-		close(d.cleanupCh)
-		// Wait for cleanup loop to drain (and tear down each queued
-		// pipeline). After this returns, no more bus watchers should
-		// remain alive.
+		// Take ownership of teardown from the serial cleanup loop. Once it
+		// returns, we drain anything still queued and tear the whole set —
+		// survivor + queued — down concurrently within one bounded budget,
+		// so a slow/hung pipewire can't drag shutdown past docker's stop
+		// grace (which would SIGKILL us mid-disconnect).
+		close(d.cleanupStop)
 		<-d.cleanupDone
 
-		// All watchers should be exiting now. Wait for them before
-		// closing the events channel so no goroutine sends on a closed
-		// chan.
+		pipelines := make([]*gst.Element, 0, cap(d.cleanupCh)+1)
+		if survivor != nil {
+			pipelines = append(pipelines, survivor)
+		}
+		for drained := false; !drained; {
+			select {
+			case el := <-d.cleanupCh:
+				if el != nil {
+					pipelines = append(pipelines, el)
+				}
+			default:
+				drained = true
+			}
+		}
+		teardownConcurrent(pipelines, closeTeardownBudget)
+
+		// All watchers + healthcheck should be exiting now. Wait for them
+		// before closing the events channel so no goroutine sends on a
+		// closed chan.
 		d.watchersWG.Wait()
 		close(d.events)
 	})
