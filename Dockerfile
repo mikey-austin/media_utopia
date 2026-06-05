@@ -15,7 +15,7 @@
 #   Full build:    docker build --target mud -t mud:20260312 .
 #   Library-only:  docker build --target mud-library --build-arg BUILD_TAGS="" --build-arg CGO=0 -t mud-library:20260312-nogst-noupnp .
 
-FROM ubuntu:24.04 AS build
+FROM ubuntu:26.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
 ARG BUILD_TAGS="gstreamer upnp"
 ARG CGO="1"
@@ -38,7 +38,7 @@ COPY . .
 RUN CGO_ENABLED=${CGO} go build -trimpath -ldflags "-s -w" -tags "${BUILD_TAGS}" -o /out/mud ./cmd/mud
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/mu ./cmd/mu
 
-FROM ubuntu:24.04 AS mud
+FROM ubuntu:26.04 AS mud
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     glib-networking \
