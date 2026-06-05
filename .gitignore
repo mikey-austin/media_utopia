@@ -14,6 +14,7 @@ integrations/home_assistant/mosquitto/log/
 /.mud/
 integrations/home_assistant/mud_config/music/
 integrations/home_assistant/mud_config/playlists/
+integrations/home_assistant/mud_config/playlists.bak.v1/
 
 # Android build artifacts
 integrations/android_app/.gradle/
