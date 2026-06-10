@@ -22,13 +22,13 @@
 window {
     background-color: @mu_surface;
     color: @mu_on_surface;
+    font-family: "Inter", "Inter Variable", sans-serif;
 }
 
 /* === Header Bar === */
 headerbar {
     background-color: @mu_surface_container_low;
     color: @mu_on_surface;
-    border-bottom: 1px solid alpha(@mu_outline, 0.2);
     box-shadow: none;
 }
 
@@ -47,9 +47,9 @@ headerbar button:hover {
 }
 
 /* === Sidebar === */
+/* No-line rule: depth comes from the surface ladder, not borders. */
 .sidebar {
     background-color: @mu_surface_container_lowest;
-    border-right: 1px solid alpha(@mu_outline, 0.15);
 }
 
 .sidebar-logo {
@@ -177,7 +177,6 @@ scale slider:hover {
     background-color: @mu_surface_container_high;
     border-radius: 12px;
     padding: 16px;
-    border: 1px solid alpha(@mu_outline, 0.1);
 }
 
 .card:hover {
@@ -187,7 +186,6 @@ scale slider:hover {
 /* === Mini Player === */
 .mini-player {
     background-color: @mu_surface_container_low;
-    border-top: 1px solid alpha(@mu_outline, 0.2);
     padding: 8px 16px;
 }
 
@@ -273,17 +271,17 @@ scale slider:hover {
 
 /* === Entries === */
 entry {
-    background-color: @mu_surface_container_high;
+    background-color: @mu_surface_container_low;
     color: @mu_on_surface;
-    border: 1px solid @mu_outline;
+    border: none;
     border-radius: 8px;
     padding: 8px 12px;
     caret-color: @mu_primary;
 }
 
-entry:focus {
-    border-color: @mu_primary;
-    outline: 2px solid alpha(@mu_primary, 0.3);
+entry:focus,
+entry:focus-within {
+    outline: 2px solid alpha(@mu_primary, 0.35);
     outline-offset: -1px;
 }
 
@@ -376,9 +374,10 @@ button.destructive-action:hover {
 /* === Popovers === */
 popover contents {
     background-color: @mu_surface_container_high;
-    border: 1px solid alpha(@mu_outline, 0.2);
+    border: none;
     border-radius: 12px;
     color: @mu_on_surface;
+    box-shadow: 0 8px 32px alpha(black, 0.5);
 }
 
 /* === Tooltips === */
@@ -421,7 +420,8 @@ switch:checked slider {
 .album-art {
     background-color: @mu_surface_container_low;
     border-radius: 12px;
-    box-shadow: 0 8px 32px alpha(black, 0.4);
+    /* Tinted shadow per the design doc — no harsh black drop shadows */
+    box-shadow: 0 8px 32px alpha(@mu_on_surface, 0.06);
 }
 
 .track-title {
@@ -488,7 +488,6 @@ preferencespage {
 preferencesgroup {
     background-color: @mu_surface_container_low;
     border-radius: 12px;
-    border: 1px solid alpha(@mu_outline, 0.1);
 }
 
 preferencesgroup > box > box > label {
@@ -523,6 +522,7 @@ row > box > box > label.subtitle {
 
 .meta-label {
     font-size: 13px;
+    letter-spacing: 0.8px;
     color: @mu_on_surface_variant;
 }
 
@@ -530,18 +530,16 @@ row > box > box > label.subtitle {
     background-color: @mu_surface_container;
     border-radius: 12px;
     padding: 14px 16px;
-    border: 1px solid alpha(@mu_outline, 0.12);
-    transition: background-color 150ms ease, border-color 150ms ease;
+    transition: background-color 150ms ease, box-shadow 150ms ease;
 }
 
 .mu-card:hover {
     background-color: @mu_surface_container_high;
-    border-color: alpha(@mu_outline, 0.25);
 }
 
 .mu-card.active {
     background-color: @mu_primary_container;
-    border-color: alpha(@mu_primary, 0.35);
+    box-shadow: inset 4px 0 0 0 @mu_primary;
 }
 
 .mu-card.active:hover {
@@ -670,7 +668,6 @@ row > box > box > label.subtitle {
     padding: 6px 14px;
     font-size: 13px;
     font-weight: 600;
-    border: 1px solid alpha(@mu_outline, 0.12);
 }
 
 .queue-toggle-button:hover {
@@ -680,7 +677,6 @@ row > box > box > label.subtitle {
 .queue-toggle-active {
     background-color: @mu_primary_container;
     color: @mu_primary;
-    border-color: alpha(@mu_primary, 0.3);
 }
 
 .queue-toggle-active:hover {
@@ -737,4 +733,52 @@ row > box > box > label.subtitle {
 .zone-source-dropdown {
     background-color: @mu_surface_container_high;
     border-radius: 8px;
+}
+
+/* === Gradient CTA ("lathed metal" accent per the design doc) === */
+.gradient-cta {
+    background-image: linear-gradient(135deg, @mu_primary, shade(@mu_primary, 0.75));
+    color: @mu_on_primary;
+    font-weight: 600;
+    border-radius: 8px;
+}
+
+.gradient-cta:hover {
+    background-image: linear-gradient(135deg, shade(@mu_primary, 1.08), shade(@mu_primary, 0.85));
+}
+
+/* === Status pages (loading / empty / error) === */
+.status-page-icon {
+    color: @mu_on_surface_variant;
+}
+
+.status-page-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: @mu_on_surface;
+}
+
+.status-page-description {
+    font-size: 13px;
+    color: @mu_on_surface_variant;
+}
+
+/* === Lease-blocked banner === */
+.lease-banner {
+    background-color: @mu_surface_container_high;
+    border-radius: 12px;
+    padding: 10px 14px;
+    color: @mu_on_surface_variant;
+}
+
+.lease-banner label {
+    font-size: 13px;
+}
+
+/* === Scanning pulse dot === */
+.scanning-dot {
+    background-color: @mu_primary;
+    border-radius: 3px;
+    min-width: 6px;
+    min-height: 6px;
 }
