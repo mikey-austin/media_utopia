@@ -165,6 +165,34 @@ namespace Mu {
             connection_changed_id = mqtt.connection_changed.connect (on_connection_changed);
         }
 
+        public override void dispose () {
+            if (node_added_id != 0) {
+                node_repo.disconnect (node_added_id);
+                node_added_id = 0;
+            }
+            if (node_removed_id != 0) {
+                node_repo.disconnect (node_removed_id);
+                node_removed_id = 0;
+            }
+            if (node_updated_id != 0) {
+                node_repo.disconnect (node_updated_id);
+                node_updated_id = 0;
+            }
+            if (state_changed_id != 0) {
+                state_repo.disconnect (state_changed_id);
+                state_changed_id = 0;
+            }
+            if (active_changed_id != 0) {
+                active_repo.disconnect (active_changed_id);
+                active_changed_id = 0;
+            }
+            if (connection_changed_id != 0) {
+                mqtt.disconnect (connection_changed_id);
+                connection_changed_id = 0;
+            }
+            base.dispose ();
+        }
+
         private void populate_initial () {
             /* Populate with already-discovered renderers */
             var renderers = node_repo.get_renderers ();

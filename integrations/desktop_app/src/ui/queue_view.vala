@@ -152,6 +152,18 @@ namespace Mu {
             });
         }
 
+        public override void dispose () {
+            if (state_changed_id != 0) {
+                state_repo.disconnect (state_changed_id);
+                state_changed_id = 0;
+            }
+            if (active_changed_id != 0) {
+                active_repo.disconnect (active_changed_id);
+                active_changed_id = 0;
+            }
+            base.dispose ();
+        }
+
         /* ---- State observation ---- */
 
         private void on_state_updated (RendererState state) {

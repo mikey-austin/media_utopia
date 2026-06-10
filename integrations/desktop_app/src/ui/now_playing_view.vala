@@ -350,6 +350,48 @@ namespace Mu {
             rebuild_route_zone_list ();
         }
 
+        public override void dispose () {
+            if (state_changed_id != 0) {
+                state_repo.disconnect (state_changed_id);
+                state_changed_id = 0;
+            }
+            if (active_changed_id != 0) {
+                active_repo.disconnect (active_changed_id);
+                active_changed_id = 0;
+            }
+            if (node_added_id != 0) {
+                node_repo.disconnect (node_added_id);
+                node_added_id = 0;
+            }
+            if (node_removed_id != 0) {
+                node_repo.disconnect (node_removed_id);
+                node_removed_id = 0;
+            }
+            if (node_updated_id != 0) {
+                node_repo.disconnect (node_updated_id);
+                node_updated_id = 0;
+            }
+            if (zone_state_changed_id != 0) {
+                zone_state_repo.disconnect (zone_state_changed_id);
+                zone_state_changed_id = 0;
+            }
+            if (spectrum_handler_id != 0 && local_renderer != null) {
+                local_renderer.disconnect (spectrum_handler_id);
+                spectrum_handler_id = 0;
+            }
+            if (volume_debounce_id != 0) {
+                Source.remove (volume_debounce_id);
+                volume_debounce_id = 0;
+            }
+            if (zone_volume_timers != null) {
+                zone_volume_timers.foreach ((zone_id, timer_id) => {
+                    Source.remove (timer_id);
+                });
+                zone_volume_timers.remove_all ();
+            }
+            base.dispose ();
+        }
+
         /* ---- State application ---- */
 
         private void refresh_from_state () {

@@ -97,6 +97,32 @@ namespace Mu {
             state_changed_id = zone_state_repo.state_changed.connect (on_state_changed);
         }
 
+        public override void dispose () {
+            if (node_added_id != 0) {
+                node_repo.disconnect (node_added_id);
+                node_added_id = 0;
+            }
+            if (node_removed_id != 0) {
+                node_repo.disconnect (node_removed_id);
+                node_removed_id = 0;
+            }
+            if (node_updated_id != 0) {
+                node_repo.disconnect (node_updated_id);
+                node_updated_id = 0;
+            }
+            if (state_changed_id != 0) {
+                zone_state_repo.disconnect (state_changed_id);
+                state_changed_id = 0;
+            }
+            if (volume_timers != null) {
+                volume_timers.foreach ((zone_id, timer_id) => {
+                    Source.remove (timer_id);
+                });
+                volume_timers.remove_all ();
+            }
+            base.dispose ();
+        }
+
         private void populate_initial () {
             var zones = node_repo.get_zones ();
             for (uint i = 0; i < zones.length; i++) {

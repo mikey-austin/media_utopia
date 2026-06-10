@@ -403,6 +403,22 @@ namespace Mu {
             node_removed_id = node_repo.node_removed.connect (on_node_removed);
         }
 
+        public override void dispose () {
+            if (node_added_id != 0) {
+                node_repo.disconnect (node_added_id);
+                node_added_id = 0;
+            }
+            if (node_removed_id != 0) {
+                node_repo.disconnect (node_removed_id);
+                node_removed_id = 0;
+            }
+            if (search_timeout_id != 0) {
+                Source.remove (search_timeout_id);
+                search_timeout_id = 0;
+            }
+            base.dispose ();
+        }
+
         private void populate_initial () {
             /* Populate libraries */
             var libs = node_repo.get_libraries ();
