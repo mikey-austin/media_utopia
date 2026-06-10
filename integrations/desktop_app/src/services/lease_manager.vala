@@ -64,6 +64,37 @@ namespace Mu {
         }
 
         /**
+         * Force-acquire a lease via session.takeControl, overwriting any
+         * session another controller holds. Mirrors Android
+         * LeaseManager.takeControl.
+         */
+        public async Lease? take_control (string renderer_id) {
+            var body = SessionBodies.acquire (TTL_MS);
+            var reply = yield correlator.send (
+                renderer_id,
+                "session.takeControl",
+                body,
+                null,
+                -1,
+                5000
+            );
+
+            if (reply == null || !reply.ok || reply.body == null) {
+                warning ("LeaseManager: takeControl failed for %s", renderer_id);
+                return null;
+            }
+
+            var cached = parse_session_reply (reply.body);
+            if (cached == null) {
+                warning ("LeaseManager: malformed takeControl reply for %s", renderer_id);
+                return null;
+            }
+
+            leases.set (renderer_id, cached);
+            return cached.to_lease ();
+        }
+
+        /**
          * Release the lease for a specific renderer.
          *
          * If we don't currently hold a cached lease for the renderer (e.g.

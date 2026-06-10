@@ -16,6 +16,27 @@ namespace Mu {
         }
 
         /**
+         * Update the badge from structured display metadata.
+         */
+        public void update_from_display (DisplayMetadata? display) {
+            if (display == null) {
+                visible = false;
+                return;
+            }
+            var obj = new Json.Object ();
+            if (display.format.length > 0) {
+                obj.set_string_member ("format", display.format);
+            }
+            if (display.bit_depth > 0) {
+                obj.set_int_member ("bitDepth", display.bit_depth);
+            }
+            if (display.sample_rate > 0) {
+                obj.set_int_member ("sampleRate", display.sample_rate);
+            }
+            update_from_metadata (obj);
+        }
+
+        /**
          * Update the badge from current item metadata.
          * Shows format info like "FLAC  24-BIT  96KHZ".
          * Hides itself if no relevant fields are present.

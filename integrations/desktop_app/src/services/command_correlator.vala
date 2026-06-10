@@ -26,6 +26,14 @@ namespace Mu {
         }
 
         /**
+         * The identity string commands are sent as (session owners are
+         * compared against this to detect foreign lease holders).
+         */
+        public unowned string get_identity () {
+            return identity;
+        }
+
+        /**
          * Subscribe to the reply topic and wire the message handler.
          */
         public void setup (string topic_base, string controller_id, string identity) {

@@ -61,6 +61,12 @@ namespace Mu {
         public int64 duration_ms { get; set; default = 0; }
         public string media_type { get; set; default = ""; }
 
+        /* Optional technical format info (hi-res badge). Not all backends
+         * supply these yet — absent fields simply hide the badge. */
+        public string format { get; set; default = ""; }
+        public int64 bit_depth { get; set; default = 0; }
+        public int64 sample_rate { get; set; default = 0; }
+
         public DisplayMetadata () {
             Object ();
         }
@@ -88,6 +94,12 @@ namespace Mu {
                 ? obj.get_int_member ("durationMs") : 0;
             d.media_type = obj.has_member ("mediaType")
                 ? (obj.get_string_member ("mediaType") ?? "") : "";
+            d.format = obj.has_member ("format")
+                ? (obj.get_string_member ("format") ?? "") : "";
+            d.bit_depth = obj.has_member ("bitDepth")
+                ? obj.get_int_member ("bitDepth") : 0;
+            d.sample_rate = obj.has_member ("sampleRate")
+                ? obj.get_int_member ("sampleRate") : 0;
             return d;
         }
 
@@ -106,6 +118,9 @@ namespace Mu {
             if (artwork_url.length > 0) obj.set_string_member ("artworkUrl", artwork_url);
             if (duration_ms > 0) obj.set_int_member ("durationMs", duration_ms);
             if (media_type.length > 0) obj.set_string_member ("mediaType", media_type);
+            if (format.length > 0) obj.set_string_member ("format", format);
+            if (bit_depth > 0) obj.set_int_member ("bitDepth", bit_depth);
+            if (sample_rate > 0) obj.set_int_member ("sampleRate", sample_rate);
             return obj;
         }
 

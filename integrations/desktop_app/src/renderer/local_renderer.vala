@@ -217,6 +217,9 @@ namespace Mu {
             switch (cmd_type) {
                 /* ---- Session commands ---- */
                 case "session.acquire":
+                /* takeControl == force acquire; our acquire already
+                 * overwrites any existing session (Android parity). */
+                case "session.takeControl":
                     handle_session_acquire (cmd_id, cmd_from, reply_to, body);
                     break;
 

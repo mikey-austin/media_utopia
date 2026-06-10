@@ -36,6 +36,11 @@ namespace Mu {
         private Gtk.Box placeholder_box;
         private Gtk.Box metadata_box;
 
+        /* Foreign-lease banner */
+        private Gtk.Box lease_banner;
+        private Gtk.Label lease_banner_label;
+        private bool lease_blocked = false;
+
         /* Signal handler IDs */
         private ulong state_changed_id = 0;
         private ulong active_changed_id = 0;
@@ -213,6 +218,27 @@ namespace Mu {
             seek_bar.margin_top = 8;
             seek_bar.seek_requested.connect (on_seek_requested);
             metadata_box.append (seek_bar);
+
+            /* Foreign-lease banner: shown when another controller owns the
+             * session; offers takeControl like the Android Now Playing. */
+            lease_banner = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 12);
+            lease_banner.add_css_class ("lease-banner");
+            lease_banner.margin_top = 12;
+            lease_banner.visible = false;
+
+            lease_banner_label = new Gtk.Label ("");
+            lease_banner_label.halign = Gtk.Align.START;
+            lease_banner_label.hexpand = true;
+            lease_banner_label.wrap = true;
+            lease_banner.append (lease_banner_label);
+
+            var take_control_btn = new Gtk.Button.with_label ("Take Control");
+            take_control_btn.add_css_class ("gradient-cta");
+            take_control_btn.valign = Gtk.Align.CENTER;
+            take_control_btn.clicked.connect (on_take_control);
+            lease_banner.append (take_control_btn);
+
+            metadata_box.append (lease_banner);
 
             /* Transport controls */
             transport = new TransportControls ();
@@ -420,6 +446,7 @@ namespace Mu {
             last_artwork_url = "";
             artwork.visible = false;
             art_placeholder.visible = true;
+            update_lease_blocked (null);
             refresh_route_summary (null);
         }
 
@@ -444,9 +471,8 @@ namespace Mu {
                     return;
                 }
 
-                /* HiRes badge — display block doesn't carry sample/bit info,
-                 * so the badge stays collapsed for now. */
-                hires_badge.update_from_metadata (null);
+                /* HiRes badge from optional format fields in the display block */
+                hires_badge.update_from_display (display);
 
                 /* Load artwork */
                 var art_url = display.artwork_url;
@@ -502,6 +528,45 @@ namespace Mu {
                 transport.shuffle = state.queue.shuffle;
                 transport.repeat_mode = state.queue.repeat_mode;
             }
+
+            update_lease_blocked (state);
+        }
+
+        /* ---- Foreign-lease handling ---- */
+
+        private void update_lease_blocked (RendererState? state) {
+            var own_identity = correlator.get_identity ();
+            var owner = (state != null && state.session != null)
+                ? state.session.owner : "";
+
+            var blocked = owner.length > 0 && owner != own_identity;
+
+            if (blocked) {
+                lease_banner_label.label = "Controlled by %s".printf (owner);
+            }
+
+            if (blocked == lease_blocked) return;
+            lease_blocked = blocked;
+
+            transport.sensitive = !blocked;
+            seek_bar.sensitive = !blocked;
+            lease_banner.visible = blocked;
+        }
+
+        private void on_take_control () {
+            var renderer_id = active_repo.active_renderer_id;
+            if (renderer_id.length == 0) return;
+
+            lease_mgr.take_control.begin (renderer_id, (obj, res) => {
+                var lease = lease_mgr.take_control.end (res);
+                if (lease == null) {
+                    Toaster.show ("Couldn't take control of this renderer");
+                    return;
+                }
+                Toaster.show ("You now control this renderer");
+                /* State publish will flip the banner off; update eagerly too */
+                update_lease_blocked (state_repo.get_state (renderer_id));
+            });
         }
 
         /* ---- Routing panel ---- */
