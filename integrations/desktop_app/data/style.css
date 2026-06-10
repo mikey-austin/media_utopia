@@ -616,6 +616,14 @@ row > box > box > label.subtitle {
     padding: 10px 14px;
 }
 
+.queue-drag-handle {
+    color: alpha(@mu_on_surface_variant, 0.6);
+}
+
+.queue-row:hover .queue-drag-handle {
+    color: @mu_on_surface_variant;
+}
+
 .queue-index {
     font-size: 13px;
     font-weight: 600;

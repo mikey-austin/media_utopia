@@ -18,6 +18,10 @@ namespace Mu {
         private Gtk.Label track_count_label;
         private Gtk.Button shuffle_button;
         private Gtk.Button repeat_button;
+        private Gtk.Button clear_button;
+        private Gtk.Box lease_banner;
+        private Gtk.Label lease_banner_label;
+        private bool lease_blocked = false;
 
         /* Queue list */
         private Gtk.ListBox queue_list;
@@ -99,12 +103,26 @@ namespace Mu {
             repeat_button.clicked.connect (on_repeat_clicked);
             actions.append (repeat_button);
 
-            var clear_button = new Gtk.Button.with_label ("Clear");
+            clear_button = new Gtk.Button.with_label ("Clear");
             clear_button.add_css_class ("release-button");
             clear_button.clicked.connect (on_clear_clicked);
             actions.append (clear_button);
 
             outer.append (actions);
+
+            /* Foreign-lease banner (queue becomes read-only) */
+            lease_banner = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
+            lease_banner.add_css_class ("lease-banner");
+            lease_banner.margin_bottom = 12;
+            lease_banner.visible = false;
+
+            lease_banner_label = new Gtk.Label ("");
+            lease_banner_label.halign = Gtk.Align.START;
+            lease_banner_label.hexpand = true;
+            lease_banner_label.wrap = true;
+            lease_banner.append (lease_banner_label);
+
+            outer.append (lease_banner);
 
             /* --- Empty state --- */
             empty_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 12);
@@ -133,6 +151,26 @@ namespace Mu {
             queue_list.selection_mode = Gtk.SelectionMode.NONE;
             queue_list.add_css_class ("queue-list");
             queue_list.row_activated.connect (on_row_activated);
+
+            /* Delete on the keyboard-focused row */
+            var key_controller = new Gtk.EventControllerKey ();
+            key_controller.key_pressed.connect ((keyval, keycode, modifiers) => {
+                if (keyval != Gdk.Key.Delete && keyval != Gdk.Key.KP_Delete) {
+                    return false;
+                }
+                if (lease_blocked) return false;
+
+                var focused = queue_list.get_focus_child () as Gtk.ListBoxRow;
+                if (focused == null) return false;
+
+                var index = int.parse (focused.name);
+                if (index < 0 || index >= (int) items.length) return false;
+
+                on_remove_track (index, items[index]);
+                return true;
+            });
+            queue_list.add_controller (key_controller);
+
             outer.append (queue_list);
 
             scroll.child = outer;
@@ -167,6 +205,8 @@ namespace Mu {
         /* ---- State observation ---- */
 
         private void on_state_updated (RendererState state) {
+            update_lease_blocked (state);
+
             if (state.queue == null) return;
 
             var qs = state.queue;
@@ -302,6 +342,14 @@ namespace Mu {
                 card.add_css_class ("active");
             }
 
+            /* Drag handle */
+            var drag_handle = new Gtk.Image.from_icon_name ("list-drag-handle-symbolic");
+            drag_handle.pixel_size = 16;
+            drag_handle.add_css_class ("queue-drag-handle");
+            drag_handle.valign = Gtk.Align.CENTER;
+            drag_handle.visible = !lease_blocked;
+            card.append (drag_handle);
+
             /* Index number */
             var index_label = new Gtk.Label ("%02d".printf (index + 1));
             index_label.add_css_class ("queue-index");
@@ -376,11 +424,20 @@ namespace Mu {
 
             card.append (text_box);
 
+            /* Duration */
+            if (item.display != null && item.display.duration_ms > 0) {
+                var dur_label = new Gtk.Label (format_duration (item.display.duration_ms));
+                dur_label.add_css_class ("text-timestamp");
+                dur_label.valign = Gtk.Align.CENTER;
+                card.append (dur_label);
+            }
+
             /* Delete button */
             var delete_btn = new Gtk.Button.from_icon_name ("edit-delete-symbolic");
             delete_btn.add_css_class ("queue-delete-button");
             delete_btn.valign = Gtk.Align.CENTER;
             delete_btn.tooltip_text = "Remove from queue";
+            delete_btn.visible = !lease_blocked;
             delete_btn.clicked.connect (() => {
                 on_remove_track (index, item);
             });
@@ -392,6 +449,7 @@ namespace Mu {
             var drag_source = new Gtk.DragSource ();
             drag_source.actions = Gdk.DragAction.MOVE;
             drag_source.prepare.connect ((src, x, y) => {
+                if (lease_blocked) return null;
                 drag_source_index = index;
                 var val = Value (typeof (string));
                 val.set_string (index.to_string ());
@@ -407,6 +465,7 @@ namespace Mu {
             /* Drag-and-drop: target */
             var drop_target = new Gtk.DropTarget (typeof (string), Gdk.DragAction.MOVE);
             drop_target.drop.connect ((target, val, x, y) => {
+                if (lease_blocked) return false;
                 var from_str = val.get_string ();
                 if (from_str == null) return false;
 
@@ -443,6 +502,11 @@ namespace Mu {
             /* Update index label and title styling */
             var child = card.get_first_child ();
 
+            /* Skip drag handle */
+            if (child != null) {
+                child = child.get_next_sibling ();
+            }
+
             /* Index label */
             if (child != null) {
                 var index_label = child as Gtk.Label;
@@ -477,6 +541,32 @@ namespace Mu {
                     }
                 }
             }
+        }
+
+        /* ---- Foreign-lease handling ---- */
+
+        private void update_lease_blocked (RendererState? state) {
+            var own_identity = correlator.get_identity ();
+            var owner = (state != null && state.session != null)
+                ? state.session.owner : "";
+
+            var blocked = owner.length > 0 && owner != own_identity;
+
+            if (blocked) {
+                lease_banner_label.label =
+                    "Controlled by %s — queue is read-only".printf (owner);
+            }
+
+            if (blocked == lease_blocked) return;
+            lease_blocked = blocked;
+
+            lease_banner.visible = blocked;
+            shuffle_button.sensitive = !blocked;
+            repeat_button.sensitive = !blocked;
+            clear_button.sensitive = !blocked;
+
+            /* Rebuild rows so handles/delete buttons reflect the new mode */
+            rebuild_list ();
         }
 
         /* ---- Command dispatch ---- */
@@ -529,10 +619,26 @@ namespace Mu {
         }
 
         private void on_move_track (int from_index, int to_index) {
+            /* Optimistic local reorder so the row lands immediately */
+            if (from_index >= 0 && from_index < (int) items.length &&
+                to_index >= 0 && to_index < (int) items.length) {
+                var moved = items[from_index];
+                items.remove_index ((uint) from_index);
+                items.insert (to_index, moved);
+                if (current_index == from_index) {
+                    current_index = to_index;
+                } else if (from_index < current_index && to_index >= current_index) {
+                    current_index--;
+                } else if (from_index > current_index && to_index <= current_index) {
+                    current_index++;
+                }
+                rebuild_list ();
+            }
+
             send_command ("queue.move", QueueBodies.move ((int64) from_index, (int64) to_index));
 
-            /* Re-fetch to sync after move */
-            Timeout.add (200, () => {
+            /* Re-fetch to sync with the renderer's authoritative order */
+            Timeout.add (300, () => {
                 fetch_queue ();
                 return Source.REMOVE;
             });
