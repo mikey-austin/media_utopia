@@ -36,6 +36,8 @@ namespace Mu {
         private Gtk.SearchEntry search_entry;
         private Gtk.Box breadcrumb_box;
         private Gtk.ListBox content_list;
+        private Gtk.FlowBox content_grid;
+        private Gtk.Label toolbar_count_label;
         private Gtk.Box empty_box;
         private Gtk.Image empty_icon;
         private Gtk.Label empty_title_label;
@@ -190,6 +192,14 @@ namespace Mu {
 
             outer.append (tab_stack);
 
+            /* Auto-load the next page when scrolled to the bottom */
+            scroll.edge_reached.connect ((pos) => {
+                if (pos != Gtk.PositionType.BOTTOM) return;
+                if (tab_stack.visible_child_name != "libraries") return;
+                if (!has_more || is_loading) return;
+                on_load_more ();
+            });
+
             scroll.child = outer;
             this.child = scroll;
         }
@@ -228,10 +238,16 @@ namespace Mu {
             breadcrumb_box.margin_bottom = 8;
             vbox.append (breadcrumb_box);
 
-            /* Play All / Queue All toolbar */
+            /* Bulk action toolbar: track count + Play All / Queue All */
             toolbar_box = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
             toolbar_box.margin_bottom = 12;
             toolbar_box.visible = false;
+
+            toolbar_count_label = new Gtk.Label ("");
+            toolbar_count_label.add_css_class ("meta-label");
+            toolbar_count_label.valign = Gtk.Align.CENTER;
+            toolbar_count_label.margin_end = 8;
+            toolbar_box.append (toolbar_count_label);
 
             var play_all_btn = new Gtk.Button.with_label ("Play All");
             play_all_btn.add_css_class ("suggested-action");
@@ -275,12 +291,26 @@ namespace Mu {
 
             vbox.append (empty_box);
 
-            /* Content list */
+            /* Content list (tracks / mixed levels) */
             content_list = new Gtk.ListBox ();
             content_list.selection_mode = Gtk.SelectionMode.NONE;
             content_list.add_css_class ("library-content-list");
             content_list.row_activated.connect (on_content_row_activated);
             vbox.append (content_list);
+
+            /* Content grid (pure-container levels: albums, artists, folders) */
+            content_grid = new Gtk.FlowBox ();
+            content_grid.valign = Gtk.Align.START;
+            content_grid.homogeneous = true;
+            content_grid.column_spacing = 12;
+            content_grid.row_spacing = 16;
+            content_grid.min_children_per_line = 2;
+            content_grid.max_children_per_line = 8;
+            content_grid.selection_mode = Gtk.SelectionMode.NONE;
+            content_grid.activate_on_single_click = true;
+            content_grid.child_activated.connect (on_grid_child_activated);
+            content_grid.visible = false;
+            vbox.append (content_grid);
 
             /* Loading spinner */
             load_spinner = new Gtk.Spinner ();
@@ -783,11 +813,20 @@ namespace Mu {
                 child = next;
             }
 
+            /* Clear existing grid cards */
+            child = content_grid.get_first_child ();
+            while (child != null) {
+                var next = child.get_next_sibling ();
+                content_grid.remove (child);
+                child = next;
+            }
+
             rebuild_breadcrumbs ();
 
             if (current_items.length == 0) {
                 empty_box.visible = true;
                 content_list.visible = false;
+                content_grid.visible = false;
                 toolbar_box.visible = false;
                 load_more_button.visible = false;
 
@@ -815,26 +854,124 @@ namespace Mu {
             }
 
             empty_box.visible = false;
-            content_list.visible = true;
 
-            /* Show toolbar if we have tracks in this container */
-            var has_tracks = false;
+            /* Classify the level: pure containers render as an album-style
+             * grid (Android parity); anything with tracks renders as a list
+             * with the bulk action bar. */
+            uint track_count = 0;
             for (uint i = 0; i < current_items.length; i++) {
                 if (!is_container_item (current_items[i])) {
-                    has_tracks = true;
-                    break;
+                    track_count++;
                 }
             }
-            toolbar_box.visible = has_tracks && !is_search_mode;
+            var grid_mode = (track_count == 0) && !is_search_mode;
 
-            /* Build rows */
-            for (uint i = 0; i < current_items.length; i++) {
-                var row = build_content_row ((int) i, current_items[i]);
-                content_list.append (row);
+            if (grid_mode) {
+                content_list.visible = false;
+                content_grid.visible = true;
+                toolbar_box.visible = false;
+
+                for (uint i = 0; i < current_items.length; i++) {
+                    content_grid.append (build_grid_card ((int) i, current_items[i]));
+                }
+            } else {
+                content_grid.visible = false;
+                content_list.visible = true;
+
+                if (track_count > 0 && !is_search_mode) {
+                    toolbar_count_label.label = "%u TRACK%s".printf (
+                        track_count, track_count == 1 ? "" : "S");
+                    toolbar_box.visible = true;
+                } else {
+                    toolbar_box.visible = false;
+                }
+
+                for (uint i = 0; i < current_items.length; i++) {
+                    var row = build_content_row ((int) i, current_items[i]);
+                    content_list.append (row);
+                }
             }
 
-            /* Load more button */
+            /* Load more button (auto-load also triggers at the scroll edge) */
             load_more_button.visible = has_more;
+        }
+
+        private Gtk.FlowBoxChild build_grid_card (int index, Json.Object item) {
+            var child = new Gtk.FlowBoxChild ();
+            child.name = index.to_string ();
+            child.focusable = true;
+
+            var card = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
+            card.add_css_class ("library-grid-card");
+
+            /* Square artwork area with icon fallback */
+            var art_bg = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
+            art_bg.add_css_class ("library-grid-art");
+            art_bg.width_request = 144;
+            art_bg.height_request = 144;
+            art_bg.overflow = Gtk.Overflow.HIDDEN;
+            art_bg.halign = Gtk.Align.CENTER;
+
+            var art_icon = new Gtk.Image.from_icon_name ("folder-music-symbolic");
+            art_icon.pixel_size = 40;
+            art_icon.add_css_class ("text-secondary");
+            art_icon.halign = Gtk.Align.CENTER;
+            art_icon.valign = Gtk.Align.CENTER;
+            art_icon.hexpand = true;
+            art_icon.vexpand = true;
+            art_bg.append (art_icon);
+
+            var art_picture = new Gtk.Picture ();
+            art_picture.content_fit = Gtk.ContentFit.COVER;
+            art_picture.width_request = 144;
+            art_picture.height_request = 144;
+            art_picture.visible = false;
+            art_bg.append (art_picture);
+
+            var art_url = get_item_artwork_url (item);
+            if (art_url.length > 0) {
+                artwork_loader.load_async (art_url, (texture) => {
+                    if (texture != null && art_picture.get_parent () != null) {
+                        art_picture.paintable = texture;
+                        art_picture.visible = true;
+                        art_icon.visible = false;
+                    }
+                });
+            }
+
+            card.append (art_bg);
+
+            /* Title + child count */
+            var title_label = new Gtk.Label (get_item_title (item));
+            title_label.add_css_class ("queue-track-title");
+            title_label.halign = Gtk.Align.START;
+            title_label.ellipsize = Pango.EllipsizeMode.END;
+            title_label.max_width_chars = 18;
+            title_label.lines = 1;
+            card.append (title_label);
+
+            var child_count = get_item_child_count (item);
+            if (child_count > 0) {
+                var count_label = new Gtk.Label ("%ld items".printf ((long) child_count));
+                count_label.add_css_class ("caption");
+                count_label.add_css_class ("text-secondary");
+                count_label.halign = Gtk.Align.START;
+                card.append (count_label);
+            }
+
+            child.child = card;
+            return child;
+        }
+
+        private void on_grid_child_activated (Gtk.FlowBoxChild child) {
+            var index_str = child.name;
+            if (index_str == null || index_str.length == 0) return;
+
+            var index = int.parse (index_str);
+            if (index < 0 || index >= (int) current_items.length) return;
+
+            var item = current_items[index];
+            navigate_to (get_item_id (item), get_item_title (item));
         }
 
         private void rebuild_breadcrumbs () {

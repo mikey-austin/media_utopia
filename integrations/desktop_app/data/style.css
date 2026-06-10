@@ -708,6 +708,36 @@ row > box > box > label.subtitle {
     background-color: alpha(@mu_primary, 0.08);
 }
 
+.library-grid-card {
+    background-color: @mu_surface_container_low;
+    border-radius: 8px;
+    padding: 10px;
+    transition: background-color 150ms ease;
+}
+
+.library-grid-card:hover {
+    background-color: @mu_surface_container;
+}
+
+flowboxchild {
+    padding: 0;
+    border-radius: 8px;
+}
+
+flowboxchild:focus {
+    outline: 2px solid alpha(@mu_primary, 0.35);
+    outline-offset: -1px;
+}
+
+.library-grid-art {
+    background-color: @mu_surface_container;
+    border-radius: 6px;
+}
+
+.caption {
+    font-size: 11px;
+}
+
 .library-action-button {
     background-color: transparent;
     color: @mu_on_surface_variant;
