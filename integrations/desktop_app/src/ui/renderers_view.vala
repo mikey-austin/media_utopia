@@ -20,6 +20,7 @@ namespace Mu {
         private Gtk.Box local_card;
         private Gtk.Label local_status_label;
         private Gtk.Label network_heading_label;
+        private Gtk.Box scanning_box;
         private Gtk.Label scanning_label;
         private Gtk.ListBox renderer_list;
 
@@ -100,10 +101,20 @@ namespace Mu {
             network_heading_label.add_css_class ("meta-label");
             net_box.append (network_heading_label);
 
-            scanning_label = new Gtk.Label ("Scanning\u2026");
+            scanning_box = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 6);
+            scanning_box.valign = Gtk.Align.CENTER;
+            scanning_box.visible = (mqtt.connection_state == ConnectionState.CONNECTED);
+
+            var scanning_dot = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 0);
+            scanning_dot.add_css_class ("scanning-dot");
+            scanning_dot.valign = Gtk.Align.CENTER;
+            scanning_box.append (scanning_dot);
+
+            scanning_label = new Gtk.Label ("SCANNING\u2026");
             scanning_label.add_css_class ("scanning-label");
-            scanning_label.visible = (mqtt.connection_state == ConnectionState.CONNECTED);
-            net_box.append (scanning_label);
+            scanning_box.append (scanning_label);
+
+            net_box.append (scanning_box);
 
             outer.append (net_box);
 
@@ -255,7 +266,7 @@ namespace Mu {
         }
 
         private void on_connection_changed (ConnectionState state) {
-            scanning_label.visible = (state == ConnectionState.CONNECTED);
+            scanning_box.visible = (state == ConnectionState.CONNECTED);
         }
 
         private void on_row_activated (Gtk.ListBoxRow row) {
@@ -328,7 +339,7 @@ namespace Mu {
             hires.halign = Gtk.Align.END;
             right_box.append (hires);
 
-            /* Release button (hidden by default) */
+            /* Release button (hidden by default; shown when we own the session) */
             var release_btn = new Gtk.Button.with_label ("Release");
             release_btn.add_css_class ("release-button");
             release_btn.visible = false;
@@ -338,10 +349,27 @@ namespace Mu {
             });
             right_box.append (release_btn);
 
+            /* Take Control (shown when another controller owns the session) */
+            var take_btn = new Gtk.Button.with_label ("Take Control");
+            take_btn.add_css_class ("gradient-cta");
+            take_btn.visible = false;
+            take_btn.halign = Gtk.Align.END;
+            take_btn.clicked.connect (() => {
+                lease_mgr.take_control.begin (presence.node_id, (obj, res) => {
+                    if (lease_mgr.take_control.end (res) == null) {
+                        Toaster.show ("Couldn't take control of %s".printf (presence.name));
+                    } else {
+                        Toaster.show ("You now control %s".printf (presence.name));
+                    }
+                });
+            });
+            right_box.append (take_btn);
+
             card.append (right_box);
 
             /* Apply current state */
-            apply_state_to_card (presence.node_id, status_label, lease_label, hires, release_btn);
+            apply_state_to_card (presence.node_id, status_label, lease_label,
+                                 hires, release_btn, take_btn);
 
             return card;
         }
@@ -374,10 +402,11 @@ namespace Mu {
                 lease_label = child as Gtk.Label;
             }
 
-            /* Right box: hires badge, release button */
+            /* Right box: hires badge, release button, take-control button */
             var right_box = text_box.get_next_sibling () as Gtk.Box;
             Gtk.Label? hires = null;
             Gtk.Button? release_btn = null;
+            Gtk.Button? take_btn = null;
 
             if (right_box != null) {
                 var rchild = right_box.get_first_child ();
@@ -387,6 +416,10 @@ namespace Mu {
                 }
                 if (rchild != null) {
                     release_btn = rchild as Gtk.Button;
+                    rchild = rchild.get_next_sibling ();
+                }
+                if (rchild != null) {
+                    take_btn = rchild as Gtk.Button;
                 }
             }
 
@@ -396,7 +429,8 @@ namespace Mu {
             }
 
             /* Update state-dependent widgets */
-            apply_state_to_card (node_id, status_label, lease_label, hires, release_btn);
+            apply_state_to_card (node_id, status_label, lease_label, hires,
+                                 release_btn, take_btn);
 
             /* Also update name in case presence changed */
             var presence = node_repo.get_node (node_id);
@@ -412,13 +446,15 @@ namespace Mu {
                                            Gtk.Label? status_label,
                                            Gtk.Label? lease_label,
                                            Gtk.Label? hires_badge,
-                                           Gtk.Button? release_btn) {
+                                           Gtk.Button? release_btn,
+                                           Gtk.Button? take_btn = null) {
             var state = state_repo.get_state (node_id);
 
             if (state == null) {
                 if (lease_label != null) lease_label.visible = false;
                 if (hires_badge != null) hires_badge.visible = false;
                 if (release_btn != null) release_btn.visible = false;
+                if (take_btn != null) take_btn.visible = false;
                 return;
             }
 
@@ -427,18 +463,27 @@ namespace Mu {
                 hires_badge.visible = check_hires (state);
             }
 
-            /* Session/lease info */
-            if (state.session != null && state.session.owner.length > 0) {
+            /* Session/lease info: we own it → Release; someone else → Take Control */
+            var owner = (state.session != null) ? state.session.owner : "";
+            var own_identity = lease_mgr.get_identity ();
+
+            if (owner.length > 0) {
                 if (lease_label != null) {
-                    lease_label.label = "Session: %s".printf (state.session.owner);
+                    lease_label.label = (owner == own_identity)
+                        ? "Controlled by you"
+                        : "Controlled by %s".printf (owner);
                     lease_label.visible = true;
                 }
                 if (release_btn != null) {
-                    release_btn.visible = true;
+                    release_btn.visible = (owner == own_identity);
+                }
+                if (take_btn != null) {
+                    take_btn.visible = (owner != own_identity);
                 }
             } else {
                 if (lease_label != null) lease_label.visible = false;
                 if (release_btn != null) release_btn.visible = false;
+                if (take_btn != null) take_btn.visible = false;
             }
         }
 
@@ -477,10 +522,11 @@ namespace Mu {
         }
 
         private bool check_hires (RendererState state) {
-            /* Display block does not carry sample rate / bit depth, so the
-             * hi-res indicator is unavailable until the protocol surfaces
-             * those fields again (e.g. via attributes on library.getItem). */
-            return false;
+            if (state.current == null || state.current.display == null) {
+                return false;
+            }
+            var display = state.current.display;
+            return display.bit_depth > 16 || display.sample_rate > 48000;
         }
 
         private void update_local_status () {

@@ -814,9 +814,16 @@ flowboxchild:focus {
 }
 
 /* === Scanning pulse dot === */
+@keyframes mu-pulse {
+    0% { opacity: 1.0; }
+    50% { opacity: 0.25; }
+    100% { opacity: 1.0; }
+}
+
 .scanning-dot {
     background-color: @mu_primary;
     border-radius: 3px;
     min-width: 6px;
     min-height: 6px;
+    animation: mu-pulse 1.6s ease-in-out infinite;
 }

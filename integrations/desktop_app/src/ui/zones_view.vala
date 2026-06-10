@@ -10,17 +10,32 @@ namespace Mu {
         private NodeRepository node_repo;
         private ZoneStateRepository zone_state_repo;
         private CommandCorrelator correlator;
+        private RendererStateRepository state_repo;
+        private ActiveRendererRepository active_repo;
+        private LeaseManager lease_mgr;
 
         /* Layout widgets */
         private Gtk.Label count_label;
         private Gtk.Box zone_list_box;
         private Gtk.Label empty_label;
+        private Gtk.Stack zones_tab_stack;
+        private Gtk.Box sources_list_box;
+        private Gtk.Label sources_empty_label;
+
+        /* Master volume widgets (active renderer) */
+        private Gtk.Button master_mute_btn;
+        private Gtk.Scale master_scale;
+        private Gtk.Label master_pct_label;
+        private uint master_volume_timer = 0;
+        private bool updating_master = false;
 
         /* Signal handler IDs for cleanup */
         private ulong node_added_id = 0;
         private ulong node_removed_id = 0;
         private ulong node_updated_id = 0;
         private ulong state_changed_id = 0;
+        private ulong renderer_state_id = 0;
+        private ulong active_changed_id = 0;
 
         /* Track zone cards by node_id */
         private HashTable<string, Gtk.Box> card_map;
@@ -34,10 +49,16 @@ namespace Mu {
 
         public ZonesView (NodeRepository node_repo,
                           ZoneStateRepository zone_state_repo,
-                          CommandCorrelator correlator) {
+                          CommandCorrelator correlator,
+                          RendererStateRepository state_repo,
+                          ActiveRendererRepository active_repo,
+                          LeaseManager lease_mgr) {
             this.node_repo = node_repo;
             this.zone_state_repo = zone_state_repo;
             this.correlator = correlator;
+            this.state_repo = state_repo;
+            this.active_repo = active_repo;
+            this.lease_mgr = lease_mgr;
 
             card_map = new HashTable<string, Gtk.Box> (str_hash, str_equal);
             volume_timers = new HashTable<string, uint> (str_hash, str_equal);
@@ -76,19 +97,258 @@ namespace Mu {
 
             outer.append (header_box);
 
-            /* --- Empty state --- */
+            /* --- Master volume (active renderer) --- */
+            var master_card = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
+            master_card.add_css_class ("mu-card");
+            master_card.margin_bottom = 16;
+            master_card.valign = Gtk.Align.CENTER;
+
+            var master_label = new Gtk.Label ("Master");
+            master_label.add_css_class ("heading-small");
+            master_label.margin_end = 4;
+            master_card.append (master_label);
+
+            master_mute_btn = new Gtk.Button ();
+            master_mute_btn.add_css_class ("flat");
+            master_mute_btn.valign = Gtk.Align.CENTER;
+            master_mute_btn.icon_name = "audio-volume-high-symbolic";
+            master_mute_btn.tooltip_text = "Mute";
+            master_mute_btn.clicked.connect (on_master_mute);
+            master_card.append (master_mute_btn);
+
+            master_scale = new Gtk.Scale.with_range (
+                Gtk.Orientation.HORIZONTAL, 0.0, 100.0, 1.0);
+            master_scale.add_css_class ("volume-scale");
+            master_scale.hexpand = true;
+            master_scale.draw_value = false;
+            master_scale.value_changed.connect (() => {
+                if (updating_master) return;
+                master_pct_label.label = "%d%%".printf ((int) master_scale.get_value ());
+                debounce_master_volume (master_scale.get_value () / 100.0);
+            });
+            master_card.append (master_scale);
+
+            master_pct_label = new Gtk.Label ("100%");
+            master_pct_label.add_css_class ("text-secondary");
+            master_pct_label.width_chars = 4;
+            master_pct_label.xalign = 1.0f;
+            master_card.append (master_pct_label);
+
+            outer.append (master_card);
+
+            /* --- ZONES / SOURCES tabs --- */
+            var tab_box = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 4);
+            tab_box.halign = Gtk.Align.START;
+            tab_box.margin_bottom = 12;
+
+            var zones_tab_btn = new Gtk.ToggleButton.with_label ("Zones");
+            zones_tab_btn.add_css_class ("queue-toggle-button");
+            zones_tab_btn.active = true;
+            zones_tab_btn.add_css_class ("queue-toggle-active");
+            tab_box.append (zones_tab_btn);
+
+            var sources_tab_btn = new Gtk.ToggleButton.with_label ("Sources");
+            sources_tab_btn.add_css_class ("queue-toggle-button");
+            sources_tab_btn.group = zones_tab_btn;
+            tab_box.append (sources_tab_btn);
+
+            zones_tab_btn.toggled.connect (() => {
+                if (zones_tab_btn.active) {
+                    zones_tab_stack.visible_child_name = "zones";
+                    zones_tab_btn.add_css_class ("queue-toggle-active");
+                    sources_tab_btn.remove_css_class ("queue-toggle-active");
+                }
+            });
+            sources_tab_btn.toggled.connect (() => {
+                if (sources_tab_btn.active) {
+                    zones_tab_stack.visible_child_name = "sources";
+                    sources_tab_btn.add_css_class ("queue-toggle-active");
+                    zones_tab_btn.remove_css_class ("queue-toggle-active");
+                    rebuild_sources ();
+                }
+            });
+
+            outer.append (tab_box);
+
+            zones_tab_stack = new Gtk.Stack ();
+            zones_tab_stack.transition_type = Gtk.StackTransitionType.CROSSFADE;
+            zones_tab_stack.transition_duration = 150;
+
+            /* Zones tab content */
+            var zones_page = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
+
             empty_label = new Gtk.Label ("No zones discovered yet");
             empty_label.add_css_class ("meta-label");
             empty_label.halign = Gtk.Align.START;
             empty_label.margin_bottom = 16;
-            outer.append (empty_label);
+            zones_page.append (empty_label);
 
-            /* --- Zone card list --- */
             zone_list_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
-            outer.append (zone_list_box);
+            zones_page.append (zone_list_box);
+
+            zones_tab_stack.add_named (zones_page, "zones");
+
+            /* Sources tab content */
+            var sources_page = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
+
+            sources_empty_label = new Gtk.Label ("No sources advertised by zone controllers");
+            sources_empty_label.add_css_class ("meta-label");
+            sources_empty_label.halign = Gtk.Align.START;
+            sources_empty_label.margin_bottom = 16;
+            sources_page.append (sources_empty_label);
+
+            sources_list_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
+            sources_page.append (sources_list_box);
+
+            zones_tab_stack.add_named (sources_page, "sources");
+            zones_tab_stack.visible_child_name = "zones";
+
+            outer.append (zones_tab_stack);
 
             scroll.child = outer;
             this.child = scroll;
+
+            update_master_controls ();
+        }
+
+        /* ---- Master volume (active renderer) ---- */
+
+        private void update_master_controls () {
+            var renderer_id = active_repo.active_renderer_id;
+            var state = renderer_id.length > 0
+                ? state_repo.get_state (renderer_id) : null;
+
+            if (state == null || state.playback == null) {
+                master_scale.sensitive = false;
+                master_mute_btn.sensitive = false;
+                return;
+            }
+
+            master_scale.sensitive = true;
+            master_mute_btn.sensitive = true;
+
+            updating_master = true;
+            master_scale.set_value (state.playback.volume * 100.0);
+            updating_master = false;
+
+            master_pct_label.label = "%d%%".printf (
+                (int) (state.playback.volume * 100.0));
+            master_mute_btn.icon_name = state.playback.mute
+                ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic";
+            master_mute_btn.tooltip_text = state.playback.mute ? "Unmute" : "Mute";
+        }
+
+        private void debounce_master_volume (double volume) {
+            if (master_volume_timer != 0) {
+                Source.remove (master_volume_timer);
+            }
+            master_volume_timer = Timeout.add (150, () => {
+                master_volume_timer = 0;
+                send_renderer_command ("playback.setVolume",
+                    PlaybackBodies.set_volume (volume));
+                return Source.REMOVE;
+            });
+        }
+
+        private void on_master_mute () {
+            var renderer_id = active_repo.active_renderer_id;
+            var state = renderer_id.length > 0
+                ? state_repo.get_state (renderer_id) : null;
+            var muted = (state != null && state.playback != null)
+                ? state.playback.mute : false;
+            send_renderer_command ("playback.setMute",
+                PlaybackBodies.set_mute (!muted));
+        }
+
+        private void send_renderer_command (string cmd_type, Json.Object body) {
+            var renderer_id = active_repo.active_renderer_id;
+            if (renderer_id.length == 0) return;
+
+            lease_mgr.ensure_lease.begin (renderer_id, (obj, res) => {
+                var lease = lease_mgr.ensure_lease.end (res);
+                if (lease != null) {
+                    correlator.send_fire_and_forget (renderer_id, cmd_type, body, lease);
+                }
+            });
+        }
+
+        /* ---- Sources tab ---- */
+
+        private void rebuild_sources () {
+            Gtk.Widget? child = sources_list_box.get_first_child ();
+            while (child != null) {
+                var next = child.get_next_sibling ();
+                sources_list_box.remove (child);
+                child = next;
+            }
+
+            /* Aggregate distinct sources across zone controllers */
+            var sources = new GenericArray<PresenceSource> ();
+            var seen = new HashTable<string, bool> (str_hash, str_equal);
+            var controllers = node_repo.get_zone_controllers ();
+            for (uint i = 0; i < controllers.length; i++) {
+                var ctrl_sources = controllers[i].sources;
+                if (ctrl_sources == null) continue;
+                for (uint j = 0; j < ctrl_sources.length; j++) {
+                    if (seen.contains (ctrl_sources[j].id)) continue;
+                    seen.insert (ctrl_sources[j].id, true);
+                    sources.add (ctrl_sources[j]);
+                }
+            }
+
+            sources_empty_label.visible = (sources.length == 0);
+
+            var zones = node_repo.get_zones ();
+
+            for (uint i = 0; i < sources.length; i++) {
+                sources_list_box.append (build_source_card (sources[i], zones));
+            }
+        }
+
+        private Gtk.Box build_source_card (PresenceSource source,
+                                            GenericArray<Presence> zones) {
+            var card = new Gtk.Box (Gtk.Orientation.VERTICAL, 8);
+            card.add_css_class ("mu-card");
+
+            uint assigned = 0;
+            for (uint i = 0; i < zones.length; i++) {
+                if (get_zone_source_id (zones[i].node_id) == source.id) assigned++;
+            }
+
+            var header = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
+
+            var name_label = new Gtk.Label (source.name);
+            name_label.add_css_class ("renderer-name");
+            name_label.halign = Gtk.Align.START;
+            name_label.hexpand = true;
+            name_label.ellipsize = Pango.EllipsizeMode.END;
+            header.append (name_label);
+
+            var count_label = new Gtk.Label ("%u / %u ZONES".printf (assigned, zones.length));
+            count_label.add_css_class ("meta-label");
+            header.append (count_label);
+
+            card.append (header);
+
+            /* Zone assignment checkboxes */
+            for (uint i = 0; i < zones.length; i++) {
+                var zone = zones[i];
+                var row = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
+
+                var check = new Gtk.CheckButton.with_label (zone.name);
+                check.active = (get_zone_source_id (zone.node_id) == source.id);
+                check.sensitive = get_zone_connected (zone.node_id);
+                var zone_id = zone.node_id;
+                var source_id = source.id;
+                check.toggled.connect (() => {
+                    send_source_command (zone_id, check.active ? source_id : "");
+                });
+                row.append (check);
+
+                card.append (row);
+            }
+
+            return card;
         }
 
         private void connect_signals () {
@@ -96,6 +356,15 @@ namespace Mu {
             node_removed_id = node_repo.node_removed.connect (on_node_removed);
             node_updated_id = node_repo.node_updated.connect (on_node_updated);
             state_changed_id = zone_state_repo.state_changed.connect (on_state_changed);
+
+            renderer_state_id = state_repo.state_changed.connect ((node_id, state) => {
+                if (node_id == active_repo.active_renderer_id) {
+                    update_master_controls ();
+                }
+            });
+            active_changed_id = active_repo.active_renderer_changed.connect ((node_id) => {
+                update_master_controls ();
+            });
         }
 
         public override void dispose () {
@@ -114,6 +383,18 @@ namespace Mu {
             if (state_changed_id != 0) {
                 zone_state_repo.disconnect (state_changed_id);
                 state_changed_id = 0;
+            }
+            if (renderer_state_id != 0) {
+                state_repo.disconnect (renderer_state_id);
+                renderer_state_id = 0;
+            }
+            if (active_changed_id != 0) {
+                active_repo.disconnect (active_changed_id);
+                active_changed_id = 0;
+            }
+            if (master_volume_timer != 0) {
+                Source.remove (master_volume_timer);
+                master_volume_timer = 0;
             }
             if (volume_timers != null) {
                 volume_timers.foreach ((zone_id, timer_id) => {
@@ -177,6 +458,9 @@ namespace Mu {
         }
 
         private void on_state_changed (string node_id, ZoneState state) {
+            if (zones_tab_stack.visible_child_name == "sources") {
+                rebuild_sources ();
+            }
             if (!card_map.contains (node_id)) return;
             update_zone_state (node_id, state);
         }

@@ -25,6 +25,7 @@ namespace Mu {
 
         /* ---- Connection status ---- */
         private Gtk.Label connection_label;
+        private Gtk.Label active_renderer_label;
 
         /* Navigation items: name, icon, stack-child-name */
         private struct NavItem {
@@ -188,6 +189,47 @@ namespace Mu {
 
             sidebar.append (nav_list);
 
+            /* Active renderer indicator (click to open Renderers) */
+            var renderer_sep = new Gtk.Separator (Gtk.Orientation.HORIZONTAL);
+            renderer_sep.margin_start = 12;
+            renderer_sep.margin_end = 12;
+            sidebar.append (renderer_sep);
+
+            var renderer_box = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 6);
+            renderer_box.add_css_class ("connection-status");
+            renderer_box.margin_start = 16;
+            renderer_box.margin_end = 16;
+            renderer_box.margin_top = 8;
+            renderer_box.tooltip_text = "Active renderer — click to change";
+
+            var renderer_icon = new Gtk.Image.from_icon_name ("audio-speakers-symbolic");
+            renderer_icon.pixel_size = 14;
+            renderer_icon.add_css_class ("connection-icon");
+            renderer_box.append (renderer_icon);
+
+            active_renderer_label = new Gtk.Label ("");
+            active_renderer_label.add_css_class ("caption");
+            active_renderer_label.add_css_class ("text-accent");
+            active_renderer_label.halign = Gtk.Align.START;
+            active_renderer_label.ellipsize = Pango.EllipsizeMode.END;
+            renderer_box.append (active_renderer_label);
+
+            var renderer_click = new Gtk.GestureClick ();
+            renderer_click.released.connect (() => {
+                /* Renderers is the 4th nav item */
+                nav_list.select_row (nav_list.get_row_at_index (3));
+            });
+            renderer_box.add_controller (renderer_click);
+
+            sidebar.append (renderer_box);
+
+            update_active_renderer_label ();
+            active_renderer_repo.active_renderer_changed.connect (() => {
+                update_active_renderer_label ();
+            });
+            node_repo.node_added.connect (() => update_active_renderer_label ());
+            node_repo.node_updated.connect (() => update_active_renderer_label ());
+
             /* Connection status at bottom of sidebar */
             var conn_sep = new Gtk.Separator (Gtk.Orientation.HORIZONTAL);
             conn_sep.margin_start = 12;
@@ -268,7 +310,8 @@ namespace Mu {
                     active_renderer_repo, lease_mgr, mqtt),
                 "renderers");
             content_stack.add_named (
-                new Mu.ZonesView (node_repo, zone_state_repo, correlator),
+                new Mu.ZonesView (node_repo, zone_state_repo, correlator,
+                    state_repo, active_renderer_repo, lease_mgr),
                 "zones");
             content_stack.add_named (
                 new Mu.SettingsView (settings, mqtt), "settings");
@@ -321,6 +364,26 @@ namespace Mu {
             toast_overlay = new Adw.ToastOverlay ();
             toast_overlay.child = paned;
             this.content = toast_overlay;
+        }
+
+        private void update_active_renderer_label () {
+            if (active_renderer_label == null) return;
+
+            var renderer_id = active_renderer_repo.active_renderer_id;
+            if (renderer_id.length == 0) {
+                active_renderer_label.label = "No renderer";
+                return;
+            }
+
+            if (renderer_id == local_renderer.node_id) {
+                active_renderer_label.label = "This PC";
+                return;
+            }
+
+            var presence = node_repo.get_node (renderer_id);
+            active_renderer_label.label =
+                (presence != null && presence.name.length > 0)
+                    ? presence.name : renderer_id;
         }
 
         private void update_mini_player_visibility () {

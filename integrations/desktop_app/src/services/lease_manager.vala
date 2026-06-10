@@ -38,6 +38,13 @@ namespace Mu {
         }
 
         /**
+         * Identity used for commands; session owners equal to this are us.
+         */
+        public unowned string get_identity () {
+            return correlator.get_identity ();
+        }
+
+        /**
          * Get a valid lease for the given renderer, auto-acquiring or renewing as needed.
          * Returns null if the lease could not be obtained.
          */
