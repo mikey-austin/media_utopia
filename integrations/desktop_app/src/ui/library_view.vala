@@ -37,6 +37,11 @@ namespace Mu {
         private Gtk.Box breadcrumb_box;
         private Gtk.ListBox content_list;
         private Gtk.Box empty_box;
+        private Gtk.Image empty_icon;
+        private Gtk.Label empty_title_label;
+        private Gtk.Label empty_sub_label;
+        private Gtk.Button empty_retry_button;
+        private bool last_load_failed = false;
         private Gtk.Box toolbar_box;
         private Gtk.Button load_more_button;
         private Gtk.Spinner load_spinner;
@@ -167,8 +172,10 @@ namespace Mu {
                     tab_stack.visible_child_name = "playlists";
                     pl_tab_btn.add_css_class ("queue-toggle-active");
                     lib_tab_btn.remove_css_class ("queue-toggle-active");
-                    /* Refresh playlists on tab switch */
-                    if (cached_playlists == null) {
+                    /* Refresh the playlist list on every tab entry so remote
+                     * changes show up; don't yank the user out of an open
+                     * playlist. */
+                    if (viewing_playlist_id == null) {
                         refresh_playlists ();
                     }
                 }
@@ -245,18 +252,26 @@ namespace Mu {
             empty_box.vexpand = true;
             empty_box.margin_top = 60;
 
-            var empty_icon = new Gtk.Image.from_icon_name ("folder-music-symbolic");
+            empty_icon = new Gtk.Image.from_icon_name ("folder-music-symbolic");
             empty_icon.pixel_size = 48;
             empty_icon.add_css_class ("text-secondary");
             empty_box.append (empty_icon);
 
-            var empty_title = new Gtk.Label ("No Libraries Found");
-            empty_title.add_css_class ("heading-medium");
-            empty_box.append (empty_title);
+            empty_title_label = new Gtk.Label ("No Libraries Found");
+            empty_title_label.add_css_class ("heading-medium");
+            empty_box.append (empty_title_label);
 
-            var empty_sub = new Gtk.Label ("Waiting for library nodes to appear on the network");
-            empty_sub.add_css_class ("text-secondary");
-            empty_box.append (empty_sub);
+            empty_sub_label = new Gtk.Label ("Waiting for library nodes to appear on the network");
+            empty_sub_label.add_css_class ("text-secondary");
+            empty_box.append (empty_sub_label);
+
+            empty_retry_button = new Gtk.Button.with_label ("Retry");
+            empty_retry_button.add_css_class ("queue-toggle-button");
+            empty_retry_button.halign = Gtk.Align.CENTER;
+            empty_retry_button.margin_top = 8;
+            empty_retry_button.visible = false;
+            empty_retry_button.clicked.connect (on_retry_load);
+            empty_box.append (empty_retry_button);
 
             vbox.append (empty_box);
 
@@ -625,6 +640,8 @@ namespace Mu {
                     load_spinner.spinning = false;
 
                     if (items == null) {
+                        last_load_failed = true;
+                        Toaster.show ("Couldn't load library content");
                         if (replace) {
                             current_items = new GenericArray<Json.Object> ();
                             rebuild_content_list ();
@@ -632,6 +649,7 @@ namespace Mu {
                         return;
                     }
 
+                    last_load_failed = false;
                     if (replace) {
                         current_items = new GenericArray<Json.Object> ();
                     }
@@ -654,6 +672,19 @@ namespace Mu {
             } else if (nav_stack.length > 0) {
                 var crumb = nav_stack[nav_stack.length - 1];
                 load_container (crumb.container_id, false);
+            }
+        }
+
+        private void on_retry_load () {
+            last_load_failed = false;
+            browse_offset = 0;
+            if (is_search_mode) {
+                do_search (true);
+            } else if (nav_stack.length > 0) {
+                var crumb = nav_stack[nav_stack.length - 1];
+                load_container (crumb.container_id, true);
+            } else {
+                browse_root ();
             }
         }
 
@@ -713,6 +744,8 @@ namespace Mu {
                     load_spinner.spinning = false;
 
                     if (items == null) {
+                        last_load_failed = true;
+                        Toaster.show ("Search failed");
                         if (replace) {
                             current_items = new GenericArray<Json.Object> ();
                             rebuild_content_list ();
@@ -720,6 +753,7 @@ namespace Mu {
                         return;
                     }
 
+                    last_load_failed = false;
                     if (replace) {
                         current_items = new GenericArray<Json.Object> ();
                     }
@@ -757,19 +791,24 @@ namespace Mu {
                 toolbar_box.visible = false;
                 load_more_button.visible = false;
 
-                /* Customize empty message */
-                var empty_title = empty_box.get_first_child ();
-                if (empty_title != null) empty_title = empty_title.get_next_sibling ();
-                if (empty_title != null) {
-                    var label = empty_title as Gtk.Label;
-                    if (label != null) {
-                        if (is_search_mode) {
-                            label.label = "No Results";
-                        } else if (libraries.length == 0) {
-                            label.label = "No Libraries Found";
-                        } else {
-                            label.label = "Empty";
-                        }
+                if (last_load_failed) {
+                    empty_icon.icon_name = "network-error-symbolic";
+                    empty_title_label.label = is_search_mode
+                        ? "Search Failed" : "Couldn't Load Library";
+                    empty_sub_label.label = "The library didn't respond. Check the connection and try again.";
+                    empty_retry_button.visible = true;
+                } else {
+                    empty_icon.icon_name = "folder-music-symbolic";
+                    empty_retry_button.visible = false;
+                    if (is_search_mode) {
+                        empty_title_label.label = "No Results";
+                        empty_sub_label.label = "Try a different search";
+                    } else if (libraries.length == 0) {
+                        empty_title_label.label = "No Libraries Found";
+                        empty_sub_label.label = "Waiting for library nodes to appear on the network";
+                    } else {
+                        empty_title_label.label = "Empty";
+                        empty_sub_label.label = "This folder has no items";
                     }
                 }
                 return;
@@ -1212,9 +1251,12 @@ namespace Mu {
             var server_id = get_selected_playlist_server_id ();
             if (server_id == null) return;
 
-            playlist_spinner.visible = true;
-            playlist_spinner.spinning = true;
-            playlist_list.visible = false;
+            /* Keep any cached list on screen during a background refresh;
+             * only show the spinner when there's nothing to display yet. */
+            var have_cached = cached_playlists != null && cached_playlists.length > 0;
+            playlist_spinner.visible = !have_cached;
+            playlist_spinner.spinning = !have_cached;
+            playlist_list.visible = have_cached;
             playlist_content_box.visible = false;
             playlist_empty_box.visible = false;
             viewing_playlist_id = null;
@@ -1224,7 +1266,19 @@ namespace Mu {
                 playlist_spinner.visible = false;
                 playlist_spinner.spinning = false;
 
-                if (playlists == null || playlists.length == 0) {
+                if (playlists == null) {
+                    /* Fetch failed — keep showing the stale list if we have one */
+                    if (cached_playlists != null && cached_playlists.length > 0) {
+                        Toaster.show ("Couldn't refresh playlists");
+                        playlist_list.visible = true;
+                        return;
+                    }
+                    playlist_empty_box.visible = true;
+                    playlist_list.visible = false;
+                    return;
+                }
+
+                if (playlists.length == 0) {
                     cached_playlists = null;
                     playlist_empty_box.visible = true;
                     playlist_list.visible = false;

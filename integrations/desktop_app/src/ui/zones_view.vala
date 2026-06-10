@@ -28,8 +28,9 @@ namespace Mu {
         /* Volume debounce timers per zone */
         private HashTable<string, uint> volume_timers;
 
-        /* Flag to suppress slider signal during programmatic updates */
+        /* Flags to suppress control signals during programmatic updates */
         private bool updating_slider = false;
+        private bool updating_dropdown = false;
 
         public ZonesView (NodeRepository node_repo,
                           ZoneStateRepository zone_state_repo,
@@ -308,6 +309,9 @@ namespace Mu {
             var node_id = presence.node_id;
 
             dropdown.notify["selected"].connect (() => {
+                /* Ignore programmatic updates from state echoes, otherwise we
+                 * bounce the source selection straight back as a command. */
+                if (updating_dropdown) return;
                 var idx = dropdown.selected;
                 if (idx == Gtk.INVALID_LIST_POSITION) return;
 
@@ -419,7 +423,9 @@ namespace Mu {
             }
 
             if (dropdown.selected != selected) {
+                updating_dropdown = true;
                 dropdown.selected = selected;
+                updating_dropdown = false;
             }
 
             dropdown.sensitive = get_zone_connected (presence.node_id);

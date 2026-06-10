@@ -9,8 +9,15 @@ namespace Mu {
 
     public class ArtworkLoader : GLib.Object {
 
+        /* Cache cap: textures are decoded full-size, so keep a bounded LRU
+         * instead of growing for every artwork ever browsed. */
+        private const uint MAX_CACHE_ENTRIES = 200;
+
         private Soup.Session session;
         private HashTable<string, Gdk.Texture> cache;
+
+        /* LRU order: most-recently-used URLs at the tail */
+        private GLib.Queue<string> lru_order;
 
         /* Track in-flight requests to avoid duplicates */
         private HashTable<string, bool> inflight;
@@ -23,6 +30,7 @@ namespace Mu {
             session = new Soup.Session ();
             session.timeout = 15;
             cache = new HashTable<string, Gdk.Texture> (str_hash, str_equal);
+            lru_order = new GLib.Queue<string> ();
             inflight = new HashTable<string, bool> (str_hash, str_equal);
             pending = new HashTable<string, GenericArray<ArtworkCallbackWrapper>> (str_hash, str_equal);
         }
@@ -41,6 +49,7 @@ namespace Mu {
             /* Cache hit */
             var cached = cache.lookup (url);
             if (cached != null) {
+                touch_lru (url);
                 callback (cached);
                 return;
             }
@@ -89,7 +98,7 @@ namespace Mu {
                         }
 
                         var texture = Gdk.Texture.from_bytes (bytes);
-                        cache.insert (url, texture);
+                        insert_cached (url, texture);
                         finish_request (url, texture);
 
                     } catch (GLib.Error e) {
@@ -116,11 +125,31 @@ namespace Mu {
             pending.remove (url);
         }
 
+        /* ---- LRU bookkeeping ---- */
+
+        private void insert_cached (string url, Gdk.Texture texture) {
+            cache.insert (url, texture);
+            touch_lru (url);
+
+            while (lru_order.get_length () > MAX_CACHE_ENTRIES) {
+                var oldest = lru_order.pop_head ();
+                if (oldest != null) {
+                    cache.remove (oldest);
+                }
+            }
+        }
+
+        private void touch_lru (string url) {
+            lru_order.remove (url);
+            lru_order.push_tail (url);
+        }
+
         /**
          * Clear the in-memory cache.
          */
         public void clear () {
             cache.remove_all ();
+            lru_order.clear ();
         }
     }
 

@@ -35,6 +35,7 @@ namespace Mu {
 
         public signal void track_finished ();
         public signal void spectrum_data (float[] magnitudes);
+        public signal void playback_error (string message);
 
         /* ---- Playback control ---- */
 
@@ -223,6 +224,7 @@ namespace Mu {
                     string debug_info;
                     msg.parse_error (out err, out debug_info);
                     warning ("GstDriver: pipeline error: %s (%s)", err.message, debug_info);
+                    playback_error (err.message);
                     track_finished ();
                     break;
 

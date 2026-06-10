@@ -69,6 +69,7 @@ sources = files(
     'src/ui/widgets/mini_player.vala',
     'src/ui/widgets/transport_controls.vala',
     'src/ui/widgets/artwork_loader.vala',
+    'src/ui/widgets/toaster.vala',
     'src/mqtt/topics.vala',
     'src/mqtt/mqtt_client.vala',
     'src/protocol/envelope.vala',

@@ -37,6 +37,7 @@ namespace Mu {
 
         public signal void state_updated (RendererState state);
         public signal void spectrum_data (float[] magnitudes);
+        public signal void playback_error (string message);
 
         public LocalRenderer (MqttClient mqtt, string node_id, string name) {
             this.mqtt = mqtt;
@@ -50,6 +51,9 @@ namespace Mu {
             driver.track_finished.connect (on_track_finished);
             driver.spectrum_data.connect ((mags) => {
                 spectrum_data (mags);
+            });
+            driver.playback_error.connect ((message) => {
+                playback_error (message);
             });
         }
 

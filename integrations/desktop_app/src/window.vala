@@ -6,6 +6,7 @@ namespace Mu {
 
         private Gtk.ListBox nav_list;
         private Gtk.Stack content_stack;
+        private Adw.ToastOverlay toast_overlay;
         private MiniPlayer mini_player;
         private GLib.Settings settings;
 
@@ -300,6 +301,11 @@ namespace Mu {
 
             paned.append (content_box);
 
+            /* App-wide toast dispatch */
+            Toaster.get_default ().toast_requested.connect ((message) => {
+                toast_overlay.add_toast (new Adw.Toast (message));
+            });
+
             /* Wire sidebar selection to stack */
             nav_list.row_selected.connect ((row) => {
                 if (row == null) return;
@@ -312,7 +318,9 @@ namespace Mu {
             /* Select first row by default */
             nav_list.select_row (nav_list.get_row_at_index (0));
 
-            this.content = paned;
+            toast_overlay = new Adw.ToastOverlay ();
+            toast_overlay.child = paned;
+            this.content = toast_overlay;
         }
 
         private void update_mini_player_visibility () {

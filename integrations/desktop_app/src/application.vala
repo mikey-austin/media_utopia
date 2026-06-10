@@ -131,6 +131,9 @@ namespace Mu {
             local_renderer.state_updated.connect ((state) => {
                 state_repo.update_local_state (state);
             });
+            local_renderer.playback_error.connect ((message) => {
+                Toaster.show ("Playback error: %s".printf (message));
+            });
 
             node_repo.node_removed.connect ((node_id) => {
                 if (node_id == active_renderer_repo.active_renderer_id) {
