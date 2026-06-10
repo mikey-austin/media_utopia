@@ -95,10 +95,29 @@ gsettings set com.mediautopia.desktop broker-url 'mqtt://192.168.1.50:1883'
 ```
 src/
   main.vala               Entry point
-  application.vala        Adw.Application — loads CSS, creates window
-  window.vala             Adw.ApplicationWindow — sidebar + content stack
+  application.vala        Adw.Application — wires the service graph
+  window.vala             Adw.ApplicationWindow — sidebar nav, content stack,
+                          mini player, toast overlay, active renderer indicator
   ui/
-    now_playing_view.vala  Now Playing view (stub)
+    now_playing_view.vala  Artwork, transport, visualizer, routing panel,
+                           lease-blocked banner with Take Control
+    queue_view.vala        Drag-reorder, durations, Delete key, read-only
+                           mode under a foreign lease
+    library_view.vala      Libraries/Playlists tabs, album grid for container
+                           levels, search, breadcrumbs, auto load-more
+    renderers_view.vala    Discovery, selection, Release / Take Control
+    zones_view.vala        Master volume, ZONES / SOURCES tabs, per-zone
+                           volume/mute/source, source→zone assignment
+    settings_view.vala     Broker URL, identity, behavior toggles
+    widgets/               Seek bar, transport, mini player, visualizer,
+                           artwork loader (LRU), hi-res badge, toaster
+  mqtt/                   libmosquitto wrapper + topic builders
+  protocol/               Wire types (envelope, state, presence, bodies)
+  services/               Command correlator, lease manager, dedup
+  repositories/           Node discovery, renderer/zone state, library,
+                          playlists, active renderer selection
+  renderer/               Local GStreamer renderer (playbin + spectrum)
+  platform/               MPRIS2, tray hold/release, notifications
 data/
   style.css               Sonic Curator dark theme
   mu.gresource.xml        GResource manifest
