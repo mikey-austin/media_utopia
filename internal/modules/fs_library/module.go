@@ -251,6 +251,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -389,6 +390,23 @@ type Config struct {
 	// GenreModel is the Ollama model used for top-level genre classification.
 	// Defaults to SummaryModel when empty.
 	GenreModel string
+}
+
+// goSafe runs fn on a new goroutine, containing panics so a bug in one
+// background task (embedding build, enrichment, backfills, rescans)
+// degrades that task instead of killing the whole daemon.
+func (m *Module) goSafe(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				m.log.Error("background task panicked",
+					zap.String("task", name),
+					zap.Any("panic", r),
+					zap.ByteString("stack", debug.Stack()))
+			}
+		}()
+		fn()
+	}()
 }
 
 // cmdWork represents a command to be processed by a worker.
@@ -901,6 +919,15 @@ func (m *Module) commandWorker(ctx context.Context) {
 }
 
 func (m *Module) processCommand(cmd mu.CommandEnvelope) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.log.Error("command handler panicked",
+				zap.String("type", cmd.Type),
+				zap.String("id", cmd.ID),
+				zap.Any("panic", r),
+				zap.ByteString("stack", debug.Stack()))
+		}
+	}()
 	if mu.ShouldDedup(cmd.Type) && m.dedup.Seen(cmd.ID) {
 		m.log.Debug("duplicate command skipped", zap.String("id", cmd.ID), zap.String("type", cmd.Type))
 		reply := mu.ReplyEnvelope{ID: cmd.ID, Type: "ack", OK: true, TS: time.Now().Unix()}
@@ -1193,7 +1220,7 @@ func (m *Module) libraryRescan(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 
 	if body.Async {
 		// Run scan asynchronously using context-aware variants
-		go func() {
+		m.goSafe("async-rescan", func() {
 			ctx := context.Background()
 			var err error
 			if body.Force {
@@ -1204,7 +1231,7 @@ func (m *Module) libraryRescan(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 			if err != nil {
 				m.log.Warn("async rescan failed", zap.Error(err))
 			}
-		}()
+		})
 		payload, _ := json.Marshal(rescanReply{
 			Status:  "started",
 			Message: "rescan started in background",
@@ -2704,22 +2731,22 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 
 	// Build embeddings asynchronously
 	if m.embedProvider != nil {
-		go m.buildEmbeddings(ctx, next.Items)
+		m.goSafe("build-embeddings", func() { m.buildEmbeddings(ctx, next.Items) })
 	}
 
 	// Launch enrichment in background (respects parent context for graceful shutdown)
 	if m.config.EnrichEnabled && len(enrichTargets) > 0 {
-		go m.enrichAlbums(ctx, enrichTargets)
+		m.goSafe("enrich-albums", func() { m.enrichAlbums(ctx, enrichTargets) })
 	}
 
 	// Backfill summaries for existing sidecars that have metadata but no generated summary
 	if m.summaryGen != nil {
-		go m.backfillSummaries(ctx, enrichMeta, enrichDirs)
+		m.goSafe("backfill-summaries", func() { m.backfillSummaries(ctx, enrichMeta, enrichDirs) })
 	}
 
 	// Backfill LLM-classified top-level genre for sidecars missing it.
 	if m.genreClassifier != nil {
-		go m.backfillGenres(ctx, enrichMeta, enrichDirs)
+		m.goSafe("backfill-genres", func() { m.backfillGenres(ctx, enrichMeta, enrichDirs) })
 	}
 
 	// Skip persisting the index when nothing changed — avoids rewriting the
@@ -3008,11 +3035,11 @@ func (m *Module) startHTTPServer() error {
 	m.ln = ln
 	m.mu.Unlock()
 
-	go func() {
+	m.goSafe("http-serve", func() {
 		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			m.log.Warn("http server stopped", zap.Error(err))
 		}
-	}()
+	})
 	m.log.Info("http server started", zap.String("base_url", baseURL))
 	return nil
 }

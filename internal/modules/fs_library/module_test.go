@@ -3999,3 +3999,20 @@ func TestArtURLCacheConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestGoSafeContainsPanic verifies a panicking background task is contained
+// (logged) instead of killing the process.
+func TestGoSafeContainsPanic(t *testing.T) {
+	mod := &Module{log: zap.NewNop()}
+	done := make(chan struct{})
+	mod.goSafe("test-task", func() {
+		defer close(done)
+		panic("boom")
+	})
+	select {
+	case <-done:
+		// panic path ran; if recover were missing the process would have died
+	case <-time.After(2 * time.Second):
+		t.Fatal("goSafe task did not run")
+	}
+}
