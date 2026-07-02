@@ -1111,6 +1111,18 @@ func probePipewire() bool {
 
 ---
 
+> **Revision (2026-07-02, per user feedback):** Task 5 was reworked after
+> initial execution. Instead of copying `renderer_gstreamer/module.go`
+> wholesale, the shared module scaffolding was extracted into
+> `renderer_core` (`DriverEvent`/`DriverEventKind`/`DriverEventSource` in
+> `driver_events.go`; `Module`/`ModuleConfig`/`NewModule(log, client, cfg,
+> driver)` in `module.go`; module tests moved to
+> `renderer_core/module_test.go`). Both `renderer_gstreamer` and
+> `renderer_mpv` are now ~50-line wrappers that construct their driver and
+> delegate; their `events.go` files alias the shared event types.
+> `renderer_kodi`/`renderer_vlc` still carry older module copies
+> (polling-based EOS detection) — follow-up candidates.
+
 ### Task 5: Module + module tests
 
 **Files:**

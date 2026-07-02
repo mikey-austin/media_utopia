@@ -7,7 +7,10 @@
 package renderermpv
 
 /*
-#cgo pkg-config: mpv
+// Deliberately not `pkg-config: mpv` — Ubuntu's mpv.pc carries
+// -fno-strict-overflow in Cflags, which cgo's flag allowlist rejects.
+// libmpv's header and library live on default search paths.
+#cgo LDFLAGS: -lmpv
 #include <mpv/client.h>
 #include <stdlib.h>
 */

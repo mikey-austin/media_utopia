@@ -3,12 +3,12 @@
 # Multi-target Dockerfile for mud and mu.
 #
 # Targets:
-#   mud           Full daemon with GStreamer + UPnP (Ubuntu runtime)
-#   mud-library   Library-only daemon, no GStreamer/UPnP (distroless, static binary)
+#   mud           Full daemon with GStreamer + mpv + UPnP (Ubuntu runtime)
+#   mud-library   Library-only daemon, no GStreamer/mpv/UPnP (distroless, static binary)
 #   mu            CLI client (distroless, static binary)
 #
 # Build args:
-#   BUILD_TAGS    Go build tags (default: "gstreamer upnp")
+#   BUILD_TAGS    Go build tags (default: "gstreamer upnp mpv")
 #   CGO           CGO_ENABLED value (default: "1")
 #
 # Examples:
@@ -17,7 +17,7 @@
 
 FROM ubuntu:26.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
-ARG BUILD_TAGS="gstreamer upnp"
+ARG BUILD_TAGS="gstreamer upnp mpv"
 ARG CGO="1"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libglib2.0-dev \
     libgstreamer1.0-dev \
+    libmpv-dev \
     libupnp-dev \
     libchromaprint-dev \
     gstreamer1.0-plugins-base \
@@ -50,6 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-alsa \
     gstreamer1.0-tools \
     gstreamer1.0-pipewire \
+    libmpv2 \
     libchromaprint1 \
     alsa-utils \
     libupnp17t64 \
