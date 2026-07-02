@@ -2679,6 +2679,7 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 	enrichDirs := make(map[string]string) // key -> album dir (for summary backfill)
 	var enrichTargets []enrichTarget
 	sidecarSkipped := 0
+	enrichChanged := false // a sidecar appeared or was re-read with new content
 	for artistName, artist := range next.Audio {
 		for albumName, album := range artist.Albums {
 			if len(album.Tracks) == 0 {
@@ -2709,6 +2710,9 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 				} else {
 					enrichMeta[key] = meta
 					enrichDirs[key] = dir
+					if prev, ok := prevEnrichMeta[key]; !ok || !prev.FetchedAt.Equal(meta.FetchedAt) {
+						enrichChanged = true
+					}
 				}
 			} else if m.config.EnrichEnabled && !sidecarExists(dir) {
 				enrichTargets = append(enrichTargets, enrichTarget{
@@ -2787,7 +2791,8 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 	if prevByPath != nil {
 		removedCount = len(prevByPath) - reused
 	}
-	if newCount == 0 && removedCount == 0 && prevIndex != nil {
+	browseIndexesMissing := prevIndex != nil && len(prevIndex.GenreAlbums) == 0 && len(next.Items) > 0
+	if newCount == 0 && removedCount == 0 && prevIndex != nil && !enrichChanged && !browseIndexesMissing {
 		// Library unchanged — reuse previous browse indexes
 		next.GenreAlbums = prevIndex.GenreAlbums
 		next.ArtistLetters = prevIndex.ArtistLetters
@@ -3437,6 +3442,23 @@ func hashID(path string, size int64, mod time.Time) string {
 	_, _ = io.WriteString(h, "|")
 	_, _ = io.WriteString(h, strconv.FormatInt(mod.UnixNano(), 10))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// rebuildBrowseIndexes recomputes the derived browse structures (genres,
+// letters, recents, folder trees) against the live index. Called by the
+// enrichment/genre goroutines when sidecar metadata changes without any
+// file change — scanInner skips its rebuild in that case.
+func (m *Module) rebuildBrowseIndexes(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.index == nil {
+		return
+	}
+	buildGenreIndex(m.index, m.enrichMeta)
+	buildArtistLetterIndex(m.index)
+	buildRecentLists(m.index)
+	buildFolderTrees(m.index, m.config.Roots)
+	m.log.Debug("rebuilt browse indexes", zap.String("reason", reason))
 }
 
 // enrichKey is the canonical enrichMeta lookup key for an item. It applies

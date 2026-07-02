@@ -412,4 +412,7 @@ func (m *Module) backfillGenres(ctx context.Context, metas map[string]*AlbumMeta
 	m.log.Info("genre backfill complete",
 		zap.Int("classified", classified),
 		zap.Int("total", len(candidates)))
+	if classified > 0 {
+		m.rebuildBrowseIndexes("genre-backfill")
+	}
 }

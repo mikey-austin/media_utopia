@@ -26,9 +26,9 @@ import (
 type similarityHeap []SimilarityResult
 
 func (h similarityHeap) Len() int            { return len(h) }
-func (h similarityHeap) Less(i, j int) bool   { return h[i].Score < h[j].Score }
-func (h similarityHeap) Swap(i, j int)        { h[i], h[j] = h[j], h[i] }
-func (h *similarityHeap) Push(x interface{})  { *h = append(*h, x.(SimilarityResult)) }
+func (h similarityHeap) Less(i, j int) bool  { return h[i].Score < h[j].Score }
+func (h similarityHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *similarityHeap) Push(x interface{}) { *h = append(*h, x.(SimilarityResult)) }
 func (h *similarityHeap) Pop() interface{} {
 	old := *h
 	n := len(old)
@@ -603,9 +603,9 @@ func normalizeStringList(items []string, synonyms map[string]string) []string {
 	return out
 }
 
-func normalizeGenres(genres []string) []string  { return normalizeStringList(genres, genreSynonyms) }
-func normalizeTags(tags []string) []string       { return normalizeStringList(tags, nil) }
-func normalizeStyles(styles []string) []string   { return normalizeStringList(styles, genreSynonyms) }
+func normalizeGenres(genres []string) []string { return normalizeStringList(genres, genreSynonyms) }
+func normalizeTags(tags []string) []string     { return normalizeStringList(tags, nil) }
+func normalizeStyles(styles []string) []string { return normalizeStringList(styles, genreSynonyms) }
 
 // writeLine appends "label: value\n" to the builder if value is non-empty.
 func writeLine(b *strings.Builder, label, value string) {

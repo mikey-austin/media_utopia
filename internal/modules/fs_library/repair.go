@@ -11,19 +11,19 @@ import (
 
 // Pre-compiled regexes for metadata cleaning (avoid recompiling per invocation).
 var (
-	reTrackNumber      = regexp.MustCompile(`^(\d{1,3})[.\s]+(.+)$`)
-	reOfficialParen    = regexp.MustCompile(`\s*\(Official\s*(Video|Audio|Music\s*Video)?\)\s*$`)
-	reOfficialBracket  = regexp.MustCompile(`\s*\[Official\s*(Video|Audio|Music\s*Video)?\]\s*$`)
-	reLyricsParen      = regexp.MustCompile(`\s*\(Lyrics?\)\s*$`)
-	reLyricsBracket    = regexp.MustCompile(`\s*\[Lyrics?\]\s*$`)
-	reFeaturing        = regexp.MustCompile(`\s*(feat\.|ft\.|featuring)\s+.+$`)
-	reEditionParen     = regexp.MustCompile(`\s*\((Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\)\s*$`)
-	reEditionBracket   = regexp.MustCompile(`\s*\[(Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\]\s*$`)
-	reHQ               = regexp.MustCompile(`\s*[\(\[](HQ|HD|4K)[\)\]]\s*$`)
-	reLive             = regexp.MustCompile(`\s*[\(\[](Live)[\)\]]\s*$`)
-	reExplicit         = regexp.MustCompile(`\s*[\(\[](Explicit|Clean)[\)\]]\s*$`)
-	reUnderscore       = regexp.MustCompile(`_+`)
-	reDiscNumber       = regexp.MustCompile(`\s*[\(\[]?(?:Disc|CD)\s*\d+[\)\]]?\s*$`)
+	reTrackNumber     = regexp.MustCompile(`^(\d{1,3})[.\s]+(.+)$`)
+	reOfficialParen   = regexp.MustCompile(`\s*\(Official\s*(Video|Audio|Music\s*Video)?\)\s*$`)
+	reOfficialBracket = regexp.MustCompile(`\s*\[Official\s*(Video|Audio|Music\s*Video)?\]\s*$`)
+	reLyricsParen     = regexp.MustCompile(`\s*\(Lyrics?\)\s*$`)
+	reLyricsBracket   = regexp.MustCompile(`\s*\[Lyrics?\]\s*$`)
+	reFeaturing       = regexp.MustCompile(`\s*(feat\.|ft\.|featuring)\s+.+$`)
+	reEditionParen    = regexp.MustCompile(`\s*\((Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\)\s*$`)
+	reEditionBracket  = regexp.MustCompile(`\s*\[(Deluxe|Remastered|Expanded|Special)\s*(Edition|Version)?\]\s*$`)
+	reHQ              = regexp.MustCompile(`\s*[\(\[](HQ|HD|4K)[\)\]]\s*$`)
+	reLive            = regexp.MustCompile(`\s*[\(\[](Live)[\)\]]\s*$`)
+	reExplicit        = regexp.MustCompile(`\s*[\(\[](Explicit|Clean)[\)\]]\s*$`)
+	reUnderscore      = regexp.MustCompile(`_+`)
+	reDiscNumber      = regexp.MustCompile(`\s*[\(\[]?(?:Disc|CD)\s*\d+[\)\]]?\s*$`)
 )
 
 // RepairPolicy controls how aggressively metadata is repaired.

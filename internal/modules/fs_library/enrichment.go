@@ -149,17 +149,17 @@ type mbSearchResponse struct {
 }
 
 type mbReleaseGroup struct {
-	ID             string           `json:"id"`
-	Title          string           `json:"title"`
-	PrimaryType    string           `json:"primary-type"`
-	Score          int              `json:"score"`
-	Genres         []mbGenre        `json:"genres"`
-	Tags           []mbTag          `json:"tags"`
-	Releases       []mbRelease      `json:"releases"`
-	FirstRelease   string           `json:"first-release-date"`
-	Annotation     string           `json:"annotation"`
-	Relations      []mbRelation     `json:"relations"`
-	ArtistCredit   []mbArtistCredit `json:"artist-credit"`
+	ID           string           `json:"id"`
+	Title        string           `json:"title"`
+	PrimaryType  string           `json:"primary-type"`
+	Score        int              `json:"score"`
+	Genres       []mbGenre        `json:"genres"`
+	Tags         []mbTag          `json:"tags"`
+	Releases     []mbRelease      `json:"releases"`
+	FirstRelease string           `json:"first-release-date"`
+	Annotation   string           `json:"annotation"`
+	Relations    []mbRelation     `json:"relations"`
+	ArtistCredit []mbArtistCredit `json:"artist-credit"`
 }
 
 type mbRelation struct {
@@ -213,8 +213,8 @@ type mbTag struct {
 }
 
 type mbRelease struct {
-	Date       string         `json:"date"`
-	LabelInfo  []mbLabelInfo  `json:"label-info"`
+	Date      string        `json:"date"`
+	LabelInfo []mbLabelInfo `json:"label-info"`
 }
 
 type mbLabelInfo struct {
@@ -433,13 +433,13 @@ type discogsSearchResult struct {
 }
 
 type discogsMasterResponse struct {
-	ID          int              `json:"id"`
-	MainRelease int              `json:"main_release"`
-	Styles      []string         `json:"styles"`
-	Notes       string           `json:"notes"`
-	Artists     []discogsArtist  `json:"artists"`
-	Labels      []discogsLabel   `json:"labels"`
-	Tracklist   []discogsTrack   `json:"tracklist"`
+	ID          int             `json:"id"`
+	MainRelease int             `json:"main_release"`
+	Styles      []string        `json:"styles"`
+	Notes       string          `json:"notes"`
+	Artists     []discogsArtist `json:"artists"`
+	Labels      []discogsLabel  `json:"labels"`
+	Tracklist   []discogsTrack  `json:"tracklist"`
 }
 
 type discogsArtist struct {
@@ -449,8 +449,8 @@ type discogsArtist struct {
 }
 
 type discogsReleaseResponse struct {
-	ID           int                 `json:"id"`
-	Notes        string              `json:"notes"`
+	ID           int                  `json:"id"`
+	Notes        string               `json:"notes"`
 	ExtraArtists []discogsExtraArtist `json:"extraartists"`
 }
 
@@ -1464,8 +1464,10 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 		zap.Int("failed", failed),
 		zap.Duration("elapsed", time.Since(startTime)))
 
-	// Rebuild embeddings if any albums were enriched
+	// Rebuild embeddings and browse indexes if any albums were enriched —
+	// genre/letter browse otherwise only refreshes when a file changes.
 	if enriched > 0 {
+		m.rebuildBrowseIndexes("enrichment")
 		m.mu.RLock()
 		items := m.index.Items
 		m.mu.RUnlock()

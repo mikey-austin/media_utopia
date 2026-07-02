@@ -26,11 +26,11 @@ func TestBrowseSearchResolve(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	audioPath := filepath.Join(audioDir, "Artist - Track.mp3")
-	if err := os.WriteFile(audioPath, []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(audioPath, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write audio: %v", err)
 	}
 	videoPath := filepath.Join(root, "VideoTitle.mkv")
-	if err := os.WriteFile(videoPath, []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(videoPath, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write video: %v", err)
 	}
 
@@ -206,7 +206,7 @@ func TestContainerGetItemAndSources(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	audioPath := filepath.Join(audioDir, "TestArtist - TestTrack.mp3")
-	if err := os.WriteFile(audioPath, []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(audioPath, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write audio: %v", err)
 	}
 
@@ -1552,8 +1552,8 @@ func TestBrowseGenreHierarchy(t *testing.T) {
 	if err := os.MkdirAll(dir2, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(dir1, "ArtistA - Track1.mp3"), []byte(""), 0o644)
-	os.WriteFile(filepath.Join(dir2, "ArtistB - Track2.mp3"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(dir1, "ArtistA - Track1.mp3"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir2, "ArtistB - Track2.mp3"), []byte("x"), 0o644)
 
 	mod := newTestModule(t, root, []string{".mp3"})
 
@@ -1622,7 +1622,7 @@ func TestBrowseLetterHierarchy(t *testing.T) {
 	for _, name := range []string{"Alpha", "Beta", "123Band"} {
 		dir := filepath.Join(root, name, "Album")
 		os.MkdirAll(dir, 0o755)
-		os.WriteFile(filepath.Join(dir, name+" - Track.mp3"), []byte(""), 0o644)
+		os.WriteFile(filepath.Join(dir, name+" - Track.mp3"), []byte("x"), 0o644)
 	}
 
 	mod := newTestModule(t, root, []string{".mp3"})
@@ -1733,9 +1733,9 @@ func TestBrowseFolderTree(t *testing.T) {
 	subDir := filepath.Join(root, "sub")
 	subSubDir := filepath.Join(root, "sub", "deep")
 	os.MkdirAll(subSubDir, 0o755)
-	os.WriteFile(filepath.Join(root, "root_track.mp3"), []byte(""), 0o644)
-	os.WriteFile(filepath.Join(subDir, "sub_track.mp3"), []byte(""), 0o644)
-	os.WriteFile(filepath.Join(subSubDir, "deep_track.mp3"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(root, "root_track.mp3"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(subDir, "sub_track.mp3"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(subSubDir, "deep_track.mp3"), []byte("x"), 0o644)
 
 	mod := newTestModule(t, root, []string{".mp3"})
 
@@ -1770,7 +1770,7 @@ func TestResolveNewContainers(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "TestArtist", "TestAlbum")
 	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "TestArtist - Track.mp3"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(dir, "TestArtist - Track.mp3"), []byte("x"), 0o644)
 
 	mod := newTestModule(t, root, []string{".mp3"})
 
@@ -3136,7 +3136,7 @@ func TestBrowseArtistAlbums(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, spec.track), []byte(""), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, spec.track), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3273,7 +3273,7 @@ func TestSearchEmpty(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3383,10 +3383,10 @@ func TestBrowseRootCategories(t *testing.T) {
 	if err := os.MkdirAll(audioDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(audioDir, "Artist - Track.mp3"), []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(audioDir, "Artist - Track.mp3"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Movie.mkv"), []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "Movie.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3665,7 +3665,7 @@ func TestSearchEmptyQuery(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3683,7 +3683,7 @@ func TestSearchWhitespaceQuery(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
