@@ -2315,6 +2315,8 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 		mediaType string
 	}
 	var newFiles []newFileEntry
+	zeroByteCount := 0
+	var zeroByteSamples []string
 
 	for _, root := range m.config.Roots {
 		root = strings.TrimSpace(root)
@@ -2384,6 +2386,16 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 				m.log.Debug("stat failed", zap.Error(infoErr), zap.String("path", path))
 				return nil
 			}
+			if info.Size() == 0 {
+				// Zero-byte media files are unplayable and would all share
+				// one dedupe hash (size 0, no content), churning the index
+				// every scan. Skip them and surface a summary below.
+				zeroByteCount++
+				if len(zeroByteSamples) < 3 {
+					zeroByteSamples = append(zeroByteSamples, path)
+				}
+				return nil
+			}
 			mediaType := "Audio"
 			if videoExts[ext] {
 				mediaType = "Video"
@@ -2394,6 +2406,12 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 		if err != nil {
 			m.log.Warn("walk failed", zap.Error(err), zap.String("root", root))
 		}
+	}
+
+	if zeroByteCount > 0 {
+		m.log.Warn("skipped zero-byte media files (unplayable; consider cleaning them up)",
+			zap.Int("count", zeroByteCount),
+			zap.Strings("samples", zeroByteSamples))
 	}
 
 	// Phase 2: Parse tags for new/modified files using a bounded worker pool.

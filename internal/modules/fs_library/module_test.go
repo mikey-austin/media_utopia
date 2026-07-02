@@ -4016,3 +4016,28 @@ func TestGoSafeContainsPanic(t *testing.T) {
 		t.Fatal("goSafe task did not run")
 	}
 }
+
+// TestScanSkipsZeroByteFiles: zero-byte media files are unplayable and, worse,
+// all share the same dedupe hash (size 0 + no content), so indexing them
+// forms one giant phantom duplicate group and forces a re-parse every scan
+// (they can never pass the Size() > 0 reuse gate).
+func TestScanSkipsZeroByteFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "good.mp3"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "empty.mp3"), nil, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	mod := newTestModule(t, root, []string{".mp3"})
+	mod.mu.RLock()
+	defer mod.mu.RUnlock()
+	if len(mod.index.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(mod.index.Items))
+	}
+	for _, it := range mod.index.Items {
+		if it.Name == "empty.mp3" {
+			t.Fatal("zero-byte file was indexed")
+		}
+	}
+}
