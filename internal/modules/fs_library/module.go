@@ -466,9 +466,12 @@ type Module struct {
 	// summaryAttempts / genreAttempts rate-limit failing LLM backfill work.
 	summaryAttempts attemptTracker
 	genreAttempts   attemptTracker
-	index           *libraryIndex
-	baseURL         string
-	artURLPrefix    string // pre-computed baseURL + "/art/", set once in startHTTPServer
+
+	// queryEmbeds memoizes query-embedding vectors for search.
+	queryEmbeds  queryEmbedCache
+	index        *libraryIndex
+	baseURL      string
+	artURLPrefix string // pre-computed baseURL + "/art/", set once in startHTTPServer
 	// artURLCache memoizes art URLs keyed by album hash, cleared on index
 	// rebuild. It has its own mutex because it is WRITTEN from paths that
 	// hold only m.mu.RLock (concurrent command workers) — writing it under
@@ -1821,23 +1824,39 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		}
 	}()
 
-	// Try semantic search first if embeddings are available
+	// Hybrid search: the lexical pass ALWAYS runs — it is local, fast, and
+	// the only ranking with exact/prefix boosts (it used to be dead code
+	// whenever semantic search returned anything, so exact title matches
+	// never surfaced). Semantic results are appended below the lexical hits
+	// as a fuzzy-discovery tail.
+	lexical := m.keywordSearch(query)
+	out := lexical
 	if m.embedProvider != nil && m.vectorIndex != nil {
-		semanticResults, semanticTotal := m.semanticSearch(query, start, count)
-		if len(semanticResults) > 0 {
-			total = semanticTotal
-			return semanticResults, semanticTotal
+		seen := make(map[string]struct{}, len(lexical))
+		for _, it := range lexical {
+			seen[it.ItemID] = struct{}{}
+		}
+		for _, it := range m.semanticCandidates(query, int(start+count)+200) {
+			if _, dup := seen[it.ItemID]; dup {
+				continue
+			}
+			seen[it.ItemID] = struct{}{}
+			out = append(out, it)
 		}
 	}
+	total = int64(len(out))
+	return paginate(out, start, count), total
+}
 
-	// Fall back to keyword search
-	terms := strings.Fields(strings.ToLower(query))
+// keywordSearch runs the lexical scorer over the whole index and returns
+// ALL matches ranked best-first. Matching and ranking are diacritic-folded.
+func (m *Module) keywordSearch(query string) []libraryItem {
+	terms := strings.Fields(foldString(query))
+	if len(terms) == 0 {
+		return nil
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	// Cap the number of collected matches to avoid unbounded allocation and
-	// sorting costs.  This should be well above any practical pagination window.
-	const maxSearchResults = 1000 // Increase from 500 to accommodate larger libraries
 
 	type scoredItem struct {
 		result libraryItem
@@ -1845,7 +1864,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 	}
 
 	scored := make([]scoredItem, 0)
-	queryLower := strings.ToLower(query)
+	queryLower := foldString(query)
 	for _, item := range m.index.Items {
 		if item.DupOf != "" {
 			continue // hidden duplicate
@@ -1874,7 +1893,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		}
 
 		s := 0
-		nameLower := strings.ToLower(item.Name)
+		nameLower := foldString(item.Name)
 
 		if nameLower == queryLower {
 			s += 100
@@ -1894,7 +1913,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		}
 
 		for _, artist := range item.Artists {
-			artistLower := strings.ToLower(artist)
+			artistLower := foldString(artist)
 			for _, term := range terms {
 				if strings.Contains(artistLower, term) {
 					s += 20
@@ -1904,7 +1923,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		}
 
 		if item.Album != "" {
-			albumLower := strings.ToLower(item.Album)
+			albumLower := foldString(item.Album)
 			for _, term := range terms {
 				if strings.Contains(albumLower, term) {
 					s += 10
@@ -1916,9 +1935,8 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		// LLMGenre boost: query terms hitting the album's classified genre
 		// rank higher than incidental matches in liner notes / tags.
 		if item.MediaType == "Audio" {
-			artistName := firstOr(item.Artists, "")
-			if enrich := m.enrichMeta[artistName+"|"+item.Album]; enrich != nil && enrich.LLMGenre != "" {
-				lg := strings.ToLower(enrich.LLMGenre)
+			if enrich := m.enrichMeta[enrichKey(item)]; enrich != nil && enrich.LLMGenre != "" {
+				lg := foldString(enrich.LLMGenre)
 				for _, term := range terms {
 					if strings.Contains(lg, term) {
 						s += 30
@@ -1930,7 +1948,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 
 		// Composer boost: matches the per-track composer field directly.
 		if item.Composer != "" {
-			cl := strings.ToLower(item.Composer)
+			cl := foldString(item.Composer)
 			for _, term := range terms {
 				if strings.Contains(cl, term) {
 					s += 25
@@ -1944,53 +1962,50 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		}
 
 		scored = append(scored, scoredItem{result: result, score: s})
-		if len(scored) >= maxSearchResults {
-			break
-		}
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
 		if scored[i].score != scored[j].score {
 			return scored[i].score > scored[j].score
 		}
-		return strings.ToLower(scored[i].result.Name) < strings.ToLower(scored[j].result.Name)
+		return scored[i].result.Name < scored[j].result.Name
 	})
 
 	items := make([]libraryItem, len(scored))
 	for i, si := range scored {
 		items[i] = si.result
 	}
-	total = int64(len(items))
-	return paginate(items, start, count), total
+	return items
 }
 
-func (m *Module) semanticSearch(query string, start int64, count int64) ([]libraryItem, int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// semanticCandidates embeds the query (memoized; models with asymmetric
+// query/document schemes get their instruction prefix) and returns up to
+// limit vector-index hits above the similarity threshold, ranked by score.
+func (m *Module) semanticCandidates(query string, limit int) []libraryItem {
+	// Short timeout: when the remote embedding endpoint is slow or down the
+	// lexical results must still return promptly; semantic just degrades.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	m.log.Debug("semantic search started",
-		zap.String("query", query),
-		zap.Int64("start", start),
-		zap.Int64("count", count))
-
-	// Embed the query
-	results, err := m.embedProvider.Embed(ctx, []EmbedInput{{ID: "query", Text: query}})
-	if err != nil || len(results) == 0 || len(results[0].Vector) == 0 {
-		m.log.Debug("query embedding failed", zap.Error(err))
-		return nil, 0
+	embedText := query
+	if qp, ok := m.embedProvider.(queryPrefixer); ok {
+		embedText = qp.QueryPrefix() + query
+	}
+	queryVec, cachedVec := m.queryEmbeds.get(embedText)
+	if !cachedVec {
+		results, err := m.embedProvider.Embed(ctx, []EmbedInput{{ID: "query", Text: embedText}})
+		if err != nil || len(results) == 0 || len(results[0].Vector) == 0 {
+			m.log.Debug("query embedding failed", zap.Error(err))
+			return nil
+		}
+		queryVec = results[0].Vector
+		m.queryEmbeds.put(embedText, queryVec)
 	}
 
-	queryVec := results[0].Vector
-	m.log.Debug("query embedded successfully",
-		zap.Int("vector_dimension", len(queryVec)))
-
-	// Search vector index
-	limit := int(count)
 	if limit <= 0 {
 		limit = 100
 	}
-	// Request more to allow for pagination
-	searchLimit := int(start) + limit + 10
+	searchLimit := limit
 	similar := m.vectorIndex.SearchDual(queryVec, DefaultCardWeight, DefaultSummaryWeight, searchLimit)
 	if len(similar) == 0 {
 		// Fallback for legacy index without :card/:summary suffixes
@@ -2001,45 +2016,6 @@ func (m *Module) semanticSearch(query string, start int64, count int64) ([]libra
 		zap.Int("results_count", len(similar)),
 		zap.Int("search_limit", searchLimit))
 
-	// Log score distribution for debugging
-	if len(similar) > 0 {
-		var minScore, maxScore float32 = similar[0].Score, similar[0].Score
-		var totalScore float64
-		for _, r := range similar {
-			if r.Score < minScore {
-				minScore = r.Score
-			}
-			if r.Score > maxScore {
-				maxScore = r.Score
-			}
-			totalScore += float64(r.Score)
-		}
-		avgScore := totalScore / float64(len(similar))
-		m.log.Debug("similarity score distribution",
-			zap.Float32("max_score", maxScore),
-			zap.Float32("min_score", minScore),
-			zap.Float64("avg_score", avgScore))
-
-		// Log top 5 results with their scores
-		topN := 5
-		if len(similar) < topN {
-			topN = len(similar)
-		}
-		m.mu.RLock()
-		for i := 0; i < topN; i++ {
-			r := similar[i]
-			if item, ok := m.index.Items[r.ID]; ok {
-				m.log.Debug("top semantic result",
-					zap.Int("rank", i+1),
-					zap.Float32("score", r.Score),
-					zap.String("title", item.Title),
-					zap.Strings("artists", item.Artists),
-					zap.String("album", item.Album))
-			}
-		}
-		m.mu.RUnlock()
-	}
-
 	// Filter by minimum similarity threshold
 	minSimilarity := DefaultSimilarityThreshold
 	filtered := make([]SimilarityResult, 0, len(similar))
@@ -2048,33 +2024,6 @@ func (m *Module) semanticSearch(query string, start int64, count int64) ([]libra
 			filtered = append(filtered, r)
 		}
 	}
-
-	m.log.Debug("similarity threshold applied",
-		zap.Float32("threshold", minSimilarity),
-		zap.Int("before_filter", len(similar)),
-		zap.Int("after_filter", len(filtered)))
-
-	// Apply pagination
-	total := int64(len(filtered))
-	if start < 0 {
-		start = 0
-	}
-	if int64(len(filtered)) <= start {
-		m.log.Debug("no results after pagination offset",
-			zap.Int64("start", start),
-			zap.Int("filtered_count", len(filtered)))
-		return nil, total
-	}
-	end := start + count
-	if end > int64(len(filtered)) {
-		end = int64(len(filtered))
-	}
-	filtered = filtered[start:end]
-
-	m.log.Debug("pagination applied",
-		zap.Int64("start", start),
-		zap.Int64("end", end),
-		zap.Int("page_size", len(filtered)))
 
 	// Convert to library items
 	m.mu.RLock()
@@ -2111,7 +2060,7 @@ func (m *Module) semanticSearch(query string, start int64, count int64) ([]libra
 		zap.String("query", query),
 		zap.Int("results_returned", len(items)))
 
-	return items, total
+	return items
 }
 
 func (m *Module) buildEmbeddings(ctx context.Context, items map[string]mediaItem) {
@@ -2321,7 +2270,7 @@ func buildSearchText(item mediaItem, enrich *AlbumMetadata) string {
 			}
 		}
 	}
-	return strings.ToLower(strings.Join(parts, " "))
+	return foldString(strings.Join(parts, " "))
 }
 
 func containsAllTerms(item mediaItem, terms []string) bool {

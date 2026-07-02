@@ -66,6 +66,17 @@ type OllamaProvider struct {
 	http      *http.Client
 }
 
+// QueryPrefix returns the retrieval instruction that must be prepended to
+// query (never document) embeddings for the configured model. mxbai-embed
+// models use an asymmetric scheme; without the prefix short queries land
+// far from the document vectors and score below the similarity threshold.
+func (p *OllamaProvider) QueryPrefix() string {
+	if strings.HasPrefix(p.model, "mxbai-embed") {
+		return "Represent this sentence for searching relevant passages: "
+	}
+	return ""
+}
+
 // OllamaConfig configures the Ollama embedding provider.
 type OllamaConfig struct {
 	Endpoint  string
