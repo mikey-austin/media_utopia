@@ -79,6 +79,7 @@ internal/adapters/  MQTT, config, output adapters
 internal/modules/   Module implementations
   ├── playlist/           Playlist server
   ├── renderer_gstreamer/ GStreamer renderer
+  ├── renderer_mpv/       mpv (libmpv) renderer
   ├── renderer_kodi/      Kodi renderer
   ├── renderer_vlc/       VLC renderer
   ├── renderer_upnp/      UPnP renderer bridge

@@ -222,6 +222,27 @@ resource = "bedroom"
 pipeline = "playbin uri={url} volume={volume}"
 ```
 
+The mpv renderer (build tag `mpv`) is a drop-in alternative with better
+tolerance of hostile HTTP streams. Keep the existing node ID across a
+cutover by pinning `node_id` (see `docs/design/renderer-mpv.md`):
+
+```toml
+[modules.renderer_mpv.living_room]
+enabled = true
+name = "Living Room"
+provider = "mpv"
+resource = "living-room"
+node_id = "mu:renderer:gstreamer:mud@home:living-room"  # optional: keep old ID
+ao = "pipewire"          # pipewire | alsa | pulse | null ...
+device = ""              # optional audio-device
+crossfade_ms = 3000
+volume = 0.8
+# verbatim mpv options for stream tuning:
+[modules.renderer_mpv.living_room.mpv_options]
+network-timeout = "10"
+demuxer-max-bytes = "32MiB"
+```
+
 ## Adding Jellyfin Library
 
 ```toml
