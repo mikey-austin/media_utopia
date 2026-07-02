@@ -432,13 +432,14 @@ type Module struct {
 	cmdQueue chan cmdWork
 	dedup    *mu.CommandDedup
 
-	mu           sync.RWMutex
-	scanMu       sync.Mutex   // serializes concurrent scans
-	scanCount    atomic.Int64 // incremented on every scanInner call; for tests
-	lastReused   atomic.Int64 // items reused by the most recent scan; for tests
-	index        *libraryIndex
-	baseURL      string
-	artURLPrefix string // pre-computed baseURL + "/art/", set once in startHTTPServer
+	mu             sync.RWMutex
+	scanMu         sync.Mutex   // serializes concurrent scans
+	scanCount      atomic.Int64 // incremented on every scanInner call; for tests
+	lastReused     atomic.Int64 // items reused by the most recent scan; for tests
+	embedPassCount atomic.Int64 // buildEmbeddings invocations; for tests
+	index          *libraryIndex
+	baseURL        string
+	artURLPrefix   string // pre-computed baseURL + "/art/", set once in startHTTPServer
 	// artURLCache memoizes art URLs keyed by album hash, cleared on index
 	// rebuild. It has its own mutex because it is WRITTEN from paths that
 	// hold only m.mu.RLock (concurrent command workers) — writing it under
@@ -2085,6 +2086,7 @@ func (m *Module) semanticSearch(query string, start int64, count int64) ([]libra
 }
 
 func (m *Module) buildEmbeddings(ctx context.Context, items map[string]mediaItem) {
+	m.embedPassCount.Add(1)
 	if m.embedProvider == nil {
 		return
 	}
@@ -2824,15 +2826,22 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 		nextPrevItems[item.Path] = item
 	}
 
+	libraryChanged := newCount > 0 || removedCount > 0
+
 	m.mu.Lock()
 	m.index = next
 	m.enrichMeta = enrichMeta
 	m.prevItems = nextPrevItems
 	m.mu.Unlock()
-	m.clearArtURLCache() // invalidate art URL cache on index rebuild
+	if libraryChanged || enrichChanged {
+		m.clearArtURLCache() // invalidate art URL cache on index rebuild
+	}
 
-	// Build embeddings asynchronously
-	if m.embedProvider != nil {
+	// Build embeddings asynchronously — but not on a no-change scan against
+	// an already-populated index (the enrichment/backfill goroutines trigger
+	// their own rebuilds when they produce new data).
+	if m.embedProvider != nil && (libraryChanged || enrichChanged || forceEnrich ||
+		(m.vectorIndex != nil && m.vectorIndex.Size() == 0)) {
 		m.goSafe("build-embeddings", func() { m.buildEmbeddings(ctx, next.Items) })
 	}
 
@@ -2841,14 +2850,16 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 		m.goSafe("enrich-albums", func() { m.enrichAlbums(ctx, enrichTargets) })
 	}
 
-	// Backfill summaries for existing sidecars that have metadata but no generated summary
-	if m.summaryGen != nil {
-		m.goSafe("backfill-summaries", func() { m.backfillSummaries(ctx, enrichMeta, enrichDirs) })
-	}
-
-	// Backfill LLM-classified top-level genre for sidecars missing it.
-	if m.genreClassifier != nil {
-		m.goSafe("backfill-genres", func() { m.backfillGenres(ctx, enrichMeta, enrichDirs) })
+	// Backfill summaries/genres for existing sidecars — only when sidecar
+	// metadata changed this scan (their candidate sets cannot change
+	// otherwise), so a stable library doesn't re-walk candidates every tick.
+	if enrichChanged || forceEnrich {
+		if m.summaryGen != nil {
+			m.goSafe("backfill-summaries", func() { m.backfillSummaries(ctx, enrichMeta, enrichDirs) })
+		}
+		if m.genreClassifier != nil {
+			m.goSafe("backfill-genres", func() { m.backfillGenres(ctx, enrichMeta, enrichDirs) })
+		}
 	}
 
 	// Skip persisting the index when nothing changed — avoids rewriting the

@@ -4233,3 +4233,73 @@ func TestIndexPersistenceWarmRestart(t *testing.T) {
 		t.Fatalf("post-restart scan reused %d items, want 3", got)
 	}
 }
+
+// TestNoOpScanIsCheap: when a rescan finds no changes it must not wipe the
+// art-URL cache nor launch another full embedding pass — a stable library
+// scanned every 15 minutes should do near-zero work.
+func TestNoOpScanIsCheap(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "Artist", "Album")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "01 track.mp3"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cover.jpg"), []byte("img"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	mod := newTestModule(t, root, []string{".mp3"})
+	mod.embedProvider = &mockEmbeddingProvider{}
+	mod.vectorIndex = NewVectorIndex()
+
+	if err := mod.scan(); err != nil { // embeds launch async
+		t.Fatalf("scan: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for mod.vectorIndex.Size() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("embedding pass never ran")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	passes := mod.embedPassCount.Load()
+
+	// Populate the art URL cache.
+	mod.mu.Lock()
+	mod.baseURL = "http://test"
+	mod.artURLPrefix = "http://test/art/"
+	mod.defaultArtURL = "http://test/art/default"
+	mod.mu.Unlock()
+	var anyItem mediaItem
+	mod.mu.RLock()
+	for _, it := range mod.index.Items {
+		anyItem = it
+	}
+	mod.mu.RUnlock()
+	if url := mod.getItemArtworkURL(anyItem); url == "" {
+		t.Fatal("expected art URL")
+	}
+	mod.artURLMu.Lock()
+	cachedBefore := len(mod.artURLCache)
+	mod.artURLMu.Unlock()
+	if cachedBefore == 0 {
+		t.Fatal("expected art URL cache entry")
+	}
+
+	// No-op rescan.
+	if err := mod.scan(); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond) // would-be async embed launch window
+
+	mod.artURLMu.Lock()
+	cachedAfter := len(mod.artURLCache)
+	mod.artURLMu.Unlock()
+	if cachedAfter != cachedBefore {
+		t.Fatalf("no-op scan wiped art URL cache (%d -> %d)", cachedBefore, cachedAfter)
+	}
+	if got := mod.embedPassCount.Load(); got != passes {
+		t.Fatalf("no-op scan launched another embedding pass (%d -> %d)", passes, got)
+	}
+}
