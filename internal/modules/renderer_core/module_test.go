@@ -1,4 +1,4 @@
-package renderergstreamer
+package renderercore
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
-	"github.com/mikey-austin/media_utopia/internal/modules/renderer_core"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
 	"go.uber.org/zap"
 )
@@ -81,19 +80,19 @@ func TestQueueLoadPlaylist(t *testing.T) {
 	defer cancel()
 
 	client := &fakeMQTTClient{}
-	engine := renderercore.NewEngine("mu:renderer:test", "Test Renderer", stubDriver{})
+	engine := NewEngine("mu:renderer:test", "Test Renderer", stubDriver{})
 	replyTopic := mu.TopicReply(mu.BaseTopic, "mu:renderer:test")
 	module := &Module{
 		log:    zap.NewNop(),
 		client: client,
 		dedup:  mu.NewCommandDedup(128),
 		engine: engine,
-		config: Config{
+		config: ModuleConfig{
 			NodeID:            "mu:renderer:test",
 			TopicBase:         mu.BaseTopic,
 			Name:              "Test Renderer",
-			StatePublisher:    renderercore.StatePublisherFunc(func(s *mu.RendererState) error { return nil }),
-			PresencePublisher: renderercore.PresencePublisherFunc(func(p *mu.Presence) error { return nil }),
+			StatePublisher:    StatePublisherFunc(func(s *mu.RendererState) error { return nil }),
+			PresencePublisher: PresencePublisherFunc(func(p *mu.Presence) error { return nil }),
 		},
 		ctx:           ctx,
 		cmdQueue:      make(chan cmdWork, 64),
@@ -170,19 +169,19 @@ func TestQueueLoadSnapshotCommand(t *testing.T) {
 	defer cancel()
 
 	client := &fakeMQTTClient{}
-	engine := renderercore.NewEngine("mu:renderer:test", "Test Renderer", stubDriver{})
+	engine := NewEngine("mu:renderer:test", "Test Renderer", stubDriver{})
 	replyTopic := mu.TopicReply(mu.BaseTopic, "mu:renderer:test")
 	module := &Module{
 		log:    zap.NewNop(),
 		client: client,
 		dedup:  mu.NewCommandDedup(128),
 		engine: engine,
-		config: Config{
+		config: ModuleConfig{
 			NodeID:            "mu:renderer:test",
 			TopicBase:         mu.BaseTopic,
 			Name:              "Test Renderer",
-			StatePublisher:    renderercore.StatePublisherFunc(func(s *mu.RendererState) error { return nil }),
-			PresencePublisher: renderercore.PresencePublisherFunc(func(p *mu.Presence) error { return nil }),
+			StatePublisher:    StatePublisherFunc(func(s *mu.RendererState) error { return nil }),
+			PresencePublisher: PresencePublisherFunc(func(p *mu.Presence) error { return nil }),
 		},
 		ctx:           ctx,
 		cmdQueue:      make(chan cmdWork, 64),
@@ -286,19 +285,19 @@ func TestLoadCommandErrorDoesNotCorruptState(t *testing.T) {
 	defer cancel()
 
 	client := &fakeMQTTClient{}
-	engine := renderercore.NewEngine("mu:renderer:test", "Test Renderer", stubDriver{})
+	engine := NewEngine("mu:renderer:test", "Test Renderer", stubDriver{})
 	replyTopic := mu.TopicReply(mu.BaseTopic, "mu:renderer:test")
 	module := &Module{
 		log:    zap.NewNop(),
 		client: client,
 		dedup:  mu.NewCommandDedup(128),
 		engine: engine,
-		config: Config{
+		config: ModuleConfig{
 			NodeID:            "mu:renderer:test",
 			TopicBase:         mu.BaseTopic,
 			Name:              "Test Renderer",
-			StatePublisher:    renderercore.StatePublisherFunc(func(s *mu.RendererState) error { return nil }),
-			PresencePublisher: renderercore.PresencePublisherFunc(func(p *mu.Presence) error { return nil }),
+			StatePublisher:    StatePublisherFunc(func(s *mu.RendererState) error { return nil }),
+			PresencePublisher: PresencePublisherFunc(func(p *mu.Presence) error { return nil }),
 		},
 		ctx:           ctx,
 		cmdQueue:      make(chan cmdWork, 64),
@@ -396,9 +395,4 @@ func TestLoadCommandErrorDoesNotCorruptState(t *testing.T) {
 	if summaryAfter.Revision != summaryBefore.Revision {
 		t.Fatalf("queue revision changed: before=%d, after=%d", summaryBefore.Revision, summaryAfter.Revision)
 	}
-}
-
-func mustJSON(v any) json.RawMessage {
-	data, _ := json.Marshal(v)
-	return data
 }
