@@ -1,75 +1,79 @@
 package core
 
-import "github.com/mikey-austin/media_utopia/pkg/mu"
+import (
+	"encoding/json"
+
+	"github.com/mikey-austin/media_utopia/pkg/mu"
+)
 
 // NodesResult holds a list of presence records.
 type NodesResult struct {
-	Nodes []mu.Presence
+	Nodes []mu.Presence `json:"nodes"`
 }
 
 // StatusResult holds renderer presence and state.
 type StatusResult struct {
-	Renderer mu.Presence
-	State    mu.RendererState
+	Renderer mu.Presence      `json:"renderer"`
+	State    mu.RendererState `json:"state"`
 }
 
 // SessionResult reports session acquisition details.
 type SessionResult struct {
-	RendererID string
-	Session    mu.SessionLease
-	StateVer   int64
+	RendererID string          `json:"rendererId"`
+	Session    mu.SessionLease `json:"session"`
+	StateVer   int64           `json:"stateVersion"`
 }
 
 // QueueResult holds a queue listing.
 type QueueResult struct {
-	RendererID string
-	Queue      mu.QueueGetReply
-	FullIDs    bool
+	RendererID string           `json:"rendererId"`
+	Queue      mu.QueueGetReply `json:"queue"`
+	FullIDs    bool             `json:"-"`
 }
 
 // QueueNowResult shows the current queue item.
 type QueueNowResult struct {
-	RendererID string
-	Current    *mu.CurrentItemState
+	RendererID string               `json:"rendererId"`
+	Current    *mu.CurrentItemState `json:"current"`
 }
 
 // PlaylistListResult holds playlist summaries.
 type PlaylistListResult struct {
-	Playlists []mu.PlaylistSummary
+	Playlists []mu.PlaylistSummary `json:"playlists"`
 }
 
 // PlaylistShowResult holds a playlist and resolved entry metadata.
 type PlaylistShowResult struct {
-	PlaylistID string
-	Name       string
-	Entries    []PlaylistEntryResult
-	FullIDs    bool
+	PlaylistID string                `json:"playlistId"`
+	Name       string                `json:"name"`
+	Entries    []PlaylistEntryResult `json:"entries"`
+	FullIDs    bool                  `json:"-"`
 }
 
 // PlaylistEntryResult describes a playlist entry with its canonical ref,
 // optional resolved source, and a display metadata snapshot.
 type PlaylistEntryResult struct {
-	EntryID  string
-	Ref      *mu.LibraryItemRef
-	Resolved *mu.ResolvedSource
-	Display  *mu.DisplayMetadata
+	EntryID  string              `json:"entryId,omitempty"`
+	Ref      *mu.LibraryItemRef  `json:"ref,omitempty"`
+	Resolved *mu.ResolvedSource  `json:"resolved,omitempty"`
+	Display  *mu.DisplayMetadata `json:"display,omitempty"`
 }
 
 // SnapshotListResult holds snapshot summaries.
 type SnapshotListResult struct {
-	Snapshots []mu.SnapshotSummary
+	Snapshots []mu.SnapshotSummary `json:"snapshots"`
 }
 
 // SuggestListResult holds suggestion summaries.
 type SuggestListResult struct {
-	Suggestions []mu.SuggestSummary
+	Suggestions []mu.SuggestSummary `json:"suggestions"`
 }
 
 // LibraryResolveResult holds the metadata reply for a library item,
 // plus an optional resolved sources reply when the caller asked to include them.
 type LibraryResolveResult struct {
-	Item    mu.LibraryGetItemReply
-	Sources *mu.LibraryResolveSourcesReply
+	Item    mu.LibraryGetItemReply         `json:"item"`
+	Sources *mu.LibraryResolveSourcesReply `json:"sources,omitempty"`
 }
 
 // LibraryRescanResult holds the result of a library rescan.
@@ -80,7 +84,13 @@ type LibraryRescanResult struct {
 	Items     int    `json:"items,omitempty"`
 }
 
-// RawResult holds arbitrary JSON data for output.
+// RawResult holds arbitrary JSON data for output. It marshals as the
+// payload itself — scripts should not have to unwrap an envelope.
 type RawResult struct {
 	Data any
+}
+
+// MarshalJSON inlines the payload.
+func (r RawResult) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.Data)
 }

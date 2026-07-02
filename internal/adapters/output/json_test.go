@@ -23,7 +23,7 @@ func TestJSONPrinterNodesResult(t *testing.T) {
 			NodeID string `json:"nodeId"`
 			Kind   string `json:"kind"`
 			Name   string `json:"name"`
-		} `json:"Nodes"`
+		} `json:"nodes"`
 	}
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -53,7 +53,7 @@ func TestJSONPrinterStatusResult(t *testing.T) {
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	state, ok := parsed["State"].(map[string]any)
+	state, ok := parsed["state"].(map[string]any)
 	if !ok {
 		t.Fatal("missing State")
 	}
@@ -81,8 +81,8 @@ func TestJSONPrinterSessionResult(t *testing.T) {
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if parsed["RendererID"] != "r-1" {
-		t.Errorf("expected r-1, got %v", parsed["RendererID"])
+	if parsed["rendererId"] != "r-1" {
+		t.Errorf("expected r-1, got %v", parsed["rendererId"])
 	}
 }
 
@@ -143,12 +143,10 @@ func TestJSONPrinterRawResult(t *testing.T) {
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	data, ok := parsed["Data"].(map[string]any)
-	if !ok {
-		t.Fatal("missing Data")
-	}
-	if data["key"] != "value" {
-		t.Errorf("expected value, got %v", data["key"])
+	// RawResult marshals as the payload itself — no envelope for scripts
+	// to unwrap.
+	if parsed["key"] != "value" {
+		t.Errorf("expected inlined payload, got %v", parsed)
 	}
 }
 
