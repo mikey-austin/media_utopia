@@ -79,9 +79,9 @@ Use --full to include queue entry IDs and item IDs for scripting.`,
 
 func queueNowCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "now [renderer]",
-		Short:   "Show the currently playing item",
-		Long:    "Show the currently playing item from the queue.",
+		Use:   "now [renderer]",
+		Short: "Show the currently playing item",
+		Long:  "Show the currently playing item from the queue.",
 		Example: `  mu queue now
   mu queue now living-room`,
 		Args: cobra.RangeArgs(0, 1),
@@ -103,9 +103,9 @@ func queueNowCommand() *cobra.Command {
 
 func queueClearCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "clear [renderer]",
-		Short:   "Clear all entries from the queue",
-		Long:    "Remove all entries from the playback queue.",
+		Use:   "clear [renderer]",
+		Short: "Clear all entries from the queue",
+		Long:  "Remove all entries from the playback queue.",
 		Example: `  mu queue clear
   mu queue clear living-room`,
 		Args: cobra.RangeArgs(0, 1),
@@ -129,9 +129,9 @@ func queueClearCommand() *cobra.Command {
 
 func queueJumpCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "jump [renderer] <index>",
-		Short:   "Jump to a specific queue index",
-		Long:    "Jump to a specific index in the queue and start playback from there.",
+		Use:   "jump [renderer] <index>",
+		Short: "Jump to a specific queue index",
+		Long:  "Jump to a specific index in the queue and start playback from there.",
 		Example: `  mu queue jump 5
   mu queue jump living-room 10`,
 		Args: cobra.RangeArgs(1, 2),
@@ -249,9 +249,9 @@ func queueShuffleCommand() *cobra.Command {
 	var seed int64
 
 	cmd := &cobra.Command{
-		Use:     "shuffle [renderer]",
-		Short:   "Shuffle the queue order",
-		Long:    "Randomly reorder the entries in the queue. Use --seed for reproducible results.",
+		Use:   "shuffle [renderer]",
+		Short: "Shuffle the queue order",
+		Long:  "Randomly reorder the entries in the queue. Use --seed for reproducible results.",
 		Example: `  mu queue shuffle
   mu queue shuffle living-room
   mu queue shuffle --seed 42`,

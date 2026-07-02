@@ -205,6 +205,39 @@ func renderStatus(result core.StatusResult) (string, error) {
 	return strings.Join(lines, "\n") + "\n", nil
 }
 
+// NowPlayingLine is the one-line summary printed after playback commands:
+// a status glyph plus "Title — Artist" when the track is known.
+func NowPlayingLine(result core.StatusResult) string {
+	status := ""
+	if result.State.Playback != nil {
+		status = result.State.Playback.Status
+	}
+	title, artist := "", ""
+	if cur := result.State.Current; cur != nil {
+		if d := cur.Display; d != nil {
+			title = d.Title
+			artist = d.Artist
+			if artist == "" && len(d.Artists) > 0 {
+				artist = strings.Join(d.Artists, ", ")
+			}
+		}
+		if title == "" && cur.Ref != nil {
+			title = cur.Ref.ItemID
+		}
+	}
+	if title == "" {
+		if status == "" {
+			return ""
+		}
+		return statusGlyph(status) + " " + styleStatus(status)
+	}
+	line := statusGlyph(status) + " " + title
+	if artist != "" {
+		line += " " + Dim("—") + " " + Cyan(artist)
+	}
+	return line
+}
+
 // statusGlyph maps playback status to its single-character indicator.
 func statusGlyph(status string) string {
 	switch strings.ToLower(status) {

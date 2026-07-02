@@ -12,9 +12,9 @@ import (
 
 func suggestCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "suggest",
-		Short: "Manage AI-generated suggestions",
-		Long:  "Manage AI-generated playlist suggestions. Suggestions can be previewed, loaded into a renderer, or promoted to saved playlists.",
+		Use:     "suggest",
+		Short:   "Manage AI-generated suggestions",
+		Long:    "Manage AI-generated playlist suggestions. Suggestions can be previewed, loaded into a renderer, or promoted to saved playlists.",
 		GroupID: "content",
 	}
 

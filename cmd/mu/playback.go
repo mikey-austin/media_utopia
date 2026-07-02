@@ -36,9 +36,7 @@ playback begins at the current position unless --index is specified.`,
 			}); err != nil {
 				return err
 			}
-			if !app.quiet && !app.json {
-				fmt.Println("Playback started")
-			}
+			app.printPlaybackOutcome(ctx, selector, "Playback started")
 			return nil
 		},
 	}
@@ -50,9 +48,9 @@ playback begins at the current position unless --index is specified.`,
 
 func pauseCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "pause [renderer]",
-		Short:   "Pause playback",
-		Long:    "Pause playback on a renderer. Use 'mu toggle' to resume.",
+		Use:   "pause [renderer]",
+		Short: "Pause playback",
+		Long:  "Pause playback on a renderer. Use 'mu toggle' to resume.",
 		Example: `  mu pause
   mu pause living-room`,
 		GroupID:           "playback",
@@ -69,9 +67,7 @@ func pauseCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			if !app.quiet && !app.json {
-				fmt.Println("Playback paused")
-			}
+			app.printPlaybackOutcome(ctx, selector, "Playback paused")
 			return nil
 		},
 	}
@@ -79,9 +75,9 @@ func pauseCommand() *cobra.Command {
 
 func toggleCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "toggle [renderer]",
-		Short:   "Toggle between play and pause",
-		Long:    "Toggle between play and pause states. If playing, pauses. If paused, resumes.",
+		Use:   "toggle [renderer]",
+		Short: "Toggle between play and pause",
+		Long:  "Toggle between play and pause states. If playing, pauses. If paused, resumes.",
 		Example: `  mu toggle
   mu toggle living-room`,
 		GroupID:           "playback",
@@ -98,9 +94,7 @@ func toggleCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			if !app.quiet && !app.json {
-				fmt.Println("Playback toggled")
-			}
+			app.printPlaybackOutcome(ctx, selector, "Playback toggled")
 			return nil
 		},
 	}
@@ -108,9 +102,9 @@ func toggleCommand() *cobra.Command {
 
 func stopCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "stop [renderer]",
-		Short:   "Stop playback and reset position",
-		Long:    "Stop playback and reset the position to the beginning of the current track.",
+		Use:   "stop [renderer]",
+		Short: "Stop playback and reset position",
+		Long:  "Stop playback and reset the position to the beginning of the current track.",
 		Example: `  mu stop
   mu stop living-room`,
 		GroupID:           "playback",
@@ -127,9 +121,7 @@ func stopCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			if !app.quiet && !app.json {
-				fmt.Println("Playback stopped")
-			}
+			app.printPlaybackOutcome(ctx, selector, "Playback stopped")
 			return nil
 		},
 	}
@@ -179,9 +171,9 @@ Duration suffixes like "s" and "m" are also supported.`,
 
 func nextCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "next [renderer]",
-		Short:   "Skip to the next track",
-		Long:    "Skip to the next track in the queue.",
+		Use:   "next [renderer]",
+		Short: "Skip to the next track",
+		Long:  "Skip to the next track in the queue.",
 		Example: `  mu next
   mu next living-room`,
 		GroupID:           "playback",
@@ -198,9 +190,7 @@ func nextCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			if !app.quiet && !app.json {
-				fmt.Println("Skipped to next track")
-			}
+			app.printPlaybackOutcome(ctx, selector, "Skipped to next track")
 			return nil
 		},
 	}
@@ -208,9 +198,9 @@ func nextCommand() *cobra.Command {
 
 func prevCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "prev [renderer]",
-		Short:   "Go back to the previous track",
-		Long:    "Go back to the previous track in the queue.",
+		Use:   "prev [renderer]",
+		Short: "Go back to the previous track",
+		Long:  "Go back to the previous track in the queue.",
 		Example: `  mu prev
   mu prev living-room`,
 		GroupID:           "playback",
@@ -227,9 +217,7 @@ func prevCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			if !app.quiet && !app.json {
-				fmt.Println("Went to previous track")
-			}
+			app.printPlaybackOutcome(ctx, selector, "Went to previous track")
 			return nil
 		},
 	}

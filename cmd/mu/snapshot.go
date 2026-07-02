@@ -28,9 +28,9 @@ func snapshotSaveCommand() *cobra.Command {
 	var server string
 
 	cmd := &cobra.Command{
-		Use:     "save [renderer] <name>",
-		Short:   "Save the current session as a snapshot",
-		Long:    "Save the current renderer session (queue, position, volume) as a named snapshot.",
+		Use:   "save [renderer] <name>",
+		Short: "Save the current session as a snapshot",
+		Long:  "Save the current renderer session (queue, position, volume) as a named snapshot.",
 		Example: `  mu snapshot save "Friday Night"
   mu snapshot save living-room "Party Mix"`,
 		Args: cobra.RangeArgs(1, 2),

@@ -256,6 +256,28 @@ func (a *app) printLeaseNotice(result core.SessionResult) {
 	_, _ = fmt.Fprintln(os.Stdout, msg)
 }
 
+// printPlaybackOutcome prints a one-line now-playing confirmation after a
+// playback command ("▶ Title — Artist"), falling back to the plain message
+// when the renderer state can't be fetched in time.
+func (a *app) printPlaybackOutcome(ctx context.Context, selector string, fallback string) {
+	if a.quiet || a.json {
+		return
+	}
+	// The renderer debounces state publishes (~50ms); give it a beat so the
+	// confirmation reflects the command we just issued.
+	select {
+	case <-ctx.Done():
+	case <-time.After(250 * time.Millisecond):
+	}
+	if res, err := a.service.Status(ctx, selector); err == nil {
+		if line := output.NowPlayingLine(res); line != "" {
+			fmt.Println(line)
+			return
+		}
+	}
+	fmt.Println(fallback)
+}
+
 func defaultIdentity(flagVal string, cfgVal string) string {
 	if flagVal != "" {
 		return flagVal

@@ -51,9 +51,9 @@ func renewCommand() *cobra.Command {
 	var ttl time.Duration
 
 	cmd := &cobra.Command{
-		Use:     "renew [renderer]",
-		Short:   "Renew an existing renderer lease",
-		Long:    "Extend the TTL of an existing lease without releasing it.",
+		Use:   "renew [renderer]",
+		Short: "Renew an existing renderer lease",
+		Long:  "Extend the TTL of an existing lease without releasing it.",
 		Example: `  mu renew
   mu renew living-room --ttl 15m`,
 		GroupID:           "session",
@@ -81,9 +81,9 @@ func renewCommand() *cobra.Command {
 
 func releaseCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "release [renderer]",
-		Short:   "Release a renderer lease",
-		Long:    "Release a lease so other controllers can acquire it.",
+		Use:   "release [renderer]",
+		Short: "Release a renderer lease",
+		Long:  "Release a lease so other controllers can acquire it.",
 		Example: `  mu release
   mu release living-room`,
 		GroupID:           "session",
@@ -109,9 +109,9 @@ func releaseCommand() *cobra.Command {
 
 func ownerCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "owner [renderer]",
-		Short:   "Show the current lease owner",
-		Long:    "Show which controller currently holds the lease on a renderer.",
+		Use:   "owner [renderer]",
+		Short: "Show the current lease owner",
+		Long:  "Show which controller currently holds the lease on a renderer.",
 		Example: `  mu owner
   mu owner living-room`,
 		GroupID:           "session",
