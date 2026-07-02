@@ -47,8 +47,8 @@ docker-push: docker
 	docker push $(REGISTRY)/mud:$(DATE_TAG)-full
 
 docker-library:
-	docker build --target mud-library --build-arg BUILD_TAGS="" --build-arg CGO=0 \
-		-t $(REGISTRY)/mud-library:$(DATE_TAG)-nogst-noupnp .
+	docker build --target mud-library --build-arg BUILD_TAGS="chromaprint" --build-arg CGO=1 \
+		-t $(REGISTRY)/mud-library:$(DATE_TAG)-chromaprint .
 
 docker-library-push: docker-library
-	docker push $(REGISTRY)/mud-library:$(DATE_TAG)-nogst-noupnp
+	docker push $(REGISTRY)/mud-library:$(DATE_TAG)-chromaprint

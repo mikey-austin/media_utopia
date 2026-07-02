@@ -4,7 +4,8 @@
 #
 # Targets:
 #   mud           Full daemon with GStreamer + mpv + UPnP (Ubuntu runtime)
-#   mud-library   Library-only daemon, no GStreamer/mpv/UPnP (distroless, static binary)
+#   mud-library   Library-only daemon with chromaprint fingerprinting,
+#                 no GStreamer/mpv/UPnP (slim Ubuntu runtime)
 #   mu            CLI client (distroless, static binary)
 #
 # Build args:
@@ -13,7 +14,7 @@
 #
 # Examples:
 #   Full build:    docker build --target mud -t mud:20260312 .
-#   Library-only:  docker build --target mud-library --build-arg BUILD_TAGS="" --build-arg CGO=0 -t mud-library:20260312-nogst-noupnp .
+#   Library-only:  docker build --target mud-library --build-arg BUILD_TAGS="chromaprint" --build-arg CGO=1 -t mud-library:20260312-chromaprint .
 
 FROM ubuntu:26.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -67,7 +68,15 @@ COPY --from=build /out/mud /usr/local/bin/mud
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/mud"]
 
-FROM gcr.io/distroless/static-debian12 AS mud-library
+# Library-only runtime. Not distroless: the chromaprint build tag needs cgo
+# + libchromaprint at runtime, and AcoustID fingerprint enrichment is the
+# whole point of fs_library deployments (without it, albums that miss on
+# MusicBrainz text search get no metadata at all).
+FROM ubuntu:26.04 AS mud-library
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libchromaprint1 \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/mud /usr/local/bin/mud
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/mud"]
