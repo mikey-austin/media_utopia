@@ -1112,10 +1112,10 @@ func TestTruncateCell(t *testing.T) {
 		want  string
 	}{
 		{"within limit", "short", 10, "short"},
-		{"over limit", "this is a very long string that exceeds", 15, "this is a ve..."},
-		{"with pipe chars", "foo|bar", 20, "foo/bar"},
+		{"over limit", "this is a very long string that exceeds", 15, "this is a ver\u2026"},
+		{"with pipe chars", "foo|bar", 20, "foo|bar"},
 		{"with newlines", "line1\nline2", 20, "line1 line2"},
-		{"max 3", "abcdef", 3, "abc"},
+		{"max 3", "abcdef", 3, "a\u2026"},
 		{"max 0", "anything", 0, "anything"},
 	}
 

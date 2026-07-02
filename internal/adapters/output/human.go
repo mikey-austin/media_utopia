@@ -679,17 +679,18 @@ func truncateCell(value string, max int) string {
 	value = strings.ReplaceAll(value, "\t", " ")
 	value = strings.ReplaceAll(value, "\n", " ")
 	value = strings.ReplaceAll(value, "\r", " ")
-	value = strings.ReplaceAll(value, "|", "/")
 	if max <= 0 {
 		return value
 	}
 	if runewidth.StringWidth(value) <= max {
 		return value
 	}
-	if max <= 3 {
+	ellipsis := "\u2026" // single-char ellipsis; width varies under East Asian rules
+	ellW := runewidth.StringWidth(ellipsis)
+	if max <= ellW {
 		return truncateByWidth(value, max)
 	}
-	return truncateByWidth(value, max-3) + "..."
+	return truncateByWidth(value, max-ellW) + ellipsis
 }
 
 func truncateByWidth(value string, max int) string {
