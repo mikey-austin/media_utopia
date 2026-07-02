@@ -392,6 +392,31 @@ type Config struct {
 	GenreModel string
 }
 
+// attemptTracker rate-limits retries of failure-prone background work
+// (LLM summary/genre generation) so a persistently failing album is not
+// retried on every trigger. In-memory: a restart allows one fresh attempt.
+type attemptTracker struct {
+	mu sync.Mutex
+	m  map[string]time.Time
+}
+
+// shouldTry reports whether key may be attempted now and, if so, records
+// the attempt.
+func (t *attemptTracker) shouldTry(key string, cooldown time.Duration) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if cooldown > 0 {
+		if last, ok := t.m[key]; ok && time.Since(last) < cooldown {
+			return false
+		}
+	}
+	if t.m == nil {
+		t.m = make(map[string]time.Time)
+	}
+	t.m[key] = time.Now()
+	return true
+}
+
 // goSafe runs fn on a new goroutine, containing panics so a bug in one
 // background task (embedding build, enrichment, backfills, rescans)
 // degrades that task instead of killing the whole daemon.
@@ -437,9 +462,13 @@ type Module struct {
 	scanCount      atomic.Int64 // incremented on every scanInner call; for tests
 	lastReused     atomic.Int64 // items reused by the most recent scan; for tests
 	embedPassCount atomic.Int64 // buildEmbeddings invocations; for tests
-	index          *libraryIndex
-	baseURL        string
-	artURLPrefix   string // pre-computed baseURL + "/art/", set once in startHTTPServer
+
+	// summaryAttempts / genreAttempts rate-limit failing LLM backfill work.
+	summaryAttempts attemptTracker
+	genreAttempts   attemptTracker
+	index           *libraryIndex
+	baseURL         string
+	artURLPrefix    string // pre-computed baseURL + "/art/", set once in startHTTPServer
 	// artURLCache memoizes art URLs keyed by album hash, cleared on index
 	// rebuild. It has its own mutex because it is WRITTEN from paths that
 	// hold only m.mu.RLock (concurrent command workers) — writing it under

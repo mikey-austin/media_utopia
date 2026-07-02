@@ -4303,3 +4303,19 @@ func TestNoOpScanIsCheap(t *testing.T) {
 		t.Fatalf("no-op scan launched another embedding pass (%d -> %d)", passes, got)
 	}
 }
+
+func TestAttemptTrackerCooldown(t *testing.T) {
+	var tr attemptTracker
+	if !tr.shouldTry("a", time.Hour) {
+		t.Fatal("first attempt must be allowed")
+	}
+	if tr.shouldTry("a", time.Hour) {
+		t.Fatal("second attempt inside cooldown must be blocked")
+	}
+	if !tr.shouldTry("b", time.Hour) {
+		t.Fatal("different key must be allowed")
+	}
+	if !tr.shouldTry("a", 0) {
+		t.Fatal("zero cooldown must always allow")
+	}
+}

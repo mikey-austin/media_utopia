@@ -353,6 +353,9 @@ func (m *Module) backfillGenres(ctx context.Context, metas map[string]*AlbumMeta
 		if meta == nil || meta.LLMGenre != "" {
 			continue
 		}
+		if !m.genreAttempts.shouldTry(key, backfillRetryCooldown) {
+			continue // failed recently; retry after cooldown
+		}
 		candidates = append(candidates, key)
 	}
 	m.mu.RUnlock()

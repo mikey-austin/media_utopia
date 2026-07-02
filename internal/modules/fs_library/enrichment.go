@@ -1475,6 +1475,11 @@ func (m *Module) enrichAlbums(ctx context.Context, targets []enrichTarget) {
 	}
 }
 
+// backfillRetryCooldown throttles re-attempts of LLM backfill work that
+// failed (generation error or empty output). Successful work never retries
+// (the sidecar records the result); failures retry at most this often.
+const backfillRetryCooldown = 24 * time.Hour
+
 // backfillSummaries generates LLM summaries for existing sidecars that have
 // metadata (MusicBrainz or Discogs) but no generated summary. This handles
 // sidecars that were written before summary generation was enabled.
@@ -1493,6 +1498,9 @@ func (m *Module) backfillSummaries(ctx context.Context, metas map[string]*AlbumM
 		if meta.Description != nil && meta.Description.GeneratedSummary != "" {
 			alreadyHave++
 			continue
+		}
+		if !m.summaryAttempts.shouldTry(key, backfillRetryCooldown) {
+			continue // failed recently; retry after cooldown
 		}
 		candidates = append(candidates, key)
 	}
