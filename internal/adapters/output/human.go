@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/mattn/go-runewidth"
-	"github.com/pterm/pterm"
 
 	"github.com/mikey-austin/media_utopia/internal/core"
 	"github.com/mikey-austin/media_utopia/pkg/mu"
@@ -96,11 +96,25 @@ func renderNodes(result core.NodesResult) (string, error) {
 	if len(result.Nodes) == 0 {
 		return "No nodes found. Is the broker running?\n", nil
 	}
-	rows := make([][]string, 0, len(result.Nodes))
-	for _, node := range result.Nodes {
+	nodes := append([]mu.Presence(nil), result.Nodes...)
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Kind != nodes[j].Kind {
+			return nodes[i].Kind < nodes[j].Kind
+		}
+		return nodes[i].Name < nodes[j].Name
+	})
+	rows := make([][]string, 0, len(nodes))
+	for _, node := range nodes {
 		rows = append(rows, []string{node.Name, node.Kind, node.NodeID})
 	}
-	return renderTable([]string{"NAME", "KIND", "NODE_ID"}, rows)
+	return Table{
+		Columns: []Column{
+			{Title: "NAME", Min: 12, Flex: 2},
+			{Title: "KIND"},
+			{Title: "NODE_ID", Style: Dim},
+		},
+		Rows: rows,
+	}.Render(), nil
 }
 
 func renderStatus(result core.StatusResult) (string, error) {
@@ -152,78 +166,64 @@ func renderStatus(result core.StatusResult) (string, error) {
 		owner = fmt.Sprintf("owner %s", result.State.Session.Owner)
 	}
 
-	statusStyled := styleStatus(status)
-	innerWidth := pterm.GetTerminalWidth() - 4
-	if innerWidth < 20 {
-		innerWidth = 80
-	}
-	titleName := truncateCell(result.Renderer.Name, innerWidth-10)
-	title := fmt.Sprintf("%s [%s]", titleName, statusStyled)
+	width := min(TerminalWidth(100), 100)
 
-	// Build position/time string
-	position := formatPosition(posMS, durMS)
+	// Header: playback glyph, renderer name, status.
+	glyph := statusGlyph(status)
+	header := fmt.Sprintf("%s %s %s", glyph,
+		Bold(truncateCell(result.Renderer.Name, width-20)), styleStatus(status))
+	lines := []string{strings.TrimRight(header, " ")}
 
-	// Line 1: track title + time position
-	suffix := strings.TrimSpace(fmt.Sprintf("%s  %s", position, volume))
-	itemMax := innerWidth
-	if suffix != "" {
-		itemMax = innerWidth - displayWidth(suffix) - 2
-		itemMax = max(itemMax, 10)
+	// Track line: title — artist.
+	track := item
+	if artistLine != "" && track != "" {
+		track = fmt.Sprintf("%s %s %s", track, Dim("—"), Cyan(artistLine))
+	} else if artistLine != "" {
+		track = Cyan(artistLine)
 	}
-	itemMax = min(itemMax, 60)
-	item = truncateCell(item, itemMax)
-	if displayWidth(item) > itemMax {
-		item = truncateByWidth(item, itemMax)
-	}
-	line := strings.TrimSpace(item)
-	if suffix != "" {
-		line = strings.TrimSpace(fmt.Sprintf("%s  %s", item, suffix))
-	}
-	lines := []string{truncateCell(line, innerWidth)}
-
-	// Line 2: artist
-	if artistLine != "" {
-		label := fmt.Sprintf("Artist: %s", artistLine)
-		label = truncateCell(label, itemMax)
-		if displayWidth(label) > itemMax {
-			label = truncateByWidth(label, itemMax)
-		}
-		lines = append(lines, pterm.FgCyan.Sprint(label))
+	if track != "" {
+		lines = append(lines, "  "+track)
 	}
 
-	// Line 3: progress bar (only when playing or paused with duration)
+	// Progress line: bar + position + volume.
+	suffix := strings.TrimSpace(strings.TrimSpace(formatPosition(posMS, durMS)) + "  " + volume)
 	if durMS > 0 && (status == "playing" || status == "paused") {
-		barWidth := innerWidth - 8 // leave room for percentage
-		barWidth = min(barWidth, 60)
-		if barWidth >= 10 {
-			percent := int64(0)
-			if durMS > 0 {
-				percent = (posMS * 100) / durMS
-			}
-			bar := renderProgressBar(posMS, durMS, barWidth)
-			lines = append(lines, fmt.Sprintf("%s %3d%%", bar, percent))
-		}
+		barWidth := max(10, min(width-displayWidth(suffix)-6, 40))
+		lines = append(lines, fmt.Sprintf("  %s %s", renderProgressBar(posMS, durMS, barWidth), Dim(suffix)))
+	} else if suffix != "" {
+		lines = append(lines, "  "+Dim(suffix))
 	}
 
-	// Line 4: queue + owner info
-	if queue != "" || owner != "" {
-		infoLine := strings.TrimSpace(fmt.Sprintf("%s %s", queue, owner))
-		lines = append(lines, truncateCell(infoLine, innerWidth))
+	// Queue / owner line.
+	if info := strings.TrimSpace(strings.TrimSpace(queue) + "  " + owner); info != "" {
+		lines = append(lines, "  "+Dim(info))
 	}
+	return strings.Join(lines, "\n") + "\n", nil
+}
 
-	box := pterm.DefaultBox.WithTitle(title)
-	return box.Sprint(strings.Join(lines, "\n")), nil
+// statusGlyph maps playback status to its single-character indicator.
+func statusGlyph(status string) string {
+	switch strings.ToLower(status) {
+	case "playing":
+		return Green("▶")
+	case "paused":
+		return Yellow("⏸")
+	case "stopped":
+		return Red("■")
+	default:
+		return Dim("·")
+	}
 }
 
 func renderSession(result core.SessionResult) (string, error) {
-	expires := time.Unix(result.Session.LeaseExpiresAt, 0).Format(time.RFC3339)
-	remaining := time.Until(time.Unix(result.Session.LeaseExpiresAt, 0)).Round(time.Second)
-	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("Renderer: %s\n", result.RendererID))
-	buf.WriteString(fmt.Sprintf("Session:  %s\n", result.Session.ID))
-	buf.WriteString(fmt.Sprintf("Owner:    %s\n", result.Session.Owner))
-	buf.WriteString(fmt.Sprintf("Expires:  %s (%s remaining)\n", expires, remaining))
-	return buf.String(), nil
+	expiresAt := time.Unix(result.Session.LeaseExpiresAt, 0)
+	remaining := time.Until(expiresAt).Round(time.Second)
+	return RenderDetails([][2]string{
+		{"Renderer", result.RendererID},
+		{"Session", result.Session.ID},
+		{"Owner", result.Session.Owner},
+		{"Expires", fmt.Sprintf("%s (in %s)", expiresAt.Format("15:04:05"), remaining)},
+	}), nil
 }
 
 func renderQueue(result core.QueueResult) (string, error) {
@@ -234,13 +234,20 @@ func renderQueueWithOffset(result core.QueueResult, offset int64) (string, error
 	if len(result.Queue.Entries) == 0 {
 		return "Queue is empty.\n", nil
 	}
-	headers := []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"}
-	if result.FullIDs {
-		headers = append(headers, "QUEUE_ID", "ITEM_ID")
+	cols := []Column{
+		{Title: "#", Align: AlignRight},
+		{Title: "TITLE", Min: 16, Flex: 3},
+		{Title: "ARTIST", Min: 10, Flex: 2},
+		{Title: "ALBUM", Min: 10, Flex: 2},
+		{Title: "LEN", Align: AlignRight},
 	}
+	if result.FullIDs {
+		cols = append(cols, Column{Title: "QUEUE_ID", Style: Dim}, Column{Title: "ITEM_ID", Style: Dim})
+	}
+	current := -1
 	rows := make([][]string, 0, len(result.Queue.Entries))
 	for idx, entry := range result.Queue.Entries {
-		title, typ, artist, album, length := displayFields(entry.Display)
+		title, _, artist, album, length := displayFields(entry.Display)
 		if title == "" {
 			if entry.Ref != nil {
 				title = entry.Ref.ItemID
@@ -249,18 +256,12 @@ func renderQueueWithOffset(result core.QueueResult, offset int64) (string, error
 			}
 		}
 		absoluteIdx := offset + int64(idx)
-		indexStr := fmt.Sprintf("  %d", absoluteIdx)
+		indexStr := fmt.Sprintf("%d", absoluteIdx)
 		if absoluteIdx == result.Queue.Index {
-			indexStr = pterm.FgGreen.Sprintf("> %d", absoluteIdx)
+			indexStr = "▸ " + indexStr
+			current = idx
 		}
-		row := []string{
-			indexStr,
-			truncateCell(title, 64),
-			truncateCell(typ, 16),
-			truncateCell(artist, 32),
-			truncateCell(album, 40),
-			length,
-		}
+		row := []string{indexStr, title, artist, album, length}
 		if result.FullIDs {
 			itemID := ""
 			if entry.Ref != nil {
@@ -270,7 +271,16 @@ func renderQueueWithOffset(result core.QueueResult, offset int64) (string, error
 		}
 		rows = append(rows, row)
 	}
-	return renderTable(headers, rows)
+	return Table{
+		Columns: cols,
+		Rows:    rows,
+		RowStyle: func(i int) func(string) string {
+			if i == current {
+				return Green
+			}
+			return nil
+		},
+	}.Render(), nil
 }
 
 // displayFields extracts presentation fields from DisplayMetadata.
@@ -301,9 +311,13 @@ func renderQueueList(data QueueListOutput) (string, error) {
 		return "", err
 	}
 	numEntries := int64(len(data.Result.Queue.Entries))
-	if numEntries > 0 && (data.Offset > 0 || numEntries == data.Count) {
+	if data.Offset > 0 || numEntries == data.Count {
 		end := data.Offset + numEntries
-		table += fmt.Sprintf("\nShowing %d-%d (rev %d)\n", data.Offset+1, end, data.Result.Queue.Revision)
+		line := fmt.Sprintf("%d\u2013%d", data.Offset+1, end)
+		if numEntries == data.Count {
+			line += fmt.Sprintf(" \u00b7 --offset %d for more", end)
+		}
+		table += Dim(line) + "\n"
 	}
 	return table, nil
 }
@@ -322,9 +336,17 @@ func renderPlaylists(result core.PlaylistListResult) (string, error) {
 	}
 	rows := make([][]string, 0, len(result.Playlists))
 	for _, pl := range result.Playlists {
-		rows = append(rows, []string{pl.Name, pl.PlaylistID, fmt.Sprintf("%d", pl.Revision)})
+		rows = append(rows, []string{pl.Name, fmt.Sprintf("%d", pl.Revision), pl.PlaylistID})
 	}
-	return renderTable([]string{"NAME", "PLAYLIST_ID", "REVISION"}, rows)
+	sort.Slice(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
+	return Table{
+		Columns: []Column{
+			{Title: "NAME", Min: 12, Flex: 1},
+			{Title: "REV", Align: AlignRight},
+			{Title: "PLAYLIST_ID", Style: Dim},
+		},
+		Rows: rows,
+	}.Render(), nil
 }
 
 func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
@@ -333,13 +355,19 @@ func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
 	}
 	header := fmt.Sprintf("Playlist: %s (%d tracks)\n\n", result.Name, len(result.Entries))
 
-	headers := []string{"INDEX", "TITLE", "TYPE", "ARTIST", "ALBUM", "LEN"}
+	cols := []Column{
+		{Title: "#", Align: AlignRight},
+		{Title: "TITLE", Min: 16, Flex: 3},
+		{Title: "ARTIST", Min: 10, Flex: 2},
+		{Title: "ALBUM", Min: 10, Flex: 2},
+		{Title: "LEN", Align: AlignRight},
+	}
 	if result.FullIDs {
-		headers = append(headers, "ENTRY_ID", "ITEM_ID")
+		cols = append(cols, Column{Title: "ENTRY_ID", Style: Dim}, Column{Title: "ITEM_ID", Style: Dim})
 	}
 	rows := make([][]string, 0, len(result.Entries))
 	for idx, entry := range result.Entries {
-		title, typ, artist, album, length := displayFields(entry.Display)
+		title, _, artist, album, length := displayFields(entry.Display)
 		itemID := ""
 		if entry.Ref != nil {
 			itemID = entry.Ref.ItemID
@@ -351,24 +379,13 @@ func renderPlaylistShow(result core.PlaylistShowResult) (string, error) {
 				title = entry.EntryID
 			}
 		}
-		row := []string{
-			fmt.Sprintf("%d", idx),
-			truncateCell(title, 64),
-			truncateCell(typ, 16),
-			truncateCell(artist, 32),
-			truncateCell(album, 40),
-			length,
-		}
+		row := []string{fmt.Sprintf("%d", idx), title, artist, album, length}
 		if result.FullIDs {
 			row = append(row, entry.EntryID, itemID)
 		}
 		rows = append(rows, row)
 	}
-	table, err := renderTable(headers, rows)
-	if err != nil {
-		return "", err
-	}
-	return header + table, nil
+	return header + Table{Columns: cols, Rows: rows}.Render(), nil
 }
 
 func renderSnapshots(result core.SnapshotListResult) (string, error) {
@@ -377,9 +394,17 @@ func renderSnapshots(result core.SnapshotListResult) (string, error) {
 	}
 	rows := make([][]string, 0, len(result.Snapshots))
 	for _, snap := range result.Snapshots {
-		rows = append(rows, []string{snap.Name, snap.SnapshotID, fmt.Sprintf("%d", snap.Revision)})
+		rows = append(rows, []string{snap.Name, fmt.Sprintf("%d", snap.Revision), snap.SnapshotID})
 	}
-	return renderTable([]string{"NAME", "SNAPSHOT_ID", "REVISION"}, rows)
+	sort.Slice(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
+	return Table{
+		Columns: []Column{
+			{Title: "NAME", Min: 12, Flex: 1},
+			{Title: "REV", Align: AlignRight},
+			{Title: "SNAPSHOT_ID", Style: Dim},
+		},
+		Rows: rows,
+	}.Render(), nil
 }
 
 func renderSuggestions(result core.SuggestListResult) (string, error) {
@@ -388,9 +413,17 @@ func renderSuggestions(result core.SuggestListResult) (string, error) {
 	}
 	rows := make([][]string, 0, len(result.Suggestions))
 	for _, sug := range result.Suggestions {
-		rows = append(rows, []string{sug.Name, sug.SuggestionID, fmt.Sprintf("%d", sug.Revision)})
+		rows = append(rows, []string{sug.Name, fmt.Sprintf("%d", sug.Revision), sug.SuggestionID})
 	}
-	return renderTable([]string{"NAME", "SUGGESTION_ID", "REVISION"}, rows)
+	sort.Slice(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
+	return Table{
+		Columns: []Column{
+			{Title: "NAME", Min: 12, Flex: 1},
+			{Title: "REV", Align: AlignRight},
+			{Title: "SUGGESTION_ID", Style: Dim},
+		},
+		Rows: rows,
+	}.Render(), nil
 }
 
 func renderSuggestShow(data SuggestShowOutput) (string, error) {
@@ -428,58 +461,55 @@ func renderSuggestShow(data SuggestShowOutput) (string, error) {
 				title = entry.EntryID
 			}
 		}
-		rows = append(rows, []string{
-			fmt.Sprintf("%d", idx),
-			truncateCell(title, 64),
-			truncateCell(artist, 32),
-			truncateCell(album, 40),
-			length,
-		})
+		rows = append(rows, []string{fmt.Sprintf("%d", idx), title, artist, album, length})
 	}
-	table, err := renderTable([]string{"INDEX", "TITLE", "ARTIST", "ALBUM", "LEN"}, rows)
-	if err != nil {
-		return "", err
-	}
-	return header + table, nil
+	return header + Table{
+		Columns: []Column{
+			{Title: "#", Align: AlignRight},
+			{Title: "TITLE", Min: 16, Flex: 3},
+			{Title: "ARTIST", Min: 10, Flex: 2},
+			{Title: "ALBUM", Min: 10, Flex: 2},
+			{Title: "LEN", Align: AlignRight},
+		},
+		Rows: rows,
+	}.Render(), nil
 }
 
 func renderLibraryResolve(result core.LibraryResolveResult) (string, error) {
-	var buf strings.Builder
-
 	title := result.Item.Ref.ItemID
 	if d := result.Item.Display; d != nil && d.Title != "" {
 		title = d.Title
 	}
-	buf.WriteString(fmt.Sprintf("Item: %s\n", title))
-
+	pairs := [][2]string{{"Item", Bold(title)}}
 	if d := result.Item.Display; d != nil {
 		artist := d.Artist
 		if artist == "" && len(d.Artists) > 0 {
 			artist = strings.Join(d.Artists, ", ")
 		}
-		if artist != "" {
-			buf.WriteString(fmt.Sprintf("Artist: %s\n", artist))
-		}
-		if d.Album != "" {
-			buf.WriteString(fmt.Sprintf("Album: %s\n", d.Album))
-		}
+		pairs = append(pairs,
+			[2]string{"Artist", artist},
+			[2]string{"Album", d.Album})
 		if d.DurationMS > 0 {
-			buf.WriteString(fmt.Sprintf("Duration: %s\n", formatMS(d.DurationMS)))
+			pairs = append(pairs, [2]string{"Duration", formatMS(d.DurationMS)})
 		}
 	}
+	pairs = append(pairs, [2]string{"Item ID", Dim(result.Item.Ref.ItemID)})
 
-	if result.Sources == nil {
-		buf.WriteString("Sources: (not requested; use --sources)\n")
-	} else if len(result.Sources.Sources) == 0 {
+	var buf strings.Builder
+	buf.WriteString(RenderDetails(pairs))
+	switch {
+	case result.Sources == nil:
+		buf.WriteString(Dim("Sources not requested; pass --sources for playable URLs.") + "\n")
+	case len(result.Sources.Sources) == 0:
 		buf.WriteString("Sources: (none)\n")
-	} else {
-		buf.WriteString(fmt.Sprintf("Sources: (%d)\n", len(result.Sources.Sources)))
+	default:
+		buf.WriteString(fmt.Sprintf("Sources (%d):\n", len(result.Sources.Sources)))
 		for _, src := range result.Sources.Sources {
 			mime := src.Mime
 			if mime == "" {
 				mime = "unknown"
 			}
-			buf.WriteString(fmt.Sprintf("  - %s (%s)\n", src.URL, mime))
+			buf.WriteString(fmt.Sprintf("  %s %s\n", src.URL, Dim("("+mime+")")))
 		}
 	}
 	return buf.String(), nil
@@ -515,6 +545,7 @@ type libraryItem struct {
 	Artists     []string `json:"artists,omitempty"`
 	Album       string   `json:"album,omitempty"`
 	ContainerID string   `json:"containerId,omitempty"`
+	DurationMS  int64    `json:"durationMs,omitempty"`
 }
 
 func renderLibraryItemsOutput(result LibraryItemsOutput) (string, error) {
@@ -523,28 +554,35 @@ func renderLibraryItemsOutput(result LibraryItemsOutput) (string, error) {
 		return "", err
 	}
 	if len(payload.Items) == 0 {
-		return "No items found.\n", nil
+		return Dim("No items found.") + "\n", nil
 	}
 	rows := make([][]string, 0, len(payload.Items))
 	for _, item := range payload.Items {
-		artist := strings.Join(item.Artists, ", ")
+		length := ""
+		if item.DurationMS > 0 {
+			length = formatMS(item.DurationMS)
+		}
 		rows = append(rows, []string{
-			truncateCell(item.Name, 64),
-			truncateCell(item.Type, 16),
-			truncateCell(artist, 32),
-			truncateCell(item.Album, 40),
-			truncateCell(item.ContainerID, 36),
+			item.Name,
+			item.Type,
+			strings.Join(item.Artists, ", "),
+			item.Album,
+			length,
 			item.ItemID,
 		})
 	}
-	table, err := renderTable([]string{"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID"}, rows)
-	if err != nil {
-		return "", err
-	}
-	if payload.Total > 0 {
-		end := payload.Start + int64(len(payload.Items))
-		table += fmt.Sprintf("\nShowing %d-%d of %d items\n", payload.Start+1, end, payload.Total)
-	}
+	table := Table{
+		Columns: []Column{
+			{Title: "NAME", Min: 16, Flex: 3},
+			{Title: "TYPE"},
+			{Title: "ARTIST", Min: 10, Flex: 2},
+			{Title: "ALBUM", Min: 10, Flex: 2},
+			{Title: "LEN", Align: AlignRight},
+			{Title: "ITEM_ID", Style: Dim},
+		},
+		Rows: rows,
+	}.Render()
+	table += Footer(payload.Start, int64(len(payload.Items)), payload.Total)
 	return table, nil
 }
 
@@ -567,24 +605,18 @@ func renderProgressBar(pos, dur int64, width int) string {
 	if dur <= 0 || width < 5 {
 		return ""
 	}
-	barWidth := width - 2 // account for [ and ]
-	barWidth = max(barWidth, 3)
+	barWidth := max(width, 3)
 	fraction := float64(pos) / float64(dur)
 	fraction = max(0, min(1, fraction))
 	filled := int(fraction * float64(barWidth))
-	var bar strings.Builder
-	bar.WriteString(pterm.FgGray.Sprint("["))
-	for i := 0; i < barWidth; i++ {
-		if i < filled {
-			bar.WriteString(pterm.FgGreen.Sprint("━"))
-		} else if i == filled {
-			bar.WriteString(pterm.FgWhite.Sprint("╸"))
-		} else {
-			bar.WriteString(pterm.FgGray.Sprint("─"))
-		}
+	filledPart := strings.Repeat("━", filled)
+	cursor := ""
+	rest := barWidth - filled
+	if rest > 0 {
+		cursor = "╸"
+		rest--
 	}
-	bar.WriteString(pterm.FgGray.Sprint("]"))
-	return bar.String()
+	return Green(filledPart) + cursor + Dim(strings.Repeat("─", rest))
 }
 
 func formatPosition(pos, dur int64) string {
@@ -651,23 +683,16 @@ func formatDuration(value any) string {
 	return ""
 }
 
-func renderTable(headers []string, rows [][]string) (string, error) {
-	data := pterm.TableData{headers}
-	data = append(data, rows...)
-	table := pterm.DefaultTable.WithHasHeader(true).WithData(data)
-	return table.Srender()
-}
-
 func styleStatus(status string) string {
 	switch strings.ToLower(status) {
 	case "playing":
-		return pterm.FgGreen.Sprint(status)
+		return Green(status)
 	case "paused":
-		return pterm.FgYellow.Sprint(status)
+		return Yellow(status)
 	case "stopped":
-		return pterm.FgRed.Sprint(status)
+		return Red(status)
 	default:
-		return pterm.FgGray.Sprint(status)
+		return Dim(status)
 	}
 }
 

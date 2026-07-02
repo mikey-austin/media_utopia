@@ -162,8 +162,8 @@ func TestRenderStatus(t *testing.T) {
 				State: mu.RendererState{
 					Queue: &mu.QueueState{
 						Length:     5,
-						Index:     1,
-						Revision:  2,
+						Index:      1,
+						Revision:   2,
 						RepeatMode: "one",
 					},
 				},
@@ -222,11 +222,11 @@ func TestRenderSession(t *testing.T) {
 				},
 			},
 			contains: []string{
-				"Session:  sess-abc",
-				"Expires:",
-				time.Unix(1700000000, 0).Format(time.RFC3339),
-				"Renderer: r1",
-				"Owner:    mu-cli",
+				"sess-abc",
+				"Expires",
+				time.Unix(1700000000, 0).Format("15:04:05"),
+				"r1",
+				"mu-cli",
 			},
 		},
 	}
@@ -291,7 +291,7 @@ func TestRenderQueue(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"Song One", "Artist A", "Album X", "audio", "3:00", "Song Two", "Artist B"},
+			contains: []string{"Song One", "Artist A", "Album X", "3:00", "Song Two", "Artist B"},
 			absent:   []string{"QUEUE_ID", "ITEM_ID"},
 		},
 		{
@@ -483,7 +483,7 @@ func TestRenderPlaylistShow(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"Playlist: Test Playlist (1 tracks)", "Track One", "audio", "Artist One", "Album One", "3:20"},
+			contains: []string{"Playlist: Test Playlist (1 tracks)", "Track One", "Artist One", "Album One", "3:20"},
 			absent:   []string{"ENTRY_ID"},
 		},
 		{
@@ -724,7 +724,7 @@ func TestRenderLibraryResolve(t *testing.T) {
 					Ref: mu.NewLibraryItemRef("mu:library:fs:default:music", "item-1"),
 				},
 			},
-			contains: []string{"Item: item-1", "Sources: (not requested"},
+			contains: []string{"item-1", "Sources not requested"},
 		},
 		{
 			name: "sources requested but empty",
@@ -737,7 +737,7 @@ func TestRenderLibraryResolve(t *testing.T) {
 					Sources: []mu.ResolvedSource{},
 				},
 			},
-			contains: []string{"Item: item-1b", "Sources: (none)"},
+			contains: []string{"item-1b", "Sources: (none)"},
 		},
 		{
 			name: "multiple sources",
@@ -754,8 +754,8 @@ func TestRenderLibraryResolve(t *testing.T) {
 				},
 			},
 			contains: []string{
-				"Item: item-2",
-				"Sources: (2)",
+				"item-2",
+				"Sources (2):",
 				"http://example.com/a.flac (audio/flac)",
 				"http://example.com/b.mp3 (audio/mpeg)",
 			},
@@ -780,11 +780,11 @@ func TestRenderLibraryResolve(t *testing.T) {
 				},
 			},
 			contains: []string{
-				"Item: Great Song",
-				"Artist: Cool Band",
-				"Album: Best Album",
-				"Duration: 4:00",
-				"Sources: (1)",
+				"Great Song",
+				"Cool Band",
+				"Best Album",
+				"4:00",
+				"Sources (1):",
 				"http://example.com/c.flac (audio/flac)",
 			},
 		},
@@ -802,8 +802,8 @@ func TestRenderLibraryResolve(t *testing.T) {
 				},
 			},
 			contains: []string{
-				"Item: item-4",
-				"Sources: (1)",
+				"item-4",
+				"Sources (1):",
 				"http://example.com/d.bin (unknown)",
 			},
 		},
@@ -937,8 +937,8 @@ func TestRenderLibraryItemsOutput(t *testing.T) {
 				Payload:   json.RawMessage(payload),
 			},
 			contains: []string{
-				"NAME", "TYPE", "ARTIST", "ALBUM", "CONTAINER_ID", "ITEM_ID",
-				"Cool Track", "track", "Alice, Bob", "Greatest Hits", "container-abc",
+				"NAME", "TYPE", "ARTIST", "ALBUM", "ITEM_ID",
+				"Cool Track", "track", "Alice, Bob", "Greatest Hits",
 				"id-1",
 			},
 		},
@@ -1219,11 +1219,11 @@ func TestRenderProgressBar(t *testing.T) {
 		{"zero_duration", 0, 0, 30, "", true},
 		{"negative_duration", 0, -1, 30, "", true},
 		{"small_width", 0, 100, 3, "", true},
-		{"at_start", 0, 100000, 30, "[", false},
+		{"at_start", 0, 100000, 30, "\u2578", false},
 		{"at_start_has_empty", 0, 100000, 30, "─", false},
 		{"half_way", 50000, 100000, 30, "━", false},
 		{"at_end", 100000, 100000, 30, "━", false},
-		{"at_end_no_empty", 100000, 100000, 30, "]", false},
+		{"at_end_no_empty", 100000, 100000, 30, "\u2501\u2501\u2501", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1267,12 +1267,10 @@ func TestRenderQueueListOutput(t *testing.T) {
 		if !strings.Contains(out, "Song A") {
 			t.Error("expected Song A in output")
 		}
-		if !strings.Contains(out, "Showing 11-12") {
-			t.Errorf("expected pagination 'Showing 11-12', got:\n%s", out)
+		if !strings.Contains(out, "11\u201312") {
+			t.Errorf("expected pagination '11\u201312', got:\n%s", out)
 		}
-		if !strings.Contains(out, "rev 5") {
-			t.Error("expected rev 5 in pagination line")
-		}
+
 	})
 
 	t.Run("without_pagination", func(t *testing.T) {
@@ -1312,7 +1310,7 @@ func TestLibraryItemsPagination(t *testing.T) {
 	if !strings.Contains(out, "Track 1") {
 		t.Error("expected Track 1 in output")
 	}
-	if !strings.Contains(out, "Showing 1-1 of 100 items") {
+	if !strings.Contains(out, "1\u20131 of 100") {
 		t.Errorf("expected pagination footer, got:\n%s", out)
 	}
 }

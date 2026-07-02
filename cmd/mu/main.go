@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/clock"
@@ -81,13 +80,9 @@ Environment variables:
 	root.PersistentFlags().StringVar(&passOpt, "pass", "", "MQTT password")
 
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		// Respect --no-color flag and standard NO_COLOR / CLICOLOR env vars.
-		// See https://no-color.org/
-		if noColor || os.Getenv("NO_COLOR") != "" {
-			pterm.DisableColor()
-		} else if os.Getenv("CLICOLOR") == "0" {
-			pterm.DisableColor()
-		}
+		// Colors are decided once: --no-color, NO_COLOR, CLICOLOR=0, and
+		// whether stdout is a terminal (never leak ANSI into pipes).
+		output.SetColorEnabled(output.AutoColor(noColor))
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -202,7 +197,16 @@ Environment variables:
 	root.AddCommand(configCommand())
 	root.AddCommand(completionCommand())
 
+	// Errors are printed here, once, in one shape — cobra would otherwise
+	// dump the whole usage block after every runtime failure.
+	root.SilenceUsage = true
+	root.SilenceErrors = true
+
 	if err := root.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "mu: %s\n", err)
+		if code := core.ExitCode(err); code == core.ExitUsage {
+			fmt.Fprintln(os.Stderr, "Run 'mu --help' (or 'mu <command> --help') for usage.")
+		}
 		os.Exit(core.ExitCode(err))
 	}
 }
