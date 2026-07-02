@@ -435,6 +435,7 @@ type Module struct {
 	mu           sync.RWMutex
 	scanMu       sync.Mutex   // serializes concurrent scans
 	scanCount    atomic.Int64 // incremented on every scanInner call; for tests
+	lastReused   atomic.Int64 // items reused by the most recent scan; for tests
 	index        *libraryIndex
 	baseURL      string
 	artURLPrefix string // pre-computed baseURL + "/art/", set once in startHTTPServer
@@ -605,20 +606,24 @@ type mediaItem struct {
 	// DurationMS is the track duration in milliseconds (0 if unknown).
 	DurationMS int64 `json:"durationMs,omitempty"`
 
-	// Mtime is the file modification time, used for "recently added" sorting.
-	Mtime time.Time `json:"-"`
+	// Mtime is the file modification time, used for "recently added" sorting
+	// and for the incremental-scan unchanged check. Persisted: without it a
+	// loaded index could never match on-disk files and every restart forced
+	// a full re-parse.
+	Mtime time.Time `json:"mtime"`
 
 	// SearchText is the precomputed lowercased search text for keyword matching.
 	// Built at scan time to avoid per-query recomputation.
 	SearchText string `json:"-"`
 
 	// FileHash is a cached partial file hash (first/last 64KB) for deduplication.
-	// Carried forward across incremental scans to avoid re-opening unchanged files.
-	FileHash string `json:"-"`
+	// Carried forward across incremental scans and persisted so restarts do
+	// not re-read every file.
+	FileHash string `json:"fileHash,omitempty"`
 
 	// EmbeddedArtExt is the extension for embedded art (e.g. ".jpg"), empty if none.
 	// Detected during tag reading to avoid re-opening the file.
-	EmbeddedArtExt string `json:"-"`
+	EmbeddedArtExt string `json:"embeddedArtExt,omitempty"`
 
 	// DupOf is the canonical item's ID when this item is a hidden duplicate
 	// (dedupe_policy first/best). Hidden items stay in the index so existing
@@ -2855,6 +2860,7 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 	} else {
 		m.log.Debug("index unchanged, skipped save to disk")
 	}
+	m.lastReused.Store(int64(reused))
 	m.log.Info("scan complete", zap.Duration("elapsed", time.Since(started)), zap.Int("items", len(next.Items)), zap.Int("reused", reused))
 	return nil
 }
@@ -3410,8 +3416,15 @@ func (m *Module) loadIndex() error {
 	if idx.VideoFolderTree == nil {
 		idx.VideoFolderTree = map[string]*folderNode{}
 	}
+	// Rebuild the incremental-scan state so the first scan after a restart
+	// reuses unchanged files instead of re-parsing the whole library.
+	prevItems := make(map[string]mediaItem, len(idx.Items))
+	for _, item := range idx.Items {
+		prevItems[item.Path] = item
+	}
 	m.mu.Lock()
 	m.index = &idx
+	m.prevItems = prevItems
 	m.mu.Unlock()
 	m.clearArtURLCache() // invalidate art URL cache on index load
 	return nil

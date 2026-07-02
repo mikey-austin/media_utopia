@@ -4164,3 +4164,72 @@ func TestConfigRejectsInvalidPolicies(t *testing.T) {
 		t.Errorf("valid config rejected: %v", err)
 	}
 }
+
+// TestIndexPersistenceWarmRestart: a freshly constructed module that loads a
+// persisted index must scan incrementally (reuse everything), not re-parse
+// and re-hash the whole library. Requires Mtime/FileHash to survive the JSON
+// round-trip and loadIndex to rebuild the incremental-scan state.
+func TestIndexPersistenceWarmRestart(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "Artist", "Album")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		name := filepath.Join(dir, fmt.Sprintf("%02d track.mp3", i))
+		if err := os.WriteFile(name, []byte(fmt.Sprintf("content-%d", i)), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	idxPath := filepath.Join(t.TempDir(), "index.json")
+	cfg := Config{
+		NodeID:       "mu:library:filesystem:test:persist",
+		Roots:        []string{root},
+		IncludeExts:  []string{".mp3"},
+		HTTPListen:   "127.0.0.1:0",
+		IndexMode:    "separate",
+		IndexPath:    idxPath,
+		DedupePolicy: "report", // forces FileHash computation on first scan
+	}
+	modA, err := NewModule(zap.NewNop(), nil, cfg)
+	if err != nil {
+		t.Fatalf("new module A: %v", err)
+	}
+	if err := modA.scan(); err != nil {
+		t.Fatalf("scan A: %v", err)
+	}
+	if _, err := os.Stat(idxPath); err != nil {
+		t.Fatalf("index not persisted: %v", err)
+	}
+
+	// Simulate a restart: fresh module, load index, rescan.
+	modB, err := NewModule(zap.NewNop(), nil, cfg)
+	if err != nil {
+		t.Fatalf("new module B: %v", err)
+	}
+	if err := modB.loadIndex(); err != nil {
+		t.Fatalf("load index: %v", err)
+	}
+	modB.mu.RLock()
+	prevCount := len(modB.prevItems)
+	for _, it := range modB.prevItems {
+		if it.Mtime.IsZero() {
+			modB.mu.RUnlock()
+			t.Fatal("Mtime not persisted — incremental reuse impossible")
+		}
+		if it.FileHash == "" {
+			modB.mu.RUnlock()
+			t.Fatal("FileHash not persisted — full re-hash I/O on restart")
+		}
+	}
+	modB.mu.RUnlock()
+	if prevCount != 3 {
+		t.Fatalf("prevItems not rebuilt from loaded index: got %d, want 3", prevCount)
+	}
+	if err := modB.scan(); err != nil {
+		t.Fatalf("scan B: %v", err)
+	}
+	if got := modB.lastReused.Load(); got != 3 {
+		t.Fatalf("post-restart scan reused %d items, want 3", got)
+	}
+}
