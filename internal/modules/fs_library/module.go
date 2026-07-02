@@ -2785,6 +2785,15 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 		next.RecentVideos = prevIndex.RecentVideos
 		next.AudioFolderTree = prevIndex.AudioFolderTree
 		next.VideoFolderTree = prevIndex.VideoFolderTree
+		// The genre/letter/folder container registrations created by the
+		// index builders must survive too — this scan only rebuilt the
+		// artist/album entries, and the reused browse indexes reference
+		// container IDs that would otherwise resolve to "not found".
+		for hash, info := range prevIndex.Containers {
+			if _, ok := next.Containers[hash]; !ok {
+				next.Containers[hash] = info
+			}
+		}
 		m.log.Debug("library unchanged, skipped browse index rebuild",
 			zap.Int("reused", reused))
 	} else {

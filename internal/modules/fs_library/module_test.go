@@ -4319,3 +4319,58 @@ func TestAttemptTrackerCooldown(t *testing.T) {
 		t.Fatal("zero cooldown must always allow")
 	}
 }
+
+// TestBrowseContainersSurviveNoOpRescan: the genre/letter/folder container
+// registrations must survive a no-change rescan that takes the
+// reuse-previous-browse-indexes fast path. (They are registered by the index
+// builders, which the fast path skips — clients previously got "container
+// not found" for every letter/genre/folder after the first quiet rescan.)
+func TestBrowseContainersSurviveNoOpRescan(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "Artist", "Album")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Artist - Track.mp3"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	mod := newTestModule(t, root, []string{".mp3"}) // scan #1
+
+	collectChildren := func(containerID string) []string {
+		items, _, err := mod.browse(containerID, 0, 50)
+		if err != nil {
+			t.Fatalf("browse %s: %v", containerID, err)
+		}
+		ids := make([]string, 0, len(items))
+		for _, it := range items {
+			ids = append(ids, it.ItemID)
+		}
+		return ids
+	}
+	var leafContainers []string
+	leafContainers = append(leafContainers, collectChildren("container:audio:byartist")...)
+	leafContainers = append(leafContainers, collectChildren("container:audio:bygenre")...)
+	leafContainers = append(leafContainers, collectChildren("container:audio:byfolder")...)
+	if len(leafContainers) == 0 {
+		t.Fatal("expected letter/genre/folder containers")
+	}
+	for _, id := range leafContainers {
+		if _, _, err := mod.browse(id, 0, 10); err != nil {
+			t.Fatalf("before rescan, browse %s: %v", id, err)
+		}
+	}
+
+	// No-op rescan takes the reuse fast path.
+	if err := mod.scan(); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	for _, id := range leafContainers {
+		items, _, err := mod.browse(id, 0, 10)
+		if err != nil {
+			t.Fatalf("after no-op rescan, browse %s: %v", id, err)
+		}
+		if len(items) == 0 {
+			t.Fatalf("after no-op rescan, container %s has no children", id)
+		}
+	}
+}
