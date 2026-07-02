@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/mikey-austin/media_utopia/pkg/mu"
@@ -179,5 +180,44 @@ func TestResolverCaseInsensitive(t *testing.T) {
 		if got.NodeID != "mu:renderer:one" {
 			t.Fatalf("case-insensitive resolve %q: expected mu:renderer:one, got %s", sel, got.NodeID)
 		}
+	}
+}
+
+func TestResolveSelectorPrefixAndSubstring(t *testing.T) {
+	presence := []mu.Presence{
+		{Name: "Venus Music", NodeID: "mu:library:filesystem:venus:music", Kind: "library"},
+		{Name: "Jellyfin Library", NodeID: "mu:library:jellyfin:coltrane:default", Kind: "library"},
+		{Name: "Podcasts", NodeID: "mu:library:podcast:coltrane:default", Kind: "library"},
+	}
+
+	// Unique case-insensitive prefix resolves.
+	got, err := resolveSelector("venus", presence, nil)
+	if err != nil {
+		t.Fatalf("prefix resolve: %v", err)
+	}
+	if got.Name != "Venus Music" {
+		t.Fatalf("prefix resolve got %q", got.Name)
+	}
+
+	// Unique substring resolves.
+	got, err = resolveSelector("jelly", presence, nil)
+	if err != nil {
+		t.Fatalf("substring resolve: %v", err)
+	}
+	if got.Name != "Jellyfin Library" {
+		t.Fatalf("substring resolve got %q", got.Name)
+	}
+
+	// Ambiguous match errors and lists candidates.
+	ambiguous := append(presence, mu.Presence{Name: "Venus Video", NodeID: "mu:library:filesystem:venus:video", Kind: "library"})
+	_, err = resolveSelector("venus", ambiguous, nil)
+	if err == nil || !strings.Contains(err.Error(), "Venus Music") || !strings.Contains(err.Error(), "Venus Video") {
+		t.Fatalf("ambiguous error must list candidates, got %v", err)
+	}
+
+	// No match lists what exists.
+	_, err = resolveSelector("nonexistent", presence, nil)
+	if err == nil || !strings.Contains(err.Error(), "Venus Music") {
+		t.Fatalf("not-found error must list available nodes, got %v", err)
 	}
 }

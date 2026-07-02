@@ -46,7 +46,12 @@ func (r Resolver) resolveByKind(ctx context.Context, selector string, kind strin
 		if len(filtered) == 1 {
 			return filtered[0], nil
 		}
-		return mu.Presence{}, &CLIError{Code: ExitUsage, Msg: "selector required"}
+		if len(filtered) == 0 {
+			return mu.Presence{}, &CLIError{Code: ExitNotFound, Msg: fmt.Sprintf("no %s nodes found — is the broker reachable?", kind)}
+		}
+		return mu.Presence{}, &CLIError{Code: ExitUsage,
+			Msg: fmt.Sprintf("several %ss available, pick one: %s (or set defaults.%s in config)",
+				kind, suggestionList(filtered), kind)}
 	}
 	return resolveSelector(selector, filtered, r.Config.Aliases)
 }
@@ -81,20 +86,43 @@ func resolveSelector(selector string, presence []mu.Presence, aliases map[string
 		selector = alias
 	}
 
-	matches := make([]mu.Presence, 0)
+	// Progressively forgiving matching: exact name/ID, then unique
+	// case-insensitive prefix, then unique substring. Each tier only
+	// applies when the previous found nothing, so exact names always win.
+	exact := make([]mu.Presence, 0)
+	prefix := make([]mu.Presence, 0)
+	substr := make([]mu.Presence, 0)
+	needle := strings.ToLower(selector)
 	for _, p := range presence {
-		if strings.EqualFold(p.Name, selector) || strings.EqualFold(p.NodeID, selector) {
-			matches = append(matches, p)
+		name := strings.ToLower(p.Name)
+		switch {
+		case strings.EqualFold(p.Name, selector) || strings.EqualFold(p.NodeID, selector):
+			exact = append(exact, p)
+		case strings.HasPrefix(name, needle):
+			prefix = append(prefix, p)
+		case strings.Contains(name, needle):
+			substr = append(substr, p)
 		}
+	}
+	matches := exact
+	if len(matches) == 0 {
+		matches = prefix
+	}
+	if len(matches) == 0 {
+		matches = substr
 	}
 
 	if len(matches) == 1 {
 		return matches[0], nil
 	}
 	if len(matches) == 0 {
-		return mu.Presence{}, &CLIError{Code: ExitNotFound, Msg: fmt.Sprintf("no match for %q", selector)}
+		msg := fmt.Sprintf("no match for %q", selector)
+		if len(presence) > 0 {
+			msg += fmt.Sprintf(" — available: %s", suggestionList(presence))
+		}
+		return mu.Presence{}, &CLIError{Code: ExitNotFound, Msg: msg}
 	}
-	return mu.Presence{}, &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("ambiguous selector %q: %s", selector, suggestionList(matches))}
+	return mu.Presence{}, &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("%q is ambiguous: %s", selector, suggestionList(matches))}
 }
 
 func resolveExact(nodeID string, presence []mu.Presence) (mu.Presence, error) {
