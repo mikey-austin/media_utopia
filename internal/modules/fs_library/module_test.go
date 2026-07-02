@@ -4041,3 +4041,126 @@ func TestScanSkipsZeroByteFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestDedupeHidesDuplicatesDeterministically: with a dedupe policy active,
+// duplicate files stay in the index (IDs remain resolvable for existing
+// playlists) but only the canonical copy (lexicographically smallest path)
+// appears in browse/search, and the winner is stable across rescans.
+func TestDedupeHidesDuplicatesDeterministically(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "Artist", "Album")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := []byte("identical-content-that-hashes-the-same-way-both-times")
+	for _, name := range []string{"01 a.mp3", "02 b.mp3"} {
+		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	mod, err := NewModule(zap.NewNop(), nil, Config{
+		NodeID:       "mu:library:filesystem:test:dedupe",
+		Roots:        []string{root},
+		IncludeExts:  []string{".mp3"},
+		HTTPListen:   "127.0.0.1:0",
+		DedupePolicy: "first",
+	})
+	if err != nil {
+		t.Fatalf("new module: %v", err)
+	}
+
+	var firstWinner string
+	for pass := 0; pass < 3; pass++ {
+		if err := mod.scan(); err != nil {
+			t.Fatalf("scan %d: %v", pass, err)
+		}
+		mod.mu.RLock()
+		if len(mod.index.Items) != 2 {
+			mod.mu.RUnlock()
+			t.Fatalf("pass %d: expected 2 indexed items, got %d", pass, len(mod.index.Items))
+		}
+		var winner string
+		hidden := 0
+		for _, it := range mod.index.Items {
+			if it.DupOf != "" {
+				hidden++
+				if filepath.Base(it.Path) != "02 b.mp3" {
+					t.Fatalf("pass %d: expected path-later copy hidden, got %s", pass, it.Path)
+				}
+			} else {
+				winner = it.ID
+			}
+		}
+		mod.mu.RUnlock()
+		if hidden != 1 {
+			t.Fatalf("pass %d: expected exactly 1 hidden duplicate, got %d", pass, hidden)
+		}
+		if pass == 0 {
+			firstWinner = winner
+		} else if winner != firstWinner {
+			t.Fatalf("pass %d: canonical flapped: %s -> %s", pass, firstWinner, winner)
+		}
+	}
+
+	// Browse the album: only the canonical track is listed.
+	albumHash := containerHash("album", "Artist", "Album")
+	items, total, err := mod.browse(albumHash, 0, 100)
+	if err != nil {
+		t.Fatalf("browse: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("expected 1 visible track, got %d (total %d)", len(items), total)
+	}
+
+	// Search: only one result for the shared title.
+	results, _ := mod.search("a", 0, 100)
+	seen := map[string]bool{}
+	for _, r := range results {
+		if seen[r.ItemID] {
+			t.Fatalf("duplicate item in search results: %s", r.ItemID)
+		}
+		seen[r.ItemID] = true
+	}
+	if len(results) > 1 {
+		t.Fatalf("expected at most 1 search result, got %d", len(results))
+	}
+}
+
+// TestConfigRejectsInvalidPolicies: config typos must fail fast at module
+// construction instead of silently disabling the feature (a real deployment
+// ran dedupe_policy="prefer" for weeks with dedupe doing nothing).
+func TestConfigRejectsInvalidPolicies(t *testing.T) {
+	base := func() Config {
+		return Config{
+			NodeID:      "mu:library:filesystem:test:cfg",
+			Roots:       []string{t.TempDir()},
+			IncludeExts: []string{".mp3"},
+			HTTPListen:  "127.0.0.1:0",
+		}
+	}
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"dedupe", func(c *Config) { c.DedupePolicy = "prefer" }},
+		{"repair", func(c *Config) { c.RepairPolicy = "weird" }},
+		{"scan_mode", func(c *Config) { c.ScanMode = "sometimes" }},
+		{"index_mode", func(c *Config) { c.IndexMode = "bogus" }},
+	}
+	for _, tc := range cases {
+		cfg := base()
+		tc.mutate(&cfg)
+		if _, err := NewModule(zap.NewNop(), nil, cfg); err == nil {
+			t.Errorf("%s: expected error for invalid value", tc.name)
+		}
+	}
+	// Valid values still construct.
+	cfg := base()
+	cfg.DedupePolicy = "best"
+	cfg.RepairPolicy = "balanced"
+	cfg.ScanMode = "manual"
+	if _, err := NewModule(zap.NewNop(), nil, cfg); err != nil {
+		t.Errorf("valid config rejected: %v", err)
+	}
+}

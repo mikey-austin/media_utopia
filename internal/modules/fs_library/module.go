@@ -619,6 +619,12 @@ type mediaItem struct {
 	// EmbeddedArtExt is the extension for embedded art (e.g. ".jpg"), empty if none.
 	// Detected during tag reading to avoid re-opening the file.
 	EmbeddedArtExt string `json:"-"`
+
+	// DupOf is the canonical item's ID when this item is a hidden duplicate
+	// (dedupe_policy first/best). Hidden items stay in the index so existing
+	// playlist/queue references keep resolving, but they are excluded from
+	// browse, search, and embeddings.
+	DupOf string `json:"dupOf,omitempty"`
 }
 
 // libraryItemsReply is the response format for browse and search commands.
@@ -662,6 +668,21 @@ type libraryItem struct {
 	ImageURL    string `json:"imageUrl,omitempty"`
 }
 
+// validateEnum checks a config value against its allowed set (empty is
+// always allowed — it means "default").
+func validateEnum(name, value string, allowed ...string) error {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return nil
+	}
+	for _, a := range allowed {
+		if v == a {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid %s %q (allowed: %s)", name, value, strings.Join(allowed, "|"))
+}
+
 // NewModule creates a filesystem library module.
 func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module, error) {
 	if log == nil {
@@ -687,6 +708,24 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	}
 	if len(cfg.IncludeExts) == 0 {
 		cfg.IncludeExts = []string{".mp3", ".flac", ".ogg", ".m4a", ".mp4", ".mkv"}
+	}
+
+	// Enumerated options fail fast on typos. A misspelled policy previously
+	// passed silently and disabled the feature (e.g. dedupe_policy="prefer"
+	// logged duplicates but never acted for weeks in production).
+	if err := validateEnum("dedupe_policy", cfg.DedupePolicy,
+		string(DedupePolicyNone), string(DedupePolicyReport), string(DedupePolicyFirst), string(DedupePolicyBest)); err != nil {
+		return nil, err
+	}
+	if err := validateEnum("repair_policy", cfg.RepairPolicy,
+		string(RepairPolicyNone), string(RepairPolicyStrict), string(RepairPolicyBalanced), string(RepairPolicyAggressive)); err != nil {
+		return nil, err
+	}
+	if err := validateEnum("scan_mode", cfg.ScanMode, "auto", "manual"); err != nil {
+		return nil, err
+	}
+	if err := validateEnum("index_mode", cfg.IndexMode, "near", "separate"); err != nil {
+		return nil, err
 	}
 
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
@@ -1601,6 +1640,9 @@ func (m *Module) browseFolderNode(info containerInfo, start, count int64) ([]lib
 	var mediaItems []itemData
 	for _, id := range itemIDs {
 		if item, found := m.index.Items[id]; found {
+			if item.DupOf != "" {
+				continue // hidden duplicate
+			}
 			imgURL := m.itemArtworkURLUnlocked(item)
 			if imgURL == "" {
 				imgURL = defaultImg
@@ -1707,7 +1749,7 @@ func (m *Module) browseAlbum(containerID string, info containerInfo, start, coun
 	items := make([]libraryItem, 0, len(album.Tracks))
 	for _, itemID := range album.Tracks {
 		item, ok := m.index.Items[itemID]
-		if !ok {
+		if !ok || item.DupOf != "" {
 			continue
 		}
 		items = append(items, libraryItem{
@@ -1770,6 +1812,9 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 	scored := make([]scoredItem, 0)
 	queryLower := strings.ToLower(query)
 	for _, item := range m.index.Items {
+		if item.DupOf != "" {
+			continue // hidden duplicate
+		}
 		if !containsAllTerms(item, terms) {
 			continue
 		}
@@ -2003,7 +2048,7 @@ func (m *Module) semanticSearch(query string, start int64, count int64) ([]libra
 	items := make([]libraryItem, 0, len(filtered))
 	for _, r := range filtered {
 		item, ok := m.index.Items[r.ID]
-		if !ok {
+		if !ok || item.DupOf != "" {
 			continue
 		}
 		artURL := ""
@@ -2063,11 +2108,13 @@ func (m *Module) buildEmbeddings(ctx context.Context, items map[string]mediaItem
 	skipped := 0
 
 	for id, item := range items {
+		if item.DupOf != "" {
+			continue // hidden duplicate — embed only the canonical copy
+		}
 		var enrich *AlbumMetadata
 		if item.MediaType == "Audio" {
-			key := firstOr(item.Artists, "Unknown Artist") + "|" + item.Album
 			m.mu.RLock()
-			enrich = m.enrichMeta[key]
+			enrich = m.enrichMeta[enrichKey(item)]
 			m.mu.RUnlock()
 		}
 
@@ -2560,12 +2607,31 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 		}
 	}
 
-	// Deduplication detection
+	// Deduplication detection. Items are processed in path order so the
+	// canonical ("original") member of each duplicate group is deterministic
+	// across scans — map iteration order previously made the reported
+	// original (and, under policy "first", the surviving copy) flap on every
+	// scan. Duplicates are HIDDEN (DupOf set), never deleted: their IDs stay
+	// resolvable for existing playlists and queues.
 	dedupePolicy := DedupePolicy(strings.ToLower(strings.TrimSpace(m.config.DedupePolicy)))
 	m.dupeIndex.Clear()
 	if dedupePolicy != DedupePolicyNone && dedupePolicy != "" {
-		dupeCount := 0
+		ids := make([]string, 0, len(next.Items))
 		for id, item := range next.Items {
+			// Reset stale markers carried in by reused items; groups are
+			// recomputed from scratch below.
+			if item.DupOf != "" {
+				item.DupOf = ""
+				next.Items[id] = item
+			}
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool {
+			return next.Items[ids[i]].Path < next.Items[ids[j]].Path
+		})
+		dupeCount := 0
+		for _, id := range ids {
+			item := next.Items[id]
 			hash := item.FileHash
 			if hash == "" {
 				var err error
@@ -2579,20 +2645,28 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 			}
 			if m.dupeIndex.Add(id, hash) {
 				dupeCount++
-				original := m.dupeIndex.Original(id)
 				m.log.Debug("duplicate detected",
 					zap.String("id", id),
-					zap.String("original", original),
+					zap.String("original", m.dupeIndex.Original(id)),
 					zap.String("path", item.Path))
-
-				// Apply policy
-				if dedupePolicy == DedupePolicyFirst {
-					delete(next.Items, id)
+			}
+		}
+		// Under first/best the canonical member is the group's first entry
+		// (path order). "best" is currently identical: the dedupe hash
+		// includes file size, so members of a group always have equal size
+		// and there is no quality signal to differentiate them.
+		if dedupePolicy == DedupePolicyFirst || dedupePolicy == DedupePolicyBest {
+			for _, group := range m.dupeIndex.GetDuplicates() {
+				canonical := group[0]
+				for _, id := range group[1:] {
+					item := next.Items[id]
+					item.DupOf = canonical
+					next.Items[id] = item
 				}
 			}
 		}
 		if dupeCount > 0 {
-			m.log.Info("duplicates found", zap.Int("count", dupeCount))
+			m.log.Info("duplicates found", zap.Int("count", dupeCount), zap.String("policy", string(dedupePolicy)))
 		}
 	}
 
@@ -3363,6 +3437,18 @@ func hashID(path string, size int64, mod time.Time) string {
 	_, _ = io.WriteString(h, "|")
 	_, _ = io.WriteString(h, strconv.FormatInt(mod.UnixNano(), 10))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// enrichKey is the canonical enrichMeta lookup key for an item. It applies
+// the same Unknown Artist/Album fallbacks used when the map is populated so
+// untagged items still find their sidecar metadata.
+func enrichKey(item mediaItem) string {
+	artist := firstOr(item.Artists, "Unknown Artist")
+	album := item.Album
+	if album == "" {
+		album = "Unknown Album"
+	}
+	return artist + "|" + album
 }
 
 // containerHash generates a stable hash ID for a container (artist or album).
