@@ -310,6 +310,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.Mod
 				IndexMode:         cfgItem.IndexMode,
 				IndexPath:         cfgItem.IndexPath,
 				ScanIntervalMS:    cfgItem.ScanIntervalMS,
+				ScanMode:          cfgItem.ScanMode,
 				MetadataMode:      cfgItem.MetadataMode,
 				RepairPolicy:      cfgItem.RepairPolicy,
 				DedupePolicy:      cfgItem.DedupePolicy,
@@ -323,6 +324,7 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.Mod
 				AcoustIDAPIKey:    cfgItem.AcoustIDAPIKey,
 				SummaryModel:      cfgItem.SummaryModel,
 				SummaryEndpoint:   cfgItem.SummaryEndpoint,
+				GenreModel:        cfgItem.GenreModel,
 			})
 			if err != nil {
 				return nil, err

@@ -94,6 +94,7 @@ type FSLibraryConfig struct {
 	IndexMode         string   `toml:"index_mode"`
 	IndexPath         string   `toml:"index_path"`
 	ScanIntervalMS    int64    `toml:"scan_interval_ms"`
+	ScanMode          string   `toml:"scan_mode"`
 	MetadataMode      string   `toml:"metadata_mode"`
 	RepairPolicy      string   `toml:"repair_policy"`
 	DedupePolicy      string   `toml:"dedupe_policy"`
@@ -107,6 +108,7 @@ type FSLibraryConfig struct {
 	AcoustIDAPIKey    string   `toml:"acoustid_api_key"`
 	SummaryModel      string   `toml:"summary_model"`
 	SummaryEndpoint   string   `toml:"summary_endpoint"`
+	GenreModel        string   `toml:"genre_model"`
 }
 
 // RendererGStreamerConfig configures the GStreamer renderer module.
