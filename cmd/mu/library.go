@@ -111,25 +111,28 @@ func libSearchCommand() *cobra.Command {
 	var types string
 
 	cmd := &cobra.Command{
-		Use:     "search [library] <query>",
+		Use:     "search [library] <query...>",
 		Aliases: []string{"find", "query"},
 		Short:   "Search a library for matching items",
 		Long: "Search a library for matching items.\n" +
-			"Library selectors can be a configured alias, the library name, or a full node id (URN).",
-		Args: cobra.RangeArgs(1, 2),
+			"Library selectors can be a configured alias, the library name (or a\n" +
+			"unique prefix of it), or a full node id (URN).\n\n" +
+			"Multi-word queries need no quotes: if the first argument names a\n" +
+			"library it is used as the selector, otherwise every argument joins\n" +
+			"into the query.\n\n" +
+			"Examples:\n" +
+			"  mu lib search warning sign          # default library\n" +
+			"  mu lib search venus warning sign    # library 'venus', query 'warning sign'",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := ""
-			query := ""
-			if len(args) == 1 {
-				query = args[0]
-			} else {
-				selector = args[0]
-				query = args[1]
-			}
+			selector, query := splitSearchArgs(args, func(sel string) bool {
+				_, err := app.service.Resolver.ResolveLibrary(ctx, sel)
+				return err == nil
+			})
 			typeList, err := parseLibraryTypes(types)
 			if err != nil {
 				return err
@@ -239,6 +242,20 @@ Examples:
 	cmd.Flags().BoolVar(&async, "async", false, "run rescan in background")
 	cmd.Flags().BoolVar(&force, "force", false, "force re-enrichment of all albums")
 	return cmd
+}
+
+// splitSearchArgs decides which arguments are the library selector and
+// which are the query. A single argument is always the query; with more,
+// the first is the selector only when it actually resolves to a library —
+// otherwise everything joins into an unquoted multi-word query.
+func splitSearchArgs(args []string, resolves func(string) bool) (selector string, query string) {
+	if len(args) == 1 {
+		return "", args[0]
+	}
+	if resolves(args[0]) {
+		return args[0], strings.Join(args[1:], " ")
+	}
+	return "", strings.Join(args, " ")
 }
 
 func parseLibraryTypes(value string) ([]string, error) {

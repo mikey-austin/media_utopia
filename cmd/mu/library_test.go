@@ -45,3 +45,23 @@ func TestParseLibraryTypes(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitSearchArgs(t *testing.T) {
+	isLib := func(s string) bool { return s == "venus" }
+	cases := []struct {
+		args     []string
+		selector string
+		query    string
+	}{
+		{[]string{"warning sign"}, "", "warning sign"},
+		{[]string{"venus", "warning", "sign"}, "venus", "warning sign"},
+		{[]string{"warning", "sign"}, "", "warning sign"},
+		{[]string{"venus"}, "", "venus"}, // single arg is always the query
+	}
+	for _, tc := range cases {
+		sel, q := splitSearchArgs(tc.args, isLib)
+		if sel != tc.selector || q != tc.query {
+			t.Errorf("splitSearchArgs(%v) = (%q, %q), want (%q, %q)", tc.args, sel, q, tc.selector, tc.query)
+		}
+	}
+}
