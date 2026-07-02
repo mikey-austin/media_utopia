@@ -1314,7 +1314,7 @@ func TestExtractInstruments(t *testing.T) {
 			want: []string{"piano"},
 		},
 		{
-			name: "empty credits",
+			name:    "empty credits",
 			credits: nil,
 			want:    nil,
 		},
@@ -1964,7 +1964,7 @@ type mockEmbeddingProvider struct {
 	embedFn func(ctx context.Context, inputs []EmbedInput) ([]EmbedVector, error)
 }
 
-func (m *mockEmbeddingProvider) Name() string { return "mock" }
+func (m *mockEmbeddingProvider) Name() string   { return "mock" }
 func (m *mockEmbeddingProvider) Dimension() int { return 3 }
 func (m *mockEmbeddingProvider) Embed(ctx context.Context, inputs []EmbedInput) ([]EmbedVector, error) {
 	if m.embedFn != nil {
@@ -3946,4 +3946,56 @@ func TestAlbumMetadataLLMGenreRoundTrip(t *testing.T) {
 	if out.LLMGenre != "Classical" {
 		t.Fatalf("LLMGenre = %q, want Classical", out.LLMGenre)
 	}
+}
+
+// TestArtURLCacheConcurrentAccess exercises the art-URL cache from parallel
+// readers the way the 4 command workers do in production: getItemArtworkURL
+// holds only the read lock while populating the cache, and every scan clears
+// it. Run with -race; a concurrent map write here crashes the whole daemon.
+func TestArtURLCacheConcurrentAccess(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 32; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("Artist%02d", i), "Album")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "01 track.mp3"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "cover.jpg"), []byte("img"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	mod := newTestModule(t, root, []string{".mp3"})
+	mod.mu.Lock()
+	mod.baseURL = "http://test"
+	mod.artURLPrefix = "http://test/art/"
+	mod.defaultArtURL = "http://test/art/default"
+	mod.mu.Unlock()
+
+	var items []mediaItem
+	mod.mu.RLock()
+	for _, it := range mod.index.Items {
+		items = append(items, it)
+	}
+	mod.mu.RUnlock()
+	if len(items) == 0 {
+		t.Fatal("expected items")
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				for _, it := range items {
+					mod.getItemArtworkURL(it)
+				}
+				// Simulate what every rescan does: wipe the cache.
+				mod.clearArtURLCache()
+			}
+		}()
+	}
+	wg.Wait()
 }

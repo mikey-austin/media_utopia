@@ -414,14 +414,19 @@ type Module struct {
 	cmdQueue chan cmdWork
 	dedup    *mu.CommandDedup
 
-	mu            sync.RWMutex
-	scanMu        sync.Mutex   // serializes concurrent scans
-	scanCount     atomic.Int64 // incremented on every scanInner call; for tests
-	index         *libraryIndex
-	baseURL       string
-	artURLPrefix  string            // pre-computed baseURL + "/art/", set once in startHTTPServer
-	artURLCache   map[string]string // cached art URLs keyed by album hash, cleared on index rebuild
-	defaultArtURL string            // cached default art URL, set once in startHTTPServer
+	mu           sync.RWMutex
+	scanMu       sync.Mutex   // serializes concurrent scans
+	scanCount    atomic.Int64 // incremented on every scanInner call; for tests
+	index        *libraryIndex
+	baseURL      string
+	artURLPrefix string // pre-computed baseURL + "/art/", set once in startHTTPServer
+	// artURLCache memoizes art URLs keyed by album hash, cleared on index
+	// rebuild. It has its own mutex because it is WRITTEN from paths that
+	// hold only m.mu.RLock (concurrent command workers) — writing it under
+	// the read lock alone is a fatal concurrent map write.
+	artURLMu      sync.Mutex
+	artURLCache   map[string]string
+	defaultArtURL string // cached default art URL, set once in startHTTPServer
 	server        *http.Server
 	ln            net.Listener
 
@@ -2694,8 +2699,8 @@ func (m *Module) scanInner(ctx context.Context, forceEnrich bool) error {
 	m.index = next
 	m.enrichMeta = enrichMeta
 	m.prevItems = nextPrevItems
-	m.artURLCache = make(map[string]string) // invalidate art URL cache on index rebuild
 	m.mu.Unlock()
+	m.clearArtURLCache() // invalidate art URL cache on index rebuild
 
 	// Build embeddings asynchronously
 	if m.embedProvider != nil {
@@ -3180,8 +3185,12 @@ func (m *Module) artURLUnlocked(albumHash string) string {
 		return ""
 	}
 
-	// Check the cache first.
-	if cached, ok := m.artURLCache[albumHash]; ok {
+	// Check the cache first. artURLMu (not m.mu) guards the map: callers
+	// hold m.mu.RLock, which permits concurrent entry to this function.
+	m.artURLMu.Lock()
+	cached, ok := m.artURLCache[albumHash]
+	m.artURLMu.Unlock()
+	if ok {
 		return cached
 	}
 
@@ -3203,8 +3212,17 @@ func (m *Module) artURLUnlocked(albumHash string) string {
 		ext = ".jpg"
 	}
 	artURL := m.artURLPrefix + url.PathEscape(albumHash) + ext
+	m.artURLMu.Lock()
 	m.artURLCache[albumHash] = artURL
+	m.artURLMu.Unlock()
 	return artURL
+}
+
+// clearArtURLCache resets the art URL cache. Safe from any goroutine.
+func (m *Module) clearArtURLCache() {
+	m.artURLMu.Lock()
+	m.artURLCache = make(map[string]string)
+	m.artURLMu.Unlock()
 }
 
 func (m *Module) indexFilePath() (string, error) {
@@ -3270,8 +3288,8 @@ func (m *Module) loadIndex() error {
 	}
 	m.mu.Lock()
 	m.index = &idx
-	m.artURLCache = make(map[string]string) // invalidate art URL cache on index load
 	m.mu.Unlock()
+	m.clearArtURLCache() // invalidate art URL cache on index load
 	return nil
 }
 
