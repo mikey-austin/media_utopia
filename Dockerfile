@@ -76,6 +76,7 @@ FROM ubuntu:26.04 AS mud-library
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libchromaprint1 \
+    ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/mud /usr/local/bin/mud
 USER 65532:65532
