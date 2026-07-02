@@ -60,6 +60,7 @@ type ModulesConfig struct {
 	Playlist              ModuleConfigSet[PlaylistConfig]          `toml:"playlist"`
 	FSLibrary             ModuleConfigSet[FSLibraryConfig]         `toml:"fs_library"`
 	RendererGStreamer     ModuleConfigSet[RendererGStreamerConfig] `toml:"renderer_gstreamer"`
+	RendererMPV           ModuleConfigSet[RendererMPVConfig]       `toml:"renderer_mpv"`
 	RendererKodi          ModuleConfigSet[RendererKodiConfig]      `toml:"renderer_kodi"`
 	RendererVLC           ModuleConfigSet[RendererVLCConfig]       `toml:"renderer_vlc"`
 	RendererUPNP          ModuleConfigSet[RendererUPNPConfig]      `toml:"renderer_upnp"`
@@ -118,6 +119,23 @@ type RendererGStreamerConfig struct {
 	Device      string `toml:"device"`
 	CrossfadeMS int64  `toml:"crossfade_ms"`
 	Source      string `toml:"source"`
+}
+
+// RendererMPVConfig configures the mpv (libmpv) renderer module. NodeID
+// optionally pins the full node ID so cutover from renderer_gstreamer
+// preserves retained MQTT state, queue snapshots, and zone wiring.
+type RendererMPVConfig struct {
+	Enabled     bool              `toml:"enabled"`
+	Name        string            `toml:"name"`
+	Provider    string            `toml:"provider"`
+	Resource    string            `toml:"resource"`
+	NodeID      string            `toml:"node_id"`
+	AO          string            `toml:"ao"`
+	Device      string            `toml:"device"`
+	CrossfadeMS int64             `toml:"crossfade_ms"`
+	Volume      float64           `toml:"volume"`
+	Source      string            `toml:"source"`
+	MPVOptions  map[string]string `toml:"mpv_options"`
 }
 
 // RendererKodiConfig configures the Kodi renderer module.
@@ -376,6 +394,18 @@ func assignField(field reflect.Value, raw interface{}) error {
 			return nil
 		case int:
 			field.SetInt(int64(val))
+			return nil
+		}
+	case reflect.Float64:
+		switch val := raw.(type) {
+		case float64:
+			field.SetFloat(val)
+			return nil
+		case int64:
+			field.SetFloat(float64(val))
+			return nil
+		case int:
+			field.SetFloat(float64(val))
 			return nil
 		}
 	case reflect.Slice:

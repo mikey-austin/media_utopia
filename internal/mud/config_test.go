@@ -476,3 +476,46 @@ func TestConfigNamespaceDefault(t *testing.T) {
 		}
 	})
 }
+
+func TestRendererMPVConfig(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "mud.toml")
+	data := []byte("" +
+		"[server]\n" +
+		"identity = \"mud-test\"\n" +
+		"\n" +
+		"[modules.renderer_mpv.living_room]\n" +
+		"enabled = true\n" +
+		"name = \"Living Room\"\n" +
+		"provider = \"gstreamer\"\n" +
+		"resource = \"default\"\n" +
+		"node_id = \"mu:renderer:gstreamer:mud@livingroom:default\"\n" +
+		"ao = \"pipewire\"\n" +
+		"device = \"sink-1\"\n" +
+		"crossfade_ms = 3000\n" +
+		"volume = 0.8\n" +
+		"[modules.renderer_mpv.living_room.mpv_options]\n" +
+		"network-timeout = \"10\"\n" +
+		"demuxer-max-bytes = \"32MiB\"\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	items := cfg.Modules.RendererMPV.List()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 renderer_mpv item, got %d", len(items))
+	}
+	item := items[0].Config
+	if !item.Enabled || item.AO != "pipewire" || item.Device != "sink-1" ||
+		item.CrossfadeMS != 3000 || item.Volume != 0.8 ||
+		item.NodeID != "mu:renderer:gstreamer:mud@livingroom:default" {
+		t.Fatalf("unexpected config: %+v", item)
+	}
+	if item.MPVOptions["network-timeout"] != "10" || item.MPVOptions["demuxer-max-bytes"] != "32MiB" {
+		t.Fatalf("mpv_options not parsed: %+v", item.MPVOptions)
+	}
+}

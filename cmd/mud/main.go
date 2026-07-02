@@ -22,6 +22,7 @@ import (
 	renderercore "github.com/mikey-austin/media_utopia/internal/modules/renderer_core"
 	renderergstreamer "github.com/mikey-austin/media_utopia/internal/modules/renderer_gstreamer"
 	rendererkodi "github.com/mikey-austin/media_utopia/internal/modules/renderer_kodi"
+	renderermpv "github.com/mikey-austin/media_utopia/internal/modules/renderer_mpv"
 	rendererupnp "github.com/mikey-austin/media_utopia/internal/modules/renderer_upnp"
 	renderervlc "github.com/mikey-austin/media_utopia/internal/modules/renderer_vlc"
 	upnplibrary "github.com/mikey-austin/media_utopia/internal/modules/upnp_library"
@@ -548,6 +549,55 @@ func buildModules(cfg mud.Config, client *mqttserver.Client, logFactory *mud.Mod
 		}
 	}
 
+	if moduleOnly == "" || moduleOnly == "renderer_mpv" {
+		for _, item := range cfg.Modules.RendererMPV.List() {
+			cfgItem := item.Config
+			if !cfgItem.Enabled {
+				continue
+			}
+			crossfade := time.Duration(cfgItem.CrossfadeMS) * time.Millisecond
+			nodeID := strings.TrimSpace(cfgItem.NodeID)
+			if nodeID == "" {
+				resource := resourceFor(item.Name, cfgItem.Resource)
+				var err error
+				nodeID, err = buildNodeID("renderer", cfgItem.Provider, cfg.Server.Namespace, resource)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if err := ensureUnique(nodeID, "renderer_mpv"); err != nil {
+				return nil, err
+			}
+			volume := cfgItem.Volume
+			if volume <= 0 {
+				volume = 1.0
+			}
+			stateTopic := mu.TopicState(cfg.Server.TopicBase, nodeID)
+			presenceTopic := mu.TopicPresence(cfg.Server.TopicBase, nodeID)
+			mod, err := renderermpv.NewModule(logFactory.ModuleLogger("renderer_mpv"), client, renderermpv.Config{
+				NodeID:            nodeID,
+				TopicBase:         cfg.Server.TopicBase,
+				Name:              cfgItem.Name,
+				AO:                cfgItem.AO,
+				Device:            cfgItem.Device,
+				Crossfade:         crossfade,
+				Volume:            volume,
+				PublishState:      true,
+				Source:            cfgItem.Source,
+				MPVOptions:        cfgItem.MPVOptions,
+				StatePublisher:    renderercore.NewMQTTStatePublisher(client, stateTopic),
+				PresencePublisher: renderercore.NewMQTTPresencePublisher(client, presenceTopic),
+			})
+			if err != nil {
+				return nil, err
+			}
+			modules = append(modules, mud.ModuleRunner{
+				Name: "renderer_mpv",
+				Run:  mod.Run,
+			})
+		}
+	}
+
 	if moduleOnly == "" || moduleOnly == "renderer_kodi" {
 		for _, item := range cfg.Modules.RendererKodi.List() {
 			cfgItem := item.Config
@@ -727,6 +777,12 @@ func enabledModules(cfg mud.Config) []string {
 	for _, item := range cfg.Modules.RendererGStreamer.List() {
 		if item.Config.Enabled {
 			out = append(out, "renderer_gstreamer")
+			break
+		}
+	}
+	for _, item := range cfg.Modules.RendererMPV.List() {
+		if item.Config.Enabled {
+			out = append(out, "renderer_mpv")
 			break
 		}
 	}
