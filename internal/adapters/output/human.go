@@ -155,15 +155,19 @@ func renderStatus(result core.StatusResult) (string, error) {
 		}
 	}
 	if result.State.Queue != nil {
-		queue = fmt.Sprintf("Queue: %d tracks (index %d) rev %d", result.State.Queue.Length, result.State.Queue.Index, result.State.Queue.Revision)
+		noun := "tracks"
+		if result.State.Queue.Length == 1 {
+			noun = "track"
+		}
+		queue = fmt.Sprintf("queue %d %s \u00b7 #%d", result.State.Queue.Length, noun, result.State.Queue.Index)
 		if result.State.Queue.RepeatMode == "one" {
-			queue += " repeat-one"
+			queue += " \u00b7 repeat-one"
 		} else if result.State.Queue.Repeat {
-			queue += " repeat"
+			queue += " \u00b7 repeat"
 		}
 	}
 	if result.State.Session != nil {
-		owner = fmt.Sprintf("owner %s", result.State.Session.Owner)
+		owner = "\u00b7 " + result.State.Session.Owner
 	}
 
 	width := min(TerminalWidth(100), 100)
@@ -195,7 +199,7 @@ func renderStatus(result core.StatusResult) (string, error) {
 	}
 
 	// Queue / owner line.
-	if info := strings.TrimSpace(strings.TrimSpace(queue) + "  " + owner); info != "" {
+	if info := strings.TrimSpace(strings.TrimSpace(queue) + " " + owner); info != "" {
 		lines = append(lines, "  "+Dim(info))
 	}
 	return strings.Join(lines, "\n") + "\n", nil

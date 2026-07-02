@@ -90,7 +90,7 @@ func TestRenderStatus(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"Living Room", "playing", "My Song", "The Band", "vol 75%", "Queue: 10 tracks", "owner mu-cli"},
+			contains: []string{"Living Room", "playing", "My Song", "The Band", "vol 75%", "queue 10 tracks", "mu-cli"},
 		},
 		{
 			name: "paused state",
@@ -168,7 +168,7 @@ func TestRenderStatus(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"Den", "repeat-one", "Queue: 5 tracks"},
+			contains: []string{"Den", "repeat-one", "queue 5 tracks"},
 		},
 		{
 			name: "repeat mode all",
@@ -183,7 +183,7 @@ func TestRenderStatus(t *testing.T) {
 					},
 				},
 			},
-			contains: []string{"Studio", "repeat", "Queue: 8 tracks"},
+			contains: []string{"Studio", "repeat", "queue 8 tracks"},
 		},
 	}
 
