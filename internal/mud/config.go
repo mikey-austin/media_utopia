@@ -109,6 +109,8 @@ type FSLibraryConfig struct {
 	SummaryModel       string   `toml:"summary_model"`
 	SummaryEndpoint    string   `toml:"summary_endpoint"`
 	GenreModel         string   `toml:"genre_model"`
+	ImportDir          string   `toml:"import_dir"`
+	YtDlpPath          string   `toml:"yt_dlp_path"`
 }
 
 // RendererGStreamerConfig configures the GStreamer renderer module.
