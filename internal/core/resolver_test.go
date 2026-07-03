@@ -20,6 +20,9 @@ func (f fakeBroker) ListPresence(ctx context.Context) ([]mu.Presence, error) { r
 func (f fakeBroker) GetRendererState(ctx context.Context, nodeID string) (mu.RendererState, error) {
 	return mu.RendererState{}, nil
 }
+func (f fakeBroker) GetZoneState(ctx context.Context, nodeID string) (mu.ZoneState, error) {
+	return mu.ZoneState{}, nil
+}
 func (f fakeBroker) WatchRenderer(ctx context.Context, nodeID string) (<-chan mu.RendererState, <-chan mu.Event, <-chan error) {
 	stateCh := make(chan mu.RendererState)
 	eventCh := make(chan mu.Event)

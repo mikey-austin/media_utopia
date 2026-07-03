@@ -12,6 +12,7 @@ type Broker interface {
 	PublishCommand(ctx context.Context, nodeID string, cmd mu.CommandEnvelope) (mu.ReplyEnvelope, error)
 	ListPresence(ctx context.Context) ([]mu.Presence, error)
 	GetRendererState(ctx context.Context, nodeID string) (mu.RendererState, error)
+	GetZoneState(ctx context.Context, nodeID string) (mu.ZoneState, error)
 	WatchRenderer(ctx context.Context, nodeID string) (<-chan mu.RendererState, <-chan mu.Event, <-chan error)
 }
 

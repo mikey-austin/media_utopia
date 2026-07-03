@@ -14,4 +14,5 @@ type Defaults struct {
 	Renderer       string
 	PlaylistServer string
 	Library        string
+	Zone           string
 }

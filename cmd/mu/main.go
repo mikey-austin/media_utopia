@@ -136,6 +136,7 @@ Environment variables:
 				Renderer:       defaults.Renderer,
 				PlaylistServer: defaults.PlaylistServer,
 				Library:        defaults.Library,
+				Zone:           defaults.Zone,
 			},
 		}
 
@@ -189,6 +190,7 @@ Environment variables:
 	root.AddCommand(nextCommand())
 	root.AddCommand(prevCommand())
 	root.AddCommand(volumeCommand())
+	root.AddCommand(zoneCommand())
 	root.AddCommand(queueCommand())
 	root.AddCommand(playlistCommand())
 	root.AddCommand(snapshotCommand())

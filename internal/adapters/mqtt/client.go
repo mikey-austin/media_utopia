@@ -167,6 +167,39 @@ func (c *Client) ListPresence(ctx context.Context) ([]mu.Presence, error) {
 }
 
 // GetRendererState returns the retained renderer state.
+// GetZoneState fetches a zone's retained state.
+func (c *Client) GetZoneState(ctx context.Context, nodeID string) (mu.ZoneState, error) {
+	stateCh := make(chan mu.ZoneState, 1)
+	handler := func(_ paho.Client, msg paho.Message) {
+		var state mu.ZoneState
+		if err := json.Unmarshal(msg.Payload(), &state); err != nil {
+			return
+		}
+		select {
+		case stateCh <- state:
+		default:
+		}
+	}
+
+	topic := mu.TopicState(c.topicBase, nodeID)
+	if token := c.client.Subscribe(topic, 1, handler); token.Wait() && token.Error() != nil {
+		return mu.ZoneState{}, token.Error()
+	}
+	defer func() {
+		token := c.client.Unsubscribe(topic)
+		token.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return mu.ZoneState{}, ctx.Err()
+	case state := <-stateCh:
+		return state, nil
+	case <-time.After(c.timeout):
+		return mu.ZoneState{}, errors.New("timeout waiting for zone state")
+	}
+}
+
 func (c *Client) GetRendererState(ctx context.Context, nodeID string) (mu.RendererState, error) {
 	stateCh := make(chan mu.RendererState, 1)
 	handler := func(_ paho.Client, msg paho.Message) {

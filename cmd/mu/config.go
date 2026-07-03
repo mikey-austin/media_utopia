@@ -230,6 +230,7 @@ var defaultKinds = map[string]string{
 	"playlist":        "playlist",
 	"playlist-server": "playlist",
 	"playlist_server": "playlist",
+	"zone":            "zone",
 }
 
 func setDefaultField(d *config.Defaults, kind string, nodeID string) {
@@ -240,6 +241,8 @@ func setDefaultField(d *config.Defaults, kind string, nodeID string) {
 		d.Library = nodeID
 	case "playlist":
 		d.PlaylistServer = nodeID
+	case "zone":
+		d.Zone = nodeID
 	}
 }
 
@@ -285,6 +288,8 @@ first use) instead of the top-level defaults; activate profiles with
 					node, err = app.service.Resolver.ResolveLibrary(ctx, args[1])
 				case "playlist":
 					node, err = app.service.Resolver.ResolvePlaylistServer(ctx, args[1])
+				case "zone":
+					node, err = app.service.Resolver.ResolveZone(ctx, args[1])
 				}
 			} else {
 				node, err = pickNode(ctx, app, kind)
@@ -358,7 +363,7 @@ func completeDefaultKinds(cmd *cobra.Command, args []string, toComplete string) 
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return []string{"renderer", "library", "playlist"}, cobra.ShellCompDirectiveNoFileComp
+	return []string{"renderer", "library", "playlist", "zone"}, cobra.ShellCompDirectiveNoFileComp
 }
 
 func configSwitchCommand() *cobra.Command {
@@ -440,6 +445,9 @@ func printProfiles(cfg config.Config) error {
 		if p.PlaylistServer != "" {
 			parts = append(parts, "playlist="+shortNodeID(p.PlaylistServer))
 		}
+		if p.Zone != "" {
+			parts = append(parts, "zone="+shortNodeID(p.Zone))
+		}
 		fmt.Printf("%s %s  %s\n", marker, output.Bold(name), output.Dim(strings.Join(parts, " ")))
 	}
 	return nil
@@ -463,6 +471,9 @@ func printDefaults(d config.Defaults) {
 	}
 	if d.PlaylistServer != "" {
 		fmt.Printf("  playlist  %s\n", output.Dim(d.PlaylistServer))
+	}
+	if d.Zone != "" {
+		fmt.Printf("  zone      %s\n", output.Dim(d.Zone))
 	}
 }
 

@@ -73,6 +73,7 @@ Use --mute and --unmute to control mute state independently.`,
 
 	cmd.Flags().BoolVar(&mute, "mute", false, "mute output")
 	cmd.Flags().BoolVar(&unmute, "unmute", false, "unmute output")
+	cmd.Flags().SetInterspersed(false)
 	cmd.Flags().ParseErrorsWhitelist.UnknownFlags = true
 
 	return cmd

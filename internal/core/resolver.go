@@ -26,6 +26,11 @@ func (r Resolver) ResolveLibrary(ctx context.Context, selector string) (mu.Prese
 	return r.resolveByKind(ctx, selector, "library", r.Config.Defaults.Library)
 }
 
+// ResolveZone resolves a zone selector using config defaults.
+func (r Resolver) ResolveZone(ctx context.Context, selector string) (mu.Presence, error) {
+	return r.resolveByKind(ctx, selector, "zone", r.Config.Defaults.Zone)
+}
+
 // ResolvePlaylistServer resolves a playlist server selector using config defaults.
 func (r Resolver) ResolvePlaylistServer(ctx context.Context, selector string) (mu.Presence, error) {
 	return r.resolveByKind(ctx, selector, "playlist", r.Config.Defaults.PlaylistServer)

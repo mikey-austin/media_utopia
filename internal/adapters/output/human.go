@@ -85,6 +85,10 @@ func renderHuman(v any) (string, error) {
 		return renderLibraryItemsOutput(data)
 	case SuggestShowOutput:
 		return renderSuggestShow(data)
+	case core.ZoneListResult:
+		return renderZones(data)
+	case ZoneSourcesOutput:
+		return renderZoneSources(data)
 	case core.RawResult:
 		return renderRaw(data)
 	default:
@@ -203,6 +207,69 @@ func renderStatus(result core.StatusResult) (string, error) {
 		lines = append(lines, "  "+Dim(info))
 	}
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// ZoneSourcesOutput wraps the controller's source list for rendering.
+type ZoneSourcesOutput struct {
+	Sources []mu.ZoneSource
+}
+
+func renderZones(result core.ZoneListResult) (string, error) {
+	if len(result.Zones) == 0 {
+		return "No zones found. Is the zone controller running?\n", nil
+	}
+	zones := append([]core.ZoneStatus(nil), result.Zones...)
+	sort.Slice(zones, func(i, j int) bool { return zones[i].Zone.Name < zones[j].Zone.Name })
+	rows := make([][]string, 0, len(zones))
+	current := -1
+	for i, z := range zones {
+		vol := fmt.Sprintf("%d%%", int(z.State.Volume*100+0.5))
+		mute := ""
+		if z.State.Mute {
+			mute = "muted"
+		}
+		conn := "online"
+		if !z.State.Connected {
+			conn = "offline"
+			current = current // keep gofmt calm; offline styling handled below
+		}
+		source := z.SourceName
+		if source == "" {
+			source = z.State.SourceID
+		}
+		rows = append(rows, []string{z.Zone.Name, vol, mute, source, conn, z.Zone.NodeID})
+		_ = i
+	}
+	return Table{
+		Columns: []Column{
+			{Title: "ZONE", Min: 10, Flex: 1},
+			{Title: "VOL", Align: AlignRight},
+			{Title: "MUTE"},
+			{Title: "SOURCE", Min: 8, Flex: 1},
+			{Title: "STATE"},
+			{Title: "ZONE_ID", Style: Dim},
+		},
+		Rows: rows,
+	}.Render(), nil
+}
+
+func renderZoneSources(result ZoneSourcesOutput) (string, error) {
+	if len(result.Sources) == 0 {
+		return "No sources advertised by the zone controller.\n", nil
+	}
+	sources := append([]mu.ZoneSource(nil), result.Sources...)
+	sort.Slice(sources, func(i, j int) bool { return sources[i].Name < sources[j].Name })
+	rows := make([][]string, 0, len(sources))
+	for _, src := range sources {
+		rows = append(rows, []string{src.Name, src.ID})
+	}
+	return Table{
+		Columns: []Column{
+			{Title: "SOURCE", Min: 10, Flex: 1},
+			{Title: "SOURCE_ID", Style: Dim},
+		},
+		Rows: rows,
+	}.Render(), nil
 }
 
 // NowPlayingLine is the one-line summary printed after playback commands:

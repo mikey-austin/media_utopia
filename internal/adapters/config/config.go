@@ -26,6 +26,7 @@ type Defaults struct {
 	Renderer       string `toml:"renderer,omitempty"`
 	PlaylistServer string `toml:"playlist_server,omitempty"`
 	Library        string `toml:"library,omitempty"`
+	Zone           string `toml:"zone,omitempty"`
 }
 
 // EffectiveDefaults returns the defaults with the active profile's
@@ -47,6 +48,9 @@ func (c Config) EffectiveDefaults() Defaults {
 	}
 	if p.Library != "" {
 		out.Library = p.Library
+	}
+	if p.Zone != "" {
+		out.Zone = p.Zone
 	}
 	return out
 }

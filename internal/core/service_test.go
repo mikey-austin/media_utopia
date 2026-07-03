@@ -61,6 +61,10 @@ func (s *stubBroker) ListPresence(ctx context.Context) ([]mu.Presence, error) {
 	return s.presence, nil
 }
 
+func (s *stubBroker) GetZoneState(ctx context.Context, nodeID string) (mu.ZoneState, error) {
+	return mu.ZoneState{Volume: 0.4, Connected: true}, nil
+}
+
 func (s *stubBroker) GetRendererState(ctx context.Context, nodeID string) (mu.RendererState, error) {
 	return s.state, nil
 }
@@ -905,5 +909,79 @@ func TestQueueAddBareItemIDUsesDefaultLibrary(t *testing.T) {
 	err = service.QueueAdd(context.Background(), renderer.NodeID, []string{"deadbeef"}, "end", nil, "auto", "")
 	if err == nil {
 		t.Fatal("expected error without library context")
+	}
+}
+
+func TestZoneCommands(t *testing.T) {
+	controller := mu.Presence{
+		NodeID: "mu:zone_controller:snapcast:test:default",
+		Kind:   "zone_controller",
+		Name:   "MZA",
+		Sources: []mu.ZoneSource{
+			{ID: "mpv1", Name: "MPV 1"},
+			{ID: "mpv2", Name: "MPV 2"},
+			{ID: "gstreamer1", Name: "GStreamer 1"},
+		},
+	}
+	zone := mu.Presence{
+		NodeID:       "mu:zone:snapcast:test:kitchen",
+		Kind:         "zone",
+		Name:         "Kitchen",
+		ControllerID: controller.NodeID,
+	}
+	broker := &stubBroker{presence: []mu.Presence{controller, zone}}
+	service := Service{
+		Broker:   broker,
+		Resolver: Resolver{Presence: broker, Config: Config{}},
+		Clock:    stubClock{},
+		IDGen:    stubIDGen{},
+		Config:   Config{Identity: "tester"},
+	}
+	ctx := context.Background()
+
+	// Volume: absolute and relative (stub state volume is 0.4).
+	if _, vol, err := service.ZoneSetVolume(ctx, "kitchen", "55"); err != nil || vol != 0.55 {
+		t.Fatalf("absolute volume: vol=%v err=%v", vol, err)
+	}
+	if broker.lastNode != controller.NodeID || broker.lastCmd.Type != "zone.setVolume" {
+		t.Fatalf("command routing: node=%s type=%s", broker.lastNode, broker.lastCmd.Type)
+	}
+	if _, vol, err := service.ZoneSetVolume(ctx, "kitchen", "+10"); err != nil || vol != 0.5 {
+		t.Fatalf("relative volume: vol=%v err=%v", vol, err)
+	}
+
+	// Mute toggle reads current state (false) and flips it.
+	if _, muted, err := service.ZoneSetMute(ctx, "kitchen", nil); err != nil || !muted {
+		t.Fatalf("mute toggle: muted=%v err=%v", muted, err)
+	}
+
+	// Source selection with forgiving matching ("mpv 1" -> MPV 1).
+	_, src, err := service.ZoneSelectSource(ctx, "kitchen", "mpv 1")
+	if err != nil || src.ID != "mpv1" {
+		t.Fatalf("select source: src=%+v err=%v", src, err)
+	}
+	var body struct {
+		ZoneID   string `json:"zoneId"`
+		SourceID string `json:"sourceId"`
+	}
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ZoneID != zone.NodeID || body.SourceID != "mpv1" {
+		t.Fatalf("selectSource body: %+v", body)
+	}
+
+	// Ambiguous source errors with candidates.
+	if _, _, err := service.ZoneSelectSource(ctx, "kitchen", "mpv"); err == nil {
+		t.Fatal("expected ambiguous source error")
+	}
+
+	// ZoneList includes state + resolved source names.
+	list, err := service.ZoneList(ctx)
+	if err != nil || len(list.Zones) != 1 || len(list.Sources) != 3 {
+		t.Fatalf("zone list: %+v err=%v", list, err)
+	}
+	if list.Zones[0].State.Volume != 0.4 || !list.Zones[0].State.Connected {
+		t.Fatalf("zone state not fetched: %+v", list.Zones[0])
 	}
 }

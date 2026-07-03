@@ -54,6 +54,26 @@ type Presence struct {
 	EPs    map[string]any `json:"endpoints,omitempty"`
 	Source string         `json:"source,omitempty"`
 	TS     int64          `json:"ts"`
+
+	// Zone-controller extras (kind "zone_controller" / "zone").
+	Sources      []ZoneSource `json:"sources,omitempty"`
+	Zones        []string     `json:"zones,omitempty"`
+	ControllerID string       `json:"controllerId,omitempty"`
+}
+
+// ZoneSource is one selectable audio source advertised by a zone controller.
+type ZoneSource struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ZoneState captures the retained state of a zone.
+type ZoneState struct {
+	Volume    float64 `json:"volume"`
+	Mute      bool    `json:"mute"`
+	SourceID  string  `json:"sourceId"`
+	Connected bool    `json:"connected"`
+	TS        int64   `json:"ts"`
 }
 
 // RendererState captures the retained state of a renderer.

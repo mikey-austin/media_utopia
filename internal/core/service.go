@@ -184,6 +184,184 @@ func (s Service) PlaybackPlay(ctx context.Context, selector string, index *int64
 	return s.simplePlayback(ctx, selector, "playback.play", mu.PlaybackPlayBody{Index: index})
 }
 
+// ZoneList returns all zones with their live state plus the controller's
+// selectable sources.
+func (s Service) ZoneList(ctx context.Context) (ZoneListResult, error) {
+	presence, err := s.Broker.ListPresence(ctx)
+	if err != nil {
+		return ZoneListResult{}, WrapError(ExitRuntime, "list presence", err)
+	}
+	sources := map[string]string{} // source id -> name
+	var sourceList []mu.ZoneSource
+	for _, p := range presence {
+		if p.Kind == "zone_controller" {
+			for _, src := range p.Sources {
+				sources[src.ID] = src.Name
+				sourceList = append(sourceList, src)
+			}
+		}
+	}
+	var zones []ZoneStatus
+	for _, p := range presence {
+		if p.Kind != "zone" {
+			continue
+		}
+		zs := ZoneStatus{Zone: p}
+		if state, err := s.Broker.GetZoneState(ctx, p.NodeID); err == nil {
+			zs.State = state
+			zs.SourceName = sources[state.SourceID]
+		}
+		zones = append(zones, zs)
+	}
+	return ZoneListResult{Zones: zones, Sources: sourceList}, nil
+}
+
+// zoneCommand publishes a zone.* command to the zone's controller.
+func (s Service) zoneCommand(ctx context.Context, zone mu.Presence, cmdType string, body any) error {
+	if zone.ControllerID == "" {
+		return &CLIError{Code: ExitRuntime, Msg: "zone has no controller id"}
+	}
+	cmd, err := mu.NewCommand(cmdType, body)
+	if err != nil {
+		return WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	return s.publishSimple(ctx, zone.ControllerID, cmd)
+}
+
+// ZoneSetVolume sets a zone's volume; arg accepts 0-100 or +/-N relative.
+func (s Service) ZoneSetVolume(ctx context.Context, selector string, arg string) (mu.Presence, float64, error) {
+	zone, err := s.Resolver.ResolveZone(ctx, selector)
+	if err != nil {
+		return mu.Presence{}, 0, err
+	}
+	arg = strings.TrimSpace(arg)
+	var vol float64
+	if strings.HasPrefix(arg, "+") || strings.HasPrefix(arg, "-") {
+		delta, err := strconv.ParseFloat(arg, 64)
+		if err != nil {
+			return zone, 0, &CLIError{Code: ExitUsage, Msg: "invalid volume delta"}
+		}
+		state, err := s.Broker.GetZoneState(ctx, zone.NodeID)
+		if err != nil {
+			return zone, 0, WrapError(ExitRuntime, "get zone state", err)
+		}
+		vol = clampVolume((state.Volume*100 + delta) / 100)
+	} else {
+		value, err := strconv.ParseFloat(arg, 64)
+		if err != nil {
+			return zone, 0, &CLIError{Code: ExitUsage, Msg: "invalid volume"}
+		}
+		vol = clampVolume(value / 100)
+	}
+	body := struct {
+		ZoneID string  `json:"zoneId"`
+		Volume float64 `json:"volume"`
+	}{zone.NodeID, vol}
+	return zone, vol, s.zoneCommand(ctx, zone, "zone.setVolume", body)
+}
+
+// ZoneSetMute sets or toggles a zone's mute state and reports the result.
+func (s Service) ZoneSetMute(ctx context.Context, selector string, mute *bool) (mu.Presence, bool, error) {
+	zone, err := s.Resolver.ResolveZone(ctx, selector)
+	if err != nil {
+		return mu.Presence{}, false, err
+	}
+	target := true
+	if mute != nil {
+		target = *mute
+	} else {
+		state, err := s.Broker.GetZoneState(ctx, zone.NodeID)
+		if err != nil {
+			return zone, false, WrapError(ExitRuntime, "get zone state", err)
+		}
+		target = !state.Mute
+	}
+	body := struct {
+		ZoneID string `json:"zoneId"`
+		Mute   bool   `json:"mute"`
+	}{zone.NodeID, target}
+	return zone, target, s.zoneCommand(ctx, zone, "zone.setMute", body)
+}
+
+// ZoneSelectSource routes a source (forgiving name/id matching against the
+// controller's advertised sources) to a zone.
+func (s Service) ZoneSelectSource(ctx context.Context, selector string, sourceSelector string) (mu.Presence, mu.ZoneSource, error) {
+	zone, err := s.Resolver.ResolveZone(ctx, selector)
+	if err != nil {
+		return mu.Presence{}, mu.ZoneSource{}, err
+	}
+	presence, err := s.Broker.ListPresence(ctx)
+	if err != nil {
+		return zone, mu.ZoneSource{}, WrapError(ExitRuntime, "list presence", err)
+	}
+	var sources []mu.ZoneSource
+	for _, p := range presence {
+		if p.NodeID == zone.ControllerID {
+			sources = p.Sources
+		}
+	}
+	src, err := matchZoneSource(sourceSelector, sources)
+	if err != nil {
+		return zone, mu.ZoneSource{}, err
+	}
+	body := struct {
+		ZoneID   string `json:"zoneId"`
+		SourceID string `json:"sourceId"`
+	}{zone.NodeID, src.ID}
+	return zone, src, s.zoneCommand(ctx, zone, "zone.selectSource", body)
+}
+
+// matchZoneSource resolves a source selector: exact id/name, then unique
+// case-insensitive prefix, then unique substring.
+func matchZoneSource(selector string, sources []mu.ZoneSource) (mu.ZoneSource, error) {
+	needle := strings.ToLower(strings.TrimSpace(selector))
+	if needle == "" {
+		return mu.ZoneSource{}, &CLIError{Code: ExitUsage, Msg: "source required (see 'mu zone sources')"}
+	}
+	// Spaces are ignored on both sides so "mpv 1" matches a source named
+	// "mpv1" and vice versa.
+	squash := func(v string) string { return strings.ReplaceAll(strings.ToLower(v), " ", "") }
+	squashed := squash(needle)
+	var exact, prefix, substr []mu.ZoneSource
+	for _, src := range sources {
+		name := strings.ToLower(src.Name)
+		sqName := squash(src.Name)
+		switch {
+		case strings.EqualFold(src.ID, selector) || name == needle || sqName == squashed:
+			exact = append(exact, src)
+		case strings.HasPrefix(name, needle) || strings.HasPrefix(sqName, squashed):
+			prefix = append(prefix, src)
+		case strings.Contains(name, needle) || strings.Contains(sqName, squashed):
+			substr = append(substr, src)
+		}
+	}
+	matches := exact
+	if len(matches) == 0 {
+		matches = prefix
+	}
+	if len(matches) == 0 {
+		matches = substr
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	names := make([]string, 0, len(sources))
+	for _, src := range sources {
+		names = append(names, src.Name)
+	}
+	if len(matches) == 0 {
+		return mu.ZoneSource{}, &CLIError{Code: ExitNotFound,
+			Msg: fmt.Sprintf("no source matches %q (available: %s)", selector, strings.Join(names, ", "))}
+	}
+	ambiguous := make([]string, 0, len(matches))
+	for _, src := range matches {
+		ambiguous = append(ambiguous, src.Name)
+	}
+	return mu.ZoneSource{}, &CLIError{Code: ExitUsage,
+		Msg: fmt.Sprintf("%q is ambiguous: %s", selector, strings.Join(ambiguous, ", "))}
+}
+
 // PlayItems queues the given items immediately after the current track and
 // starts playback on the first of them — "play this now" in one command.
 // Items follow the same rules as QueueAdd (bare item IDs against the

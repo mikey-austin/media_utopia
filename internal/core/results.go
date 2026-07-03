@@ -84,6 +84,19 @@ type LibraryRescanResult struct {
 	Items     int    `json:"items,omitempty"`
 }
 
+// ZoneStatus pairs a zone's presence with its live state.
+type ZoneStatus struct {
+	Zone       mu.Presence  `json:"zone"`
+	State      mu.ZoneState `json:"state"`
+	SourceName string       `json:"sourceName,omitempty"`
+}
+
+// ZoneListResult holds all zones plus the controller's selectable sources.
+type ZoneListResult struct {
+	Zones   []ZoneStatus    `json:"zones"`
+	Sources []mu.ZoneSource `json:"sources,omitempty"`
+}
+
 // RawResult holds arbitrary JSON data for output. It marshals as the
 // payload itself — scripts should not have to unwrap an envelope.
 type RawResult struct {
