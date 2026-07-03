@@ -9,24 +9,52 @@ import (
 
 func playCommand() *cobra.Command {
 	var index int64
+	var library string
 
 	cmd := &cobra.Command{
-		Use:   "play [renderer]",
-		Short: "Start or resume playback",
+		Use:   "play [renderer] [item...]",
+		Short: "Start or resume playback, or play items directly",
 		Long: `Start or resume playback on a renderer. If the queue has entries,
-playback begins at the current position unless --index is specified.`,
+playback begins at the current position unless --index is specified.
+
+With item arguments — library item IDs from 'mu lib search'/'mu lib
+browse', or direct URLs — the items are queued right after the current
+track and playback jumps to the first of them. Bare item IDs use
+--library, the configured default library, or the only discovered one.`,
 		Example: `  mu play
   mu play living-room
-  mu play living-room --index 5`,
+  mu play living-room --index 5
+  mu play 4c7ae19088ed6d95e9400ee3953cd2a5      # play this track now
+  mu play living-room 4c7ae19088ed6d95e9400ee3953cd2a5
+  mu play https://example.com/stream.mp3`,
 		GroupID:           "playback",
 		ValidArgsFunction: completeRenderers,
-		Args:              cobra.RangeArgs(0, 1),
+		Args:              cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
 			ctx, cancel := withTimeout(context.Background(), app.timeout)
 			defer cancel()
 
-			selector := selectorArg(args)
+			// The first argument is a renderer selector only when it
+			// resolves to a renderer; everything else is items to play.
+			selector := ""
+			items := args
+			if len(args) > 0 && !looksLikeItem(args[0]) {
+				if _, err := app.service.Resolver.ResolveRenderer(ctx, args[0]); err == nil {
+					selector = args[0]
+					items = args[1:]
+				}
+			}
+			if len(items) > 0 {
+				if err := app.runWithLeaseRetry(ctx, selector, func() error {
+					return app.service.PlayItems(ctx, selector, items, library)
+				}); err != nil {
+					return err
+				}
+				app.printPlaybackOutcome(ctx, selector, "Playback started")
+				return nil
+			}
+
 			var idxPtr *int64
 			if cmd.Flags().Changed("index") {
 				idxPtr = &index
@@ -41,7 +69,8 @@ playback begins at the current position unless --index is specified.`,
 		},
 	}
 
-	cmd.Flags().Int64Var(&index, "index", 0, "queue index")
+	cmd.Flags().Int64Var(&index, "index", 0, "queue index to start playback from")
+	cmd.Flags().StringVarP(&library, "library", "l", "", "library the bare item IDs belong to (default: configured library)")
 
 	return cmd
 }

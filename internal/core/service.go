@@ -184,6 +184,68 @@ func (s Service) PlaybackPlay(ctx context.Context, selector string, index *int64
 	return s.simplePlayback(ctx, selector, "playback.play", mu.PlaybackPlayBody{Index: index})
 }
 
+// PlayItems queues the given items immediately after the current track and
+// starts playback on the first of them — "play this now" in one command.
+// Items follow the same rules as QueueAdd (bare item IDs against the
+// --library / default / only library, or direct URLs).
+func (s Service) PlayItems(ctx context.Context, selector string, items []string, librarySelector string) error {
+	renderer, err := s.Resolver.ResolveRenderer(ctx, selector)
+	if err != nil {
+		return err
+	}
+	lease, err := s.lookupLease(renderer.NodeID)
+	if err != nil {
+		return err
+	}
+	entries, err := s.buildQueueEntries(ctx, renderer, items, "auto", librarySelector)
+	if err != nil {
+		return err
+	}
+
+	// Peek at the queue to find where the items will land: right after the
+	// current track, or at the head of an empty queue.
+	peekCmd, err := mu.NewCommand("queue.get", mu.QueueGetBody{From: 0, Count: 1})
+	if err != nil {
+		return WrapError(ExitRuntime, "build command", err)
+	}
+	peekCmd = s.decorateCommand(peekCmd, nil, nil)
+	peek, err := s.Broker.PublishCommand(ctx, renderer.NodeID, peekCmd)
+	if err != nil {
+		return WrapError(ExitRuntime, "publish command", err)
+	}
+	if peek.Err != nil {
+		return ErrorForReplyCode(peek.Err.Code, peek.Err.Message)
+	}
+	var queue mu.QueueGetReply
+	if err := json.Unmarshal(peek.Body, &queue); err != nil {
+		return WrapError(ExitRuntime, "decode queue reply", err)
+	}
+
+	position := "next"
+	target := queue.Index + 1
+	if len(queue.Entries) == 0 {
+		position = "end"
+		target = 0
+	}
+
+	addBody := mu.QueueAddBody{Position: position, Entries: entries}
+	addCmd, err := mu.NewCommand("queue.add", addBody)
+	if err != nil {
+		return WrapError(ExitRuntime, "build command", err)
+	}
+	addCmd = s.decorateCommand(addCmd, &lease, nil)
+	if err := s.publishSimple(ctx, renderer.NodeID, addCmd); err != nil {
+		return err
+	}
+
+	playCmd, err := mu.NewCommand("playback.play", mu.PlaybackPlayBody{Index: &target})
+	if err != nil {
+		return WrapError(ExitRuntime, "build command", err)
+	}
+	playCmd = s.decorateCommand(playCmd, &lease, nil)
+	return s.publishSimple(ctx, renderer.NodeID, playCmd)
+}
+
 // PlaybackPause sends playback.pause.
 func (s Service) PlaybackPause(ctx context.Context, selector string) error {
 	return s.simplePlayback(ctx, selector, "playback.pause", struct{}{})
@@ -1292,7 +1354,67 @@ func (s Service) buildQueueEntries(ctx context.Context, renderer mu.Presence, it
 			}
 		}
 	}
+
+	// Renderers without queueResolve (the native gstreamer/mpv ones) play
+	// the entry's Resolved URL verbatim — refs must be materialized here.
+	if resolve == "yes" || (resolve == "auto" && !rendererCanResolve(renderer)) {
+		if err := s.materializeSources(ctx, entries); err != nil {
+			return nil, err
+		}
+	}
 	return entries, nil
+}
+
+// materializeSources resolves playable URLs for every ref entry that does
+// not already carry one, batched per library via library.resolveSourcesBatch.
+func (s Service) materializeSources(ctx context.Context, entries []mu.QueueEntry) error {
+	byLibrary := map[string][]mu.LibraryItemRef{}
+	for _, entry := range entries {
+		if entry.Ref != nil && entry.Resolved == nil {
+			byLibrary[entry.Ref.LibraryID] = append(byLibrary[entry.Ref.LibraryID], *entry.Ref)
+		}
+	}
+	if len(byLibrary) == 0 {
+		return nil
+	}
+	sources := map[string]*mu.ResolvedSource{}
+	for libraryID, refs := range byLibrary {
+		cmd, err := mu.NewCommand("library.resolveSourcesBatch", mu.LibraryResolveSourcesBatchBody{Refs: refs})
+		if err != nil {
+			return WrapError(ExitRuntime, "build command", err)
+		}
+		cmd = s.decorateCommand(cmd, nil, nil)
+		reply, err := s.Broker.PublishCommand(ctx, libraryID, cmd)
+		if err != nil {
+			return WrapError(ExitRuntime, "resolve sources", err)
+		}
+		if reply.Err != nil {
+			return ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+		}
+		var payload mu.LibraryResolveSourcesBatchReply
+		if err := json.Unmarshal(reply.Body, &payload); err != nil {
+			return WrapError(ExitRuntime, "decode resolve reply", err)
+		}
+		for _, item := range payload.Items {
+			if item.Err != nil {
+				return ErrorForReplyCode(item.Err.Code, item.Err.Message)
+			}
+			if len(item.Sources) > 0 {
+				src := item.Sources[0]
+				sources[item.Ref.LibraryID+"\x00"+item.Ref.ItemID] = &src
+			}
+		}
+	}
+	for i := range entries {
+		if ref := entries[i].Ref; ref != nil && entries[i].Resolved == nil {
+			src, ok := sources[ref.LibraryID+"\x00"+ref.ItemID]
+			if !ok {
+				return &CLIError{Code: ExitNotFound, Msg: fmt.Sprintf("no playable source for item %s", ref.ItemID)}
+			}
+			entries[i].Resolved = src
+		}
+	}
+	return nil
 }
 
 // libraryIDForItems resolves the library that bare item IDs belong to —
