@@ -734,7 +734,7 @@ func TestQueueAddURL(t *testing.T) {
 		Config:     Config{Identity: "tester"},
 	}
 
-	err := service.QueueAdd(context.Background(), renderer.NodeID, []string{"http://example.com/stream.mp3"}, "end", nil, "auto")
+	err := service.QueueAdd(context.Background(), renderer.NodeID, []string{"http://example.com/stream.mp3"}, "end", nil, "auto", "")
 	if err != nil {
 		t.Fatalf("QueueAdd URL: %v", err)
 	}
@@ -860,5 +860,50 @@ func TestLibraryBrowse(t *testing.T) {
 	}
 	if body.Count != 50 {
 		t.Fatalf("expected count 50, got %d", body.Count)
+	}
+}
+
+func TestQueueAddBareItemIDUsesDefaultLibrary(t *testing.T) {
+	renderer := mu.Presence{NodeID: "mu:renderer:mpv:test:r1", Kind: "renderer", Name: "R1", Caps: map[string]any{"queueResolve": true}}
+	library := mu.Presence{NodeID: "mu:library:filesystem:test:music", Kind: "library", Name: "Music"}
+	broker := &stubBroker{presence: []mu.Presence{renderer, library}}
+	service := Service{
+		Broker:     broker,
+		Resolver:   Resolver{Presence: broker, Config: Config{Defaults: Defaults{Library: library.NodeID}}},
+		Clock:      stubClock{},
+		IDGen:      stubIDGen{},
+		LeaseStore: &memoryLeaseStore{store: map[string]mu.Lease{renderer.NodeID: {SessionID: "s1", Token: "t1"}}},
+		Config:     Config{Identity: "tester", Defaults: Defaults{Library: library.NodeID}},
+	}
+
+	err := service.QueueAdd(context.Background(), renderer.NodeID, []string{"4c7ae19088ed6d95e9400ee3953cd2a5"}, "end", nil, "auto", "")
+	if err != nil {
+		t.Fatalf("QueueAdd bare id: %v", err)
+	}
+	var body mu.QueueAddBody
+	if err := json.Unmarshal(broker.lastCmd.Body, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Entries) != 1 || body.Entries[0].Ref == nil {
+		t.Fatalf("expected one ref entry, got %+v", body.Entries)
+	}
+	ref := body.Entries[0].Ref
+	if ref.LibraryID != library.NodeID || ref.ItemID != "4c7ae19088ed6d95e9400ee3953cd2a5" {
+		t.Fatalf("ref = %+v", ref)
+	}
+
+	// With exactly one library discovered and no default, bare IDs still
+	// resolve (single-candidate auto-selection).
+	service.Resolver.Config.Defaults.Library = ""
+	service.Config.Defaults.Library = ""
+	if err := service.QueueAdd(context.Background(), renderer.NodeID, []string{"deadbeef"}, "end", nil, "auto", ""); err != nil {
+		t.Fatalf("single-library auto-selection failed: %v", err)
+	}
+
+	// No libraries at all: the error must point at the fix.
+	broker.presence = []mu.Presence{renderer}
+	err = service.QueueAdd(context.Background(), renderer.NodeID, []string{"deadbeef"}, "end", nil, "auto", "")
+	if err == nil {
+		t.Fatal("expected error without library context")
 	}
 }

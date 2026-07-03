@@ -371,7 +371,7 @@ func (s Service) QueueRepeat(ctx context.Context, selector string, mode string) 
 }
 
 // QueueAdd adds entries to the queue.
-func (s Service) QueueAdd(ctx context.Context, selector string, items []string, position string, atIndex *int64, resolve string) error {
+func (s Service) QueueAdd(ctx context.Context, selector string, items []string, position string, atIndex *int64, resolve string, librarySelector string) error {
 	renderer, err := s.Resolver.ResolveRenderer(ctx, selector)
 	if err != nil {
 		return err
@@ -381,7 +381,7 @@ func (s Service) QueueAdd(ctx context.Context, selector string, items []string, 
 		return err
 	}
 
-	entries, err := s.buildQueueEntries(ctx, renderer, items, resolve)
+	entries, err := s.buildQueueEntries(ctx, renderer, items, resolve, librarySelector)
 	if err != nil {
 		return err
 	}
@@ -1256,29 +1256,75 @@ func parseDurationToMS(arg string) (int64, error) {
 	return value, nil
 }
 
-func (s Service) buildQueueEntries(ctx context.Context, renderer mu.Presence, items []string, resolve string) ([]mu.QueueEntry, error) {
-	_ = ctx
+func (s Service) buildQueueEntries(ctx context.Context, renderer mu.Presence, items []string, resolve string, librarySelector string) ([]mu.QueueEntry, error) {
 	if resolve == "no" && !rendererCanResolve(renderer) {
 		return nil, &CLIError{Code: ExitUsage, Msg: "renderer cannot resolve refs; use --resolve=auto|yes"}
 	}
 
+	libraryID, err := s.libraryIDForItems(ctx, items, librarySelector)
+	if err != nil {
+		return nil, err
+	}
 	entries := make([]mu.QueueEntry, 0, len(items))
+	var refs []mu.LibraryItemRef
 	for _, item := range items {
-		entry, err := s.parseQueueItem(item)
+		entry, err := parseQueueItem(item, libraryID)
 		if err != nil {
 			return nil, err
 		}
+		if entry.Ref != nil {
+			refs = append(refs, *entry.Ref)
+		}
 		entries = append(entries, entry)
 	}
+	// Best-effort display metadata so freshly added entries show titles in
+	// queue listings and renderer state instead of raw item IDs.
+	if len(refs) > 0 {
+		display := map[string]*mu.DisplayMetadata{}
+		for _, item := range s.backfillDisplay(ctx, refs) {
+			if item.Err == nil && item.Display != nil {
+				display[item.Ref.LibraryID+"\x00"+item.Ref.ItemID] = item.Display
+			}
+		}
+		for i := range entries {
+			if ref := entries[i].Ref; ref != nil && entries[i].Display == nil {
+				entries[i].Display = display[ref.LibraryID+"\x00"+ref.ItemID]
+			}
+		}
+	}
 	return entries, nil
+}
+
+// libraryIDForItems resolves the library that bare item IDs belong to —
+// the explicit --library selector when given, otherwise the default
+// library. Only consulted when at least one item actually needs it.
+func (s Service) libraryIDForItems(ctx context.Context, items []string, librarySelector string) (string, error) {
+	needsLibrary := false
+	for _, item := range items {
+		if isBareItemID(item) {
+			needsLibrary = true
+			break
+		}
+	}
+	if !needsLibrary {
+		return "", nil
+	}
+	library, err := s.Resolver.ResolveLibrary(ctx, librarySelector)
+	if err != nil {
+		return "", err
+	}
+	return library.NodeID, nil
 }
 
 func (s Service) buildPlaylistEntries(ctx context.Context, items []string, resolve string) ([]mu.QueueEntry, error) {
-	_ = ctx
 	_ = resolve
+	libraryID, err := s.libraryIDForItems(ctx, items, "")
+	if err != nil {
+		return nil, err
+	}
 	entries := make([]mu.QueueEntry, 0, len(items))
 	for _, item := range items {
-		entry, err := s.parseQueueItem(item)
+		entry, err := parseQueueItem(item, libraryID)
 		if err != nil {
 			return nil, err
 		}
@@ -1287,7 +1333,10 @@ func (s Service) buildPlaylistEntries(ctx context.Context, items []string, resol
 	return entries, nil
 }
 
-func (s Service) parseQueueItem(item string) (mu.QueueEntry, error) {
+// parseQueueItem turns one CLI item argument into a queue entry. URLs play
+// directly; anything else is treated as a library item ID belonging to
+// libraryID (the --library selector or the default library).
+func parseQueueItem(item string, libraryID string) (mu.QueueEntry, error) {
 	item = strings.TrimSpace(item)
 	if item == "" {
 		return mu.QueueEntry{}, &CLIError{Code: ExitUsage, Msg: "empty item"}
@@ -1298,7 +1347,28 @@ func (s Service) parseQueueItem(item string) (mu.QueueEntry, error) {
 	if strings.HasPrefix(item, "playlist:") {
 		return mu.QueueEntry{}, &CLIError{Code: ExitUsage, Msg: "playlist references require playlist load (not supported in queue add)"}
 	}
+	if isBareItemID(item) {
+		if libraryID == "" {
+			return mu.QueueEntry{}, &CLIError{Code: ExitUsage,
+				Msg: fmt.Sprintf("item %s needs a library: pass --library or set one with 'mu config set-default library'", item)}
+		}
+		return mu.QueueEntry{Ref: &mu.LibraryItemRef{Kind: mu.LibraryItemKind, LibraryID: libraryID, ItemID: item}}, nil
+	}
 	return mu.QueueEntry{}, &CLIError{Code: ExitUsage, Msg: fmt.Sprintf("unsupported item: %s", item)}
+}
+
+// isBareItemID reports whether the argument reads as a library item ID
+// (as printed in the ITEM_ID column) rather than a URL or URN.
+func isBareItemID(item string) bool {
+	if item == "" || strings.ContainsAny(item, " \t") {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(item, "http://"), strings.HasPrefix(item, "https://"),
+		strings.HasPrefix(item, "mu:"), strings.HasPrefix(item, "playlist:"):
+		return false
+	}
+	return true
 }
 
 // backfillDisplay fetches DisplayMetadata for a set of refs via library.getItems
@@ -1435,7 +1505,9 @@ func (s Service) parseQueueFile(format string, data []byte) ([]mu.QueueEntry, er
 		}
 		entries := make([]mu.QueueEntry, 0, len(items))
 		for _, item := range items {
-			entry, err := s.parseQueueItem(item)
+			// Queue files carry URLs or full URNs; bare item IDs would need
+			// a library context that a file doesn't establish.
+			entry, err := parseQueueItem(item, "")
 			if err != nil {
 				return nil, err
 			}

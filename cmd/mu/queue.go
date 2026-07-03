@@ -339,20 +339,23 @@ func queueAddCommand() *cobra.Command {
 	var next bool
 	var end bool
 	var resolve string
+	var library string
 
 	cmd := &cobra.Command{
 		Use:   "add [renderer] <item...>",
 		Short: "Add items to the queue",
 		Long: `Add one or more items to the queue.
 
-Items can be URLs, mu URNs (mu:...), or "<library> <itemId>" pairs.
-By default items are appended to the end. Use --next to insert after the current
-track, or --at to insert at a specific position.`,
-		Example: `  mu queue add https://example.com/song.mp3
-  mu queue add jellyfin abc123
-  mu queue add --next jellyfin abc123
-  mu queue add --at 0 https://example.com/song.mp3
-  mu queue add living-room jellyfin abc123`,
+Items are library item IDs (as printed in the ITEM_ID column of
+'mu lib search'/'mu lib browse') or direct URLs. Bare item IDs use the
+default library; pass --library to pick another. By default items are
+appended; use --next to insert after the current track, or --at for a
+specific position.`,
+		Example: `  mu queue add 4c7ae19088ed6d95e9400ee3953cd2a5
+  mu queue add --next 4c7ae19088ed6d95e9400ee3953cd2a5
+  mu queue add --library jellyfin abc123
+  mu queue add https://example.com/song.mp3
+  mu queue add living-room 4c7ae19088ed6d95e9400ee3953cd2a5`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := fromContext(cmd)
@@ -376,14 +379,18 @@ track, or --at to insert at a specific position.`,
 				position = "end"
 			}
 
+			// The first argument is a renderer selector only when it
+			// actually resolves to a renderer — item IDs never do.
 			selector := ""
 			items := args
 			if len(args) > 1 && !looksLikeItem(args[0]) {
-				selector = args[0]
-				items = args[1:]
+				if _, err := app.service.Resolver.ResolveRenderer(ctx, args[0]); err == nil {
+					selector = args[0]
+					items = args[1:]
+				}
 			}
 			if err := app.runWithLeaseRetry(ctx, selector, func() error {
-				return app.service.QueueAdd(ctx, selector, items, position, indexPtr, resolveValue)
+				return app.service.QueueAdd(ctx, selector, items, position, indexPtr, resolveValue, library)
 			}); err != nil {
 				return err
 			}
@@ -398,6 +405,7 @@ track, or --at to insert at a specific position.`,
 	cmd.Flags().BoolVar(&next, "next", false, "insert next")
 	cmd.Flags().BoolVar(&end, "end", false, "append at end")
 	cmd.Flags().StringVar(&resolve, "resolve", "auto", "resolve mode (auto|yes|no)")
+	cmd.Flags().StringVarP(&library, "library", "l", "", "library the bare item IDs belong to (default: configured library)")
 
 	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("at") {
