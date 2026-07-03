@@ -174,6 +174,7 @@ func (m *importManager) runJob(ctx context.Context, job *importJob) {
 		fail(err)
 		return
 	}
+	title = cleanPlaylistTitle(title)
 	if title == "" {
 		title = "Unknown Playlist"
 	}
@@ -281,6 +282,11 @@ func (m *importManager) download(ctx context.Context, job *importJob, albumDir s
 		// written thumbnail doubles as the album cover: every track
 		// overwrites cover.jpg, which is fine — album uploads share art.
 		"--convert-thumbnails", "jpg",
+		// YouTube Music noise: strip the "Album - " playlist prefix from the
+		// album tag and the auto-channel " - Topic" suffix from artists, so
+		// tags are clean and MusicBrainz enrichment (genres!) can match.
+		"--replace-in-metadata", "album", "^(?:Album|EP|Single|Mix) - ", "",
+		"--replace-in-metadata", "artist,album_artist,uploader", " - Topic$", "",
 		"--write-thumbnail",
 		"-o", "thumbnail:" + filepath.Join(albumDir, "cover.%(ext)s"),
 		"--parse-metadata", "playlist_index:%(track_number)s",
@@ -389,6 +395,17 @@ func stderrTail(s string) string {
 		}
 	}
 	return strings.Join(keep, " | ")
+}
+
+// cleanPlaylistTitle strips YouTube Music's generated playlist prefixes
+// ("Album - X", "EP - X", ...) so directory and album names read naturally.
+func cleanPlaylistTitle(title string) string {
+	for _, prefix := range []string{"Album - ", "EP - ", "Single - ", "Mix - "} {
+		if rest, ok := strings.CutPrefix(title, prefix); ok && strings.TrimSpace(rest) != "" {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return strings.TrimSpace(title)
 }
 
 // safeImportName sanitizes a playlist title into a directory component.

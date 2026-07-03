@@ -165,3 +165,20 @@ func findJob(t *testing.T, mgr *importManager, jobID string) importJob {
 	t.Fatalf("job %s not found", jobID)
 	return importJob{}
 }
+
+func TestCleanPlaylistTitle(t *testing.T) {
+	cases := map[string]string{
+		"Album - Components":                 "Components",
+		"Album - Ravel: The Piano Concertos": "Ravel: The Piano Concertos",
+		"EP - Small Thing":                   "Small Thing",
+		"Single - One Track":                 "One Track",
+		"Mix - All Naruto Openings":          "All Naruto Openings",
+		"My Normal Playlist":                 "My Normal Playlist",
+		"Album -":                            "Album -", // not a prefix match, keep
+	}
+	for in, want := range cases {
+		if got := cleanPlaylistTitle(in); got != want {
+			t.Errorf("cleanPlaylistTitle(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
