@@ -276,6 +276,13 @@ func (m *importManager) download(ctx context.Context, job *importJob, albumDir s
 	args := []string{
 		"-x", "--audio-format", "flac", "--audio-quality", "0",
 		"--embed-metadata", "--embed-thumbnail",
+		// YouTube thumbnails are webp; FLAC embedding needs jpg/png (and
+		// mutagen — the image installs yt-dlp[default] for that). The
+		// written thumbnail doubles as the album cover: every track
+		// overwrites cover.jpg, which is fine — album uploads share art.
+		"--convert-thumbnails", "jpg",
+		"--write-thumbnail",
+		"-o", "thumbnail:" + filepath.Join(albumDir, "cover.%(ext)s"),
 		"--parse-metadata", "playlist_index:%(track_number)s",
 		// Album = playlist title, falling back to the video title for
 		// single-video URLs (otherwise those land in "Unknown Album").
