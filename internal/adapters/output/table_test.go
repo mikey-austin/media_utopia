@@ -146,3 +146,22 @@ func TestFooterFormat(t *testing.T) {
 		t.Fatalf("footer = %q", got)
 	}
 }
+
+func TestTableAlignsPreStyledCells(t *testing.T) {
+	SetColorEnabled(true)
+	defer SetColorEnabled(false)
+	tbl := Table{
+		Columns: []Column{{Title: "STATE"}, {Title: "NAME"}},
+		Rows: [][]string{
+			{Green("done"), "alpha"},
+			{"failed", "beta"},
+		},
+		Width: 60,
+	}
+	out := tbl.Render()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	col := strings.Index(stripANSI(lines[1]), "alpha")
+	if strings.Index(stripANSI(lines[2]), "beta") != col {
+		t.Fatalf("styled STATE cell broke alignment:\n%s", out)
+	}
+}

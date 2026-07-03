@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -23,6 +24,8 @@ func libraryCommand() *cobra.Command {
 	cmd.AddCommand(libSearchCommand())
 	cmd.AddCommand(libResolveCommand())
 	cmd.AddCommand(libRescanCommand())
+	cmd.AddCommand(libImportCommand())
+	cmd.AddCommand(libImportsCommand())
 
 	return cmd
 }
@@ -256,6 +259,61 @@ func splitSearchArgs(args []string, resolves func(string) bool) (selector string
 		return args[0], strings.Join(args[1:], " ")
 	}
 	return "", strings.Join(args, " ")
+}
+
+func libImportCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "import [library] <url>",
+		Short: "Import a YouTube playlist into the library (async)",
+		Long: `Download a YouTube playlist into the library as FLAC with artwork and
+metadata. Runs asynchronously on the library host: the command returns a
+job id immediately; watch progress with 'mu lib imports'.
+
+Re-importing the same URL is safe — already-downloaded tracks are
+skipped and only new playlist entries are fetched.`,
+		Example: `  mu lib import https://www.youtube.com/playlist?list=PL123
+  mu lib imports`,
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			selector, url := "", args[0]
+			if len(args) == 2 {
+				selector, url = args[0], args[1]
+			}
+			result, err := app.service.LibraryImport(ctx, selector, url)
+			if err != nil {
+				return err
+			}
+			if app.json {
+				return app.printer.Print(result)
+			}
+			fmt.Printf("import %s: %s\n", result.Status, result.JobID)
+			fmt.Println(output.Dim("watch progress with 'mu lib imports'"))
+			return nil
+		},
+	}
+}
+
+func libImportsCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "imports [library]",
+		Short: "List import jobs and their progress",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := fromContext(cmd)
+			ctx, cancel := withTimeout(context.Background(), app.timeout)
+			defer cancel()
+
+			result, err := app.service.LibraryImports(ctx, selectorArg(args))
+			if err != nil {
+				return err
+			}
+			return app.printer.Print(result)
+		},
+	}
 }
 
 func parseLibraryTypes(value string) ([]string, error) {

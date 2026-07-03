@@ -84,6 +84,34 @@ type LibraryRescanResult struct {
 	Items     int    `json:"items,omitempty"`
 }
 
+// LibraryImportResult acknowledges a started import job.
+type LibraryImportResult struct {
+	LibraryID string `json:"libraryId"`
+	JobID     string `json:"jobId"`
+	Status    string `json:"status"`
+}
+
+// ImportJobStatus mirrors one import job as reported by the library.
+type ImportJobStatus struct {
+	JobID      string `json:"jobId"`
+	URL        string `json:"url"`
+	Playlist   string `json:"playlist,omitempty"`
+	State      string `json:"state"`
+	Done       int    `json:"done"`
+	Skipped    int    `json:"skipped"`
+	Failed     int    `json:"failed"`
+	Total      int    `json:"total"`
+	StartedAt  int64  `json:"startedAt,omitempty"`
+	FinishedAt int64  `json:"finishedAt,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// LibraryImportsResult lists import jobs, newest first.
+type LibraryImportsResult struct {
+	LibraryID string            `json:"libraryId"`
+	Jobs      []ImportJobStatus `json:"jobs"`
+}
+
 // ZoneStatus pairs a zone's presence with its live state.
 type ZoneStatus struct {
 	Zone       mu.Presence  `json:"zone"`

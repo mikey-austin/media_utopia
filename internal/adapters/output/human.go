@@ -85,6 +85,8 @@ func renderHuman(v any) (string, error) {
 		return renderLibraryItemsOutput(data)
 	case SuggestShowOutput:
 		return renderSuggestShow(data)
+	case core.LibraryImportsResult:
+		return renderImports(data)
 	case core.ZoneListResult:
 		return renderZones(data)
 	case ZoneSourcesOutput:
@@ -207,6 +209,46 @@ func renderStatus(result core.StatusResult) (string, error) {
 		lines = append(lines, "  "+Dim(info))
 	}
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+func renderImports(result core.LibraryImportsResult) (string, error) {
+	if len(result.Jobs) == 0 {
+		return Dim("No import jobs. Start one: mu lib import <playlist-url>") + "\n", nil
+	}
+	rows := make([][]string, 0, len(result.Jobs))
+	for _, job := range result.Jobs {
+		progress := fmt.Sprintf("%d/%d", job.Done, job.Total)
+		if job.Skipped > 0 {
+			progress += fmt.Sprintf(" (%d skipped)", job.Skipped)
+		}
+		if job.Failed > 0 {
+			progress += fmt.Sprintf(" (%d failed)", job.Failed)
+		}
+		state := job.State
+		switch job.State {
+		case "done":
+			state = Green(state)
+		case "failed":
+			state = Red(state)
+		case "running":
+			state = Yellow(state)
+		}
+		detail := job.Playlist
+		if job.Error != "" {
+			detail = job.Error
+		}
+		rows = append(rows, []string{state, progress, detail, job.URL, job.JobID})
+	}
+	return Table{
+		Columns: []Column{
+			{Title: "STATE"},
+			{Title: "PROGRESS", Align: AlignRight},
+			{Title: "PLAYLIST", Min: 12, Flex: 2},
+			{Title: "URL", Min: 16, Flex: 3, Style: Dim},
+			{Title: "JOB_ID", Style: Dim},
+		},
+		Rows: rows,
+	}.Render(), nil
 }
 
 // ZoneSourcesOutput wraps the controller's source list for rendering.

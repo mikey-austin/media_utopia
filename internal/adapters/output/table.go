@@ -64,7 +64,7 @@ func (t Table) Render() string {
 		for i := 0; i < ncols && i < len(row); i++ {
 			cell := sanitizeCell(row[i])
 			cells[i] = cell
-			if w := displayWidth(cell); w > widths[i] {
+			if w := cellWidth(cell); w > widths[i] {
 				widths[i] = w
 			}
 		}
@@ -134,9 +134,12 @@ func writeRow(b *strings.Builder, cells []string, cols []Column, widths []int, r
 	for i, col := range cols {
 		cell := cells[i]
 		if col.Flex > 0 {
+			// NOTE: flexible (truncatable) columns must carry plain text —
+			// truncation is not ANSI-aware. Pre-styled cells belong in
+			// rigid columns.
 			cell = truncateCell(cell, widths[i])
 		}
-		pad := widths[i] - displayWidth(cell)
+		pad := widths[i] - cellWidth(cell)
 		styled := cell
 		if rowStyle != nil {
 			styled = rowStyle(cell)
@@ -175,6 +178,12 @@ func trimTrailingSpaces(b *strings.Builder) {
 		b.Reset()
 		b.WriteString(trimmed)
 	}
+}
+
+// cellWidth measures a cell's visible width, ignoring SGR sequences so
+// pre-styled cells (e.g. a colored STATE column) still align.
+func cellWidth(s string) int {
+	return displayWidth(stripANSI(s))
 }
 
 func sanitizeCell(s string) string {

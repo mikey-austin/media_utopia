@@ -1197,6 +1197,61 @@ func (s Service) LibraryRescan(ctx context.Context, selector string, async bool,
 	return result, nil
 }
 
+// LibraryImport starts an asynchronous playlist import on the library.
+func (s Service) LibraryImport(ctx context.Context, selector string, url string) (LibraryImportResult, error) {
+	library, err := s.Resolver.ResolveLibrary(ctx, selector)
+	if err != nil {
+		return LibraryImportResult{}, err
+	}
+	body := struct {
+		URL string `json:"url"`
+	}{URL: url}
+	cmd, err := mu.NewCommand("library.import", body)
+	if err != nil {
+		return LibraryImportResult{}, WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, library.NodeID, cmd)
+	if err != nil {
+		return LibraryImportResult{}, WrapError(ExitRuntime, "publish command", err)
+	}
+	if reply.Err != nil {
+		return LibraryImportResult{}, ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	var result LibraryImportResult
+	if err := json.Unmarshal(reply.Body, &result); err != nil {
+		return LibraryImportResult{}, WrapError(ExitRuntime, "decode import reply", err)
+	}
+	result.LibraryID = library.NodeID
+	return result, nil
+}
+
+// LibraryImports lists the library's import jobs, newest first.
+func (s Service) LibraryImports(ctx context.Context, selector string) (LibraryImportsResult, error) {
+	library, err := s.Resolver.ResolveLibrary(ctx, selector)
+	if err != nil {
+		return LibraryImportsResult{}, err
+	}
+	cmd, err := mu.NewCommand("library.imports", struct{}{})
+	if err != nil {
+		return LibraryImportsResult{}, WrapError(ExitRuntime, "build command", err)
+	}
+	cmd = s.decorateCommand(cmd, nil, nil)
+	reply, err := s.Broker.PublishCommand(ctx, library.NodeID, cmd)
+	if err != nil {
+		return LibraryImportsResult{}, WrapError(ExitRuntime, "publish command", err)
+	}
+	if reply.Err != nil {
+		return LibraryImportsResult{}, ErrorForReplyCode(reply.Err.Code, reply.Err.Message)
+	}
+	var result LibraryImportsResult
+	if err := json.Unmarshal(reply.Body, &result); err != nil {
+		return LibraryImportsResult{}, WrapError(ExitRuntime, "decode imports reply", err)
+	}
+	result.LibraryID = library.NodeID
+	return result, nil
+}
+
 // LibraryResolve fetches catalog metadata for an item; when includeSources is true,
 // it additionally resolves playable sources via library.resolveSources.
 func (s Service) LibraryResolve(ctx context.Context, selector string, itemID string, includeSources bool) (LibraryResolveResult, error) {
