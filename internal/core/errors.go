@@ -27,6 +27,12 @@ func (e *CLIError) Error() string {
 }
 
 // WrapError creates a CLIError with an underlying error.
+// NewUsageError builds a usage-class CLI error.
+func NewUsageError(msg string) *CLIError { return &CLIError{Code: ExitUsage, Msg: msg} }
+
+// NewNotFoundError builds a not-found CLI error.
+func NewNotFoundError(msg string) *CLIError { return &CLIError{Code: ExitNotFound, Msg: msg} }
+
 func WrapError(code int, msg string, err error) *CLIError {
 	return &CLIError{Code: code, Msg: msg, Err: err}
 }

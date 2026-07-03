@@ -69,6 +69,12 @@ func filterPresenceByKind(presence []mu.Presence, kind string) []mu.Presence {
 	return out
 }
 
+// ResolveSelectorIn resolves a selector against an explicit presence set
+// (any kind) using the same forgiving matching as the kind-scoped resolvers.
+func ResolveSelectorIn(selector string, presence []mu.Presence, aliases map[string]string) (mu.Presence, error) {
+	return resolveSelector(selector, presence, aliases)
+}
+
 func resolveSelector(selector string, presence []mu.Presence, aliases map[string]string) (mu.Presence, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {

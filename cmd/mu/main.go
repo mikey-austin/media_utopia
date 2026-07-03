@@ -126,15 +126,16 @@ Environment variables:
 			return err
 		}
 
+		defaults := cfg.EffectiveDefaults()
 		coreCfg := core.Config{
 			Broker:    broker,
 			Identity:  identity,
 			TopicBase: topicBase,
 			Aliases:   cfg.Aliases,
 			Defaults: core.Defaults{
-				Renderer:       cfg.Defaults.Renderer,
-				PlaylistServer: cfg.Defaults.PlaylistServer,
-				Library:        cfg.Defaults.Library,
+				Renderer:       defaults.Renderer,
+				PlaylistServer: defaults.PlaylistServer,
+				Library:        defaults.Library,
 			},
 		}
 
