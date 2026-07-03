@@ -380,6 +380,14 @@ type Config struct {
 	// text search returns no hits.
 	AcoustIDAPIKey string
 
+	// ImportDir is where 'library.import' downloads land. Relative values
+	// resolve under the first root (default "youtube"); absolute values
+	// must lie inside one of the roots.
+	ImportDir string
+
+	// YtDlpPath overrides the yt-dlp binary used for imports (default "yt-dlp").
+	YtDlpPath string
+
 	// SummaryModel is the Ollama model for generating album summaries (default: "gemma3:12b").
 	SummaryModel string
 
@@ -466,6 +474,9 @@ type Module struct {
 	// summaryAttempts / genreAttempts rate-limit failing LLM backfill work.
 	summaryAttempts attemptTracker
 	genreAttempts   attemptTracker
+
+	// importer manages YouTube playlist import jobs.
+	importer *importManager
 
 	// queryEmbeds memoizes query-embedding vectors for search.
 	queryEmbeds  queryEmbedCache
@@ -766,6 +777,14 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		return nil, err
 	}
 
+	importDir, err := resolveImportDir(cfg.ImportDir, cfg.Roots)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.YtDlpPath) == "" {
+		cfg.YtDlpPath = "yt-dlp"
+	}
+
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
 
 	// Initialize embedding provider if configured
@@ -851,7 +870,7 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		}
 	}
 
-	return &Module{
+	m := &Module{
 		log:      log,
 		client:   client,
 		config:   cfg,
@@ -871,7 +890,20 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 		summaryGen:      summaryGen,
 		genreClassifier: genreClassifier,
 		artCache:        make(map[string]*artCacheEntry),
-	}, nil
+	}
+	m.importer = newImportManager(importManagerConfig{
+		ImportDir: importDir,
+		Log:       log,
+		Starter:   execYtDlp(cfg.YtDlpPath),
+		Rescan: func() {
+			m.goSafe("post-import-rescan", func() {
+				if err := m.scanCtx(context.Background()); err != nil {
+					m.log.Warn("post-import rescan failed", zap.Error(err))
+				}
+			})
+		},
+	})
+	return m, nil
 }
 
 // Run starts the module.
@@ -887,6 +919,7 @@ func (m *Module) Run(ctx context.Context) error {
 	if err := m.loadIndex(); err != nil {
 		m.log.Debug("index load failed", zap.Error(err))
 	}
+	m.importer.start(ctx)
 	if m.config.ScanMode != "manual" {
 		if err := m.scanCtx(ctx); err != nil && ctx.Err() == nil {
 			m.log.Warn("initial scan failed", zap.Error(err))
@@ -949,6 +982,7 @@ func (m *Module) publishPresence() error {
 			"browse":       true,
 			"search":       true,
 			"rescan":       true,
+			"import":       true,
 		},
 		TS: time.Now().Unix(),
 	}
@@ -1049,6 +1083,10 @@ func (m *Module) dispatch(cmd mu.CommandEnvelope) mu.ReplyEnvelope {
 		return m.libraryResolveSourcesBatch(cmd, reply)
 	case "library.rescan":
 		return m.libraryRescan(cmd, reply)
+	case "library.import":
+		return m.libraryImport(cmd, reply)
+	case "library.imports":
+		return m.libraryImports(cmd, reply)
 	default:
 		return errorReply(cmd, "INVALID", "unsupported command")
 	}
@@ -1279,6 +1317,30 @@ func (m *Module) libraryResolveSourcesBatch(cmd mu.CommandEnvelope, reply mu.Rep
 }
 
 // rescanReply is the response for library.rescan.
+// libraryImport starts an asynchronous YouTube playlist import.
+func (m *Module) libraryImport(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(cmd.Body, &body); err != nil {
+		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	job, err := m.importer.enqueue(body.URL)
+	if err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	payload, _ := json.Marshal(map[string]string{"jobId": job.JobID, "status": job.State})
+	reply.Body = payload
+	return reply
+}
+
+// libraryImports reports the import job table, newest first.
+func (m *Module) libraryImports(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) mu.ReplyEnvelope {
+	payload, _ := json.Marshal(map[string]any{"jobs": m.importer.list()})
+	reply.Body = payload
+	return reply
+}
+
 type rescanReply struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
