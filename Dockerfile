@@ -77,6 +77,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libchromaprint1 \
     ffmpeg \
+    python3 \
+    python3-pip \
+    python3-certifi \
+ && pip3 install --break-system-packages yt-dlp \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/mud /usr/local/bin/mud
 USER 65532:65532
