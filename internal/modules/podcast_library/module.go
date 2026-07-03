@@ -66,15 +66,15 @@ type cmdWork struct {
 
 // Module provides podcast library behavior.
 type Module struct {
-	log         *zap.Logger
-	client      *mqttserver.Client
-	http        *http.Client
-	config      Config
-	cmdTopic    string
-	cmdQueue    chan cmdWork
-	dedup       *mu.CommandDedup
-	cacheMu     sync.Mutex
-	feeds       map[string]*feedCache
+	log           *zap.Logger
+	client        *mqttserver.Client
+	http          *http.Client
+	config        Config
+	cmdTopic      string
+	cmdQueue      chan cmdWork
+	dedup         *mu.CommandDedup
+	cacheMu       sync.Mutex
+	feeds         map[string]*feedCache
 	ytDlpRunner   func(ctx context.Context, args ...string) ([]byte, error)
 	resolvedURLs  resolvedURLCache
 	ytResolveOnce singleflight.Group
@@ -163,13 +163,13 @@ func NewModule(log *zap.Logger, client *mqttserver.Client, cfg Config) (*Module,
 	cmdTopic := mu.TopicCommands(cfg.TopicBase, cfg.NodeID)
 
 	m := &Module{
-		log:      log,
-		client:   client,
-		http:     &http.Client{Timeout: cfg.Timeout},
-		config:   cfg,
-		cmdTopic: cmdTopic,
-		cmdQueue: make(chan cmdWork, 64),
-		dedup:    mu.NewCommandDedup(128),
+		log:          log,
+		client:       client,
+		http:         &http.Client{Timeout: cfg.Timeout},
+		config:       cfg,
+		cmdTopic:     cmdTopic,
+		cmdQueue:     make(chan cmdWork, 64),
+		dedup:        mu.NewCommandDedup(128),
 		feeds:        make(map[string]*feedCache),
 		resolvedURLs: resolvedURLCache{entries: make(map[string]resolvedURLEntry)},
 	}

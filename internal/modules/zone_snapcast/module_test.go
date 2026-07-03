@@ -285,12 +285,12 @@ func TestZoneStatePublish(t *testing.T) {
 	// Verify that publishing zone state produces the correct topic, payload fields, and retained flag
 	// for different zone configurations (muted, different volumes, different sources).
 	tests := []struct {
-		name      string
-		zone      Zone
-		wantMute  bool
-		wantVol   float64
-		wantSrc   string
-		wantConn  bool
+		name     string
+		zone     Zone
+		wantMute bool
+		wantVol  float64
+		wantSrc  string
+		wantConn bool
 	}{
 		{
 			name: "unmuted full volume",
@@ -656,10 +656,10 @@ func TestHandleSelectSourceCommandNoGroup(t *testing.T) {
 func TestZoneIDFromNodeID(t *testing.T) {
 	// Test buildZoneID with various controller NodeID formats and edge cases.
 	tests := []struct {
-		name       string
+		name             string
 		controllerNodeID string
-		clientID   string
-		expected   string
+		clientID         string
+		expected         string
 	}{
 		{
 			name:             "standard 5-part node ID",
@@ -747,11 +747,11 @@ func TestMultipleZones(t *testing.T) {
 
 	// Add three zones with different states
 	zonesData := []struct {
-		nodeID   string
-		name     string
-		volume   float64
-		mute     bool
-		sourceID string
+		nodeID    string
+		name      string
+		volume    float64
+		mute      bool
+		sourceID  string
 		connected bool
 	}{
 		{"mu:zone:snapcast:home:kitchen", "Kitchen", 0.8, false, "mu:source:snapcast:home:default", true},

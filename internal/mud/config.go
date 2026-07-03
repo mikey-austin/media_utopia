@@ -83,32 +83,32 @@ type PlaylistConfig struct {
 
 // FSLibraryConfig configures the filesystem library module.
 type FSLibraryConfig struct {
-	Enabled           bool     `toml:"enabled"`
-	Name              string   `toml:"name"`
-	Provider          string   `toml:"provider"`
-	Resource          string   `toml:"resource"`
-	Roots             []string `toml:"roots"`
-	IncludeExts       []string `toml:"include_exts"`
-	HTTPListen        string   `toml:"http_listen"`
-	HTTPBaseURL       string   `toml:"http_base_url"`
-	IndexMode         string   `toml:"index_mode"`
-	IndexPath         string   `toml:"index_path"`
-	ScanIntervalMS    int64    `toml:"scan_interval_ms"`
-	ScanMode          string   `toml:"scan_mode"`
-	MetadataMode      string   `toml:"metadata_mode"`
-	RepairPolicy      string   `toml:"repair_policy"`
-	DedupePolicy      string   `toml:"dedupe_policy"`
-	EmbeddingProvider string   `toml:"embedding_provider"`
-	EmbeddingModel    string   `toml:"embedding_model"`
-	EmbeddingEndpoint string   `toml:"embedding_endpoint"`
-	EmbeddingCache    string   `toml:"embedding_cache"`
-	EmbeddingBatchSize int     `toml:"embedding_batch_size"`
-	EnrichEnabled     bool     `toml:"enrich_enabled"`
-	DiscogsToken      string   `toml:"discogs_token"`
-	AcoustIDAPIKey    string   `toml:"acoustid_api_key"`
-	SummaryModel      string   `toml:"summary_model"`
-	SummaryEndpoint   string   `toml:"summary_endpoint"`
-	GenreModel        string   `toml:"genre_model"`
+	Enabled            bool     `toml:"enabled"`
+	Name               string   `toml:"name"`
+	Provider           string   `toml:"provider"`
+	Resource           string   `toml:"resource"`
+	Roots              []string `toml:"roots"`
+	IncludeExts        []string `toml:"include_exts"`
+	HTTPListen         string   `toml:"http_listen"`
+	HTTPBaseURL        string   `toml:"http_base_url"`
+	IndexMode          string   `toml:"index_mode"`
+	IndexPath          string   `toml:"index_path"`
+	ScanIntervalMS     int64    `toml:"scan_interval_ms"`
+	ScanMode           string   `toml:"scan_mode"`
+	MetadataMode       string   `toml:"metadata_mode"`
+	RepairPolicy       string   `toml:"repair_policy"`
+	DedupePolicy       string   `toml:"dedupe_policy"`
+	EmbeddingProvider  string   `toml:"embedding_provider"`
+	EmbeddingModel     string   `toml:"embedding_model"`
+	EmbeddingEndpoint  string   `toml:"embedding_endpoint"`
+	EmbeddingCache     string   `toml:"embedding_cache"`
+	EmbeddingBatchSize int      `toml:"embedding_batch_size"`
+	EnrichEnabled      bool     `toml:"enrich_enabled"`
+	DiscogsToken       string   `toml:"discogs_token"`
+	AcoustIDAPIKey     string   `toml:"acoustid_api_key"`
+	SummaryModel       string   `toml:"summary_model"`
+	SummaryEndpoint    string   `toml:"summary_endpoint"`
+	GenreModel         string   `toml:"genre_model"`
 }
 
 // RendererGStreamerConfig configures the GStreamer renderer module.

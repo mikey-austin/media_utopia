@@ -29,29 +29,29 @@ type Popup struct {
 	win *gtk.Window
 
 	// Widgets
-	titleLabel  *gtk.Label
-	albumLabel  *gtk.Label
-	artistLabel *gtk.Label
-	artworkImg  *gtk.Image
-	seekBar     *gtk.Scale
-	posLabel    *gtk.Label
-	durLabel    *gtk.Label
-	playBtn     *gtk.Button
-	prevBtn     *gtk.Button
-	nextBtn     *gtk.Button
-	stopBtn     *gtk.Button
-	volumeBar   *gtk.Scale
-	volumeLabel *gtk.Label
-	queueBox    *gtk.Box
-	leaseBtn     *gtk.Button
-	leaseLabel   *gtk.Label
-	bitrateLabel *gtk.Label
+	titleLabel    *gtk.Label
+	albumLabel    *gtk.Label
+	artistLabel   *gtk.Label
+	artworkImg    *gtk.Image
+	seekBar       *gtk.Scale
+	posLabel      *gtk.Label
+	durLabel      *gtk.Label
+	playBtn       *gtk.Button
+	prevBtn       *gtk.Button
+	nextBtn       *gtk.Button
+	stopBtn       *gtk.Button
+	volumeBar     *gtk.Scale
+	volumeLabel   *gtk.Label
+	queueBox      *gtk.Box
+	leaseBtn      *gtk.Button
+	leaseLabel    *gtk.Label
+	bitrateLabel  *gtk.Label
 	playlistCombo *gtk.ComboBoxText
 
-	sendCmd          CommandFunc
-	onLeaseAcquire   LeaseFunc
-	onLeaseRelease   LeaseFunc
-	onLoadPlaylist   func(playlistID string)
+	sendCmd        CommandFunc
+	onLeaseAcquire LeaseFunc
+	onLeaseRelease LeaseFunc
+	onLoadPlaylist func(playlistID string)
 
 	// State tracking
 	seeking    bool

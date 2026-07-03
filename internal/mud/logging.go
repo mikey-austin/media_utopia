@@ -12,13 +12,13 @@ import (
 
 // LogConfig describes mud logging options.
 type LogConfig struct {
-	Level       string
+	Level        string
 	ModuleLevels map[string]string
-	Format      string
-	Output      string
-	AddSource   bool
-	UTC         bool
-	Color       bool
+	Format       string
+	Output       string
+	AddSource    bool
+	UTC          bool
+	Color        bool
 }
 
 // ModuleLoggerFactory creates loggers with per-module log levels.

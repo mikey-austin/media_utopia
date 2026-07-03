@@ -28,12 +28,12 @@ var ErrUnsupported = errors.New("unsupported")
 
 // Engine handles renderer commands, queue, and leases.
 type Engine struct {
-	Queue   *Queue
-	Leases  *LeaseManager
-	Driver  Driver
-	IDGen   idgen.Generator
-	NodeID  string
-	Name    string
+	Queue  *Queue
+	Leases *LeaseManager
+	Driver Driver
+	IDGen  idgen.Generator
+	NodeID string
+	Name   string
 
 	// State is the renderer's published state. ALL access (including reads
 	// from outside the engine) MUST go through SnapshotState / Update*
