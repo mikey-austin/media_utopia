@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mikey-austin/media_utopia/internal/adapters/output"
+	"github.com/mikey-austin/media_utopia/pkg/mu"
 )
 
 func libraryCommand() *cobra.Command {
@@ -133,8 +134,8 @@ func libSearchCommand() *cobra.Command {
 			defer cancel()
 
 			selector, query := splitSearchArgs(args, func(sel string) bool {
-				_, err := app.service.Resolver.ResolveLibrary(ctx, sel)
-				return err == nil
+				p, err := app.service.Resolver.ResolveLibrary(ctx, sel)
+				return err == nil && greedySelectorMatch(p, sel, app.service.Config.Aliases)
 			})
 			typeList, err := parseLibraryTypes(types)
 			if err != nil {
@@ -245,6 +246,24 @@ Examples:
 	cmd.Flags().BoolVar(&async, "async", false, "run rescan in background")
 	cmd.Flags().BoolVar(&force, "force", false, "force re-enrichment of all albums")
 	return cmd
+}
+
+// greedySelectorMatch decides whether an implicit first argument really
+// names the resolved node. Deliberately stricter than full resolution:
+// exact name/ID/alias or a name prefix only — substring matches would
+// steal query words ("me" resolving to the "Cameras" library turned
+// 'search me at the zoo' into a camera search).
+func greedySelectorMatch(p mu.Presence, sel string, aliases map[string]string) bool {
+	if strings.EqualFold(p.Name, sel) || strings.EqualFold(p.NodeID, sel) {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(p.Name), strings.ToLower(sel)) {
+		return true
+	}
+	if target, ok := aliases[sel]; ok && strings.EqualFold(target, p.NodeID) {
+		return true
+	}
+	return false
 }
 
 // splitSearchArgs decides which arguments are the library selector and

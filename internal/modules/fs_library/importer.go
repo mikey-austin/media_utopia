@@ -200,6 +200,7 @@ func (m *importManager) runJob(ctx context.Context, job *importJob) {
 	}
 
 	m.fetchCover(ctx, albumDir, thumbnail)
+	cleanThumbnailSidecars(albumDir)
 
 	m.update(job, func(j *importJob) {
 		j.State = "done"
@@ -276,7 +277,13 @@ func (m *importManager) download(ctx context.Context, job *importJob, albumDir s
 		"-x", "--audio-format", "flac", "--audio-quality", "0",
 		"--embed-metadata", "--embed-thumbnail",
 		"--parse-metadata", "playlist_index:%(track_number)s",
+		// Album = playlist title, falling back to the video title for
+		// single-video URLs (otherwise those land in "Unknown Album").
+		"--parse-metadata", "%(playlist_title,title)s:%(meta_album)s",
 		"--ignore-errors", "--no-overwrites", "--no-progress", "--no-warnings",
+		// --print implies --quiet; without --no-quiet the "already recorded
+		// in the archive" lines never reach stdout and skips read as failures.
+		"--no-quiet",
 		"--download-archive", filepath.Join(albumDir, ".yt-archive"),
 		"--print", "after_move:filepath",
 		"-o", filepath.Join(albumDir, "%(playlist_index|0)02d - %(title)s.%(ext)s"),
@@ -391,6 +398,35 @@ func safeImportName(name string) string {
 		return "Unknown Playlist"
 	}
 	return name
+}
+
+// cleanThumbnailSidecars removes the intermediate thumbnail files yt-dlp
+// leaves next to tracks after embedding (keeping cover.*, which the album
+// grid uses).
+func cleanThumbnailSidecars(albumDir string) {
+	entries, err := os.ReadDir(albumDir)
+	if err != nil {
+		return
+	}
+	flacs := map[string]bool{}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".flac") {
+			flacs[strings.TrimSuffix(e.Name(), ".flac")] = true
+		}
+	}
+	for _, e := range entries {
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext != ".png" && ext != ".webp" && ext != ".jpg" && ext != ".jpeg" {
+			continue
+		}
+		base := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		if strings.HasPrefix(strings.ToLower(e.Name()), "cover.") {
+			continue
+		}
+		if flacs[base] {
+			_ = os.Remove(filepath.Join(albumDir, e.Name()))
+		}
+	}
 }
 
 // resolveImportDir validates the import_dir config value and returns the
