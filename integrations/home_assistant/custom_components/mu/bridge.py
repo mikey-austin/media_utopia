@@ -16,6 +16,7 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.network import get_url
 from homeassistant.helpers.storage import Store
 import voluptuous as vol
@@ -67,7 +68,8 @@ class MudBridge:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        data = entry.data
+        # Options (settings changed post-setup) override the original data.
+        data = {**entry.data, **(getattr(entry, "options", None) or {})}
         self.topic_base = data.get(CONF_TOPIC_BASE, DEFAULT_TOPIC_BASE)
         self.discovery_prefix = data.get(CONF_DISCOVERY_PREFIX, DEFAULT_DISCOVERY_PREFIX)
         self.entity_prefix = data.get(CONF_ENTITY_PREFIX, DEFAULT_ENTITY_PREFIX)
@@ -92,8 +94,30 @@ class MudBridge:
         self._renderer_state_listeners: list[Callable] = []
         self._metadata_cache: dict[str, dict[str, Any]] = {}
         self._metadata_failures: dict[str, float] = {}
-        self._request_sema = asyncio.Semaphore(4)
+        # Per-node request semaphores so an unresponsive node cannot starve
+        # commands to healthy nodes (each reply-wait holds a slot for up to
+        # the full reply timeout).
+        self._request_semas: dict[str, asyncio.Semaphore] = {}
         self._metadata_sema = asyncio.Semaphore(2)
+        # Nodes that recently timed out; used to demote repeat timeout logs
+        # and mark renderers unavailable until they are heard from again.
+        self._unresponsive_nodes: set[str] = set()
+        # State messages that arrived before their node's presence.
+        self._pending_states: dict[str, dict[str, Any]] = {}
+        # Last discovery/state payload published per playlist, to avoid
+        # republishing retained messages (and Store writes) every refresh.
+        self._published_playlists: dict[str, tuple] = {}
+        self._playlist_outage_logged = False
+        self._bg_tasks: set[asyncio.Task] = set()
+        # Hosts the artwork proxy may fetch from (shared with ArtworkProxyView
+        # to keep the unauthenticated proxy from being an open SSRF relay).
+        self._artwork_hosts: set[str] = hass.data.setdefault(DOMAIN, {}).setdefault(
+            "artwork_hosts", set()
+        )
+        if self.artwork_base_url:
+            base_netloc = urlparse(self.artwork_base_url).netloc
+            if base_netloc:
+                self._artwork_hosts.add(base_netloc)
         self._libraries: dict[str, dict[str, Any]] = {}
         self._playlist_servers: dict[str, dict[str, Any]] = {}  # All servers by nodeId
         self._selected_playlist_server: str | None = None  # Currently selected server
@@ -111,7 +135,8 @@ class MudBridge:
     async def async_start(self) -> None:
         """Start the bridge."""
         self._ready = False
-        await mqtt.async_wait_for_mqtt_client(self.hass)
+        if not await mqtt.async_wait_for_mqtt_client(self.hass):
+            raise ConfigEntryNotReady("MQTT broker is not available")
 
         await self._cleanup_discovery_topics()
 
@@ -152,7 +177,23 @@ class MudBridge:
         self._unsubscribes.clear()
         if self._playlist_task:
             self._playlist_task.cancel()
+            try:
+                await self._playlist_task
+            except (asyncio.CancelledError, Exception):
+                pass
             self._playlist_task = None
+        for task in list(self._bg_tasks):
+            task.cancel()
+        self._bg_tasks.clear()
+        # Wake up any callers still waiting on replies so they fail fast
+        # instead of running out their full timeout against a dead bridge.
+        for future in self._pending.values():
+            if not future.done():
+                future.cancel()
+        self._pending.clear()
+        for service in ("load_playlist", "clear_queue", "shuffle_queue", "save_snapshot"):
+            if self.hass.services.has_service(DOMAIN, service):
+                self.hass.services.async_remove(DOMAIN, service)
         await self._save_discovery_topics()
 
     async def _cleanup_discovery_topics(self) -> None:
@@ -291,27 +332,47 @@ class MudBridge:
         reply_type = payload.get("type", "?")
         err = payload.get("err") or {}
         err_info = f" err={err.get('code')}:{err.get('message','')}" if err else ""
-        _LOGGER.warning(
-            "DIAG reply cmd_id=%s type=%s ok=%s%s",
-            cmd_id[:12] if cmd_id else "?", reply_type, payload.get("ok"), err_info,
+        log = _LOGGER.info if err else _LOGGER.debug
+        log(
+            "reply cmd_id=%s type=%s ok=%s%s",
+            str(cmd_id)[:12], reply_type, payload.get("ok"), err_info,
         )
         future = self._pending.pop(cmd_id, None)
         if future and not future.done():
             future.set_result(payload)
 
     async def _on_presence(self, msg) -> None:
+        if not msg.payload:
+            # Retained presence cleared: the node was removed.
+            self._remove_node(self._node_id_from_topic(msg.topic))
+            return
         try:
             payload = json.loads(msg.payload)
         except Exception:
+            _LOGGER.debug("dropping malformed presence on %s", msg.topic)
             return
         node_id = payload.get("nodeId")
         kind = payload.get("kind")
         if not node_id or not kind:
             return
         _LOGGER.debug("presence %s kind=%s", node_id, kind)
+        self._unresponsive_nodes.discard(node_id)
         if kind == "renderer":
             payload["online"] = True
-            self._renderers[node_id] = payload
+            existing = self._renderers.get(node_id)
+            if existing is not None:
+                # Merge so a presence re-announce (renderer restart or MQTT
+                # retained redelivery) does not wipe the cached state.
+                existing.update(payload)
+            else:
+                self._renderers[node_id] = payload
+                pending = self._pending_states.pop(node_id, None)
+                if pending is not None:
+                    payload["state"] = pending
+            # A presence re-announce usually means the renderer restarted
+            # and lost its sessions; drop the cached lease so the next
+            # command reacquires instead of being rejected for ~90s.
+            self._leases.pop(node_id, None)
             self._notify_renderer_listeners(node_id)
         elif kind == "library":
             self._libraries[node_id] = payload
@@ -336,8 +397,33 @@ class MudBridge:
             self._zone_controllers[node_id] = payload
             self._notify_zone_controller_listeners(node_id)
         elif kind == "zone":
-            self._zones[node_id] = payload
+            existing_zone = self._zones.get(node_id)
+            if existing_zone is not None:
+                existing_zone.update(payload)
+            else:
+                self._zones[node_id] = payload
+                pending = self._pending_states.pop(node_id, None)
+                if pending is not None:
+                    payload["state"] = pending
             self._notify_zone_listeners(node_id)
+
+    def _remove_node(self, node_id: str | None) -> None:
+        """Forget a node whose retained presence was cleared."""
+        if not node_id:
+            return
+        if self._renderers.pop(node_id, None) is not None:
+            self._leases.pop(node_id, None)
+            self._notify_renderer_listeners(node_id)
+        if self._zones.pop(node_id, None) is not None:
+            self._notify_zone_listeners(node_id)
+        if self._zone_controllers.pop(node_id, None) is not None:
+            self._notify_zone_controller_listeners(node_id)
+        self._libraries.pop(node_id, None)
+        if self._playlist_servers.pop(node_id, None) is not None:
+            if self._selected_playlist_server == node_id:
+                self._selected_playlist_server = next(iter(self._playlist_servers), None)
+        self._pending_states.pop(node_id, None)
+        self._unresponsive_nodes.discard(node_id)
 
     def _cache_metadata(self, key: str, metadata: dict[str, Any]) -> None:
         """Cache metadata with size limit."""
@@ -372,20 +458,31 @@ class MudBridge:
         try:
             payload = json.loads(msg.payload)
         except Exception:
+            _LOGGER.debug("dropping malformed state on %s", msg.topic)
             return
         node_id = self._node_id_from_topic(msg.topic)
         if node_id is None:
             return
+        self._unresponsive_nodes.discard(node_id)
         if node_id in self._renderers:
             _LOGGER.debug("state %s status=%s", node_id, (payload.get("playback") or {}).get("status"))
-            self._renderers[node_id]["state"] = payload
+            info = self._renderers[node_id]
+            info["state"] = payload
+            if not info.get("online", True):
+                info["online"] = True
+                self._notify_renderer_listeners(node_id)
             self._maybe_resolve_metadata(node_id, payload)
             self._notify_renderer_state_listeners(node_id, payload)
             await self._publish_renderer_state(node_id, payload)
-
-        if node_id in self._zones:
+        elif node_id in self._zones:
             self._zones[node_id]["state"] = payload
             self._notify_zone_state_listeners(node_id, payload)
+        else:
+            # Retained state can arrive before retained presence (independent
+            # subscriptions); buffer it so idle nodes aren't blank after restart.
+            if len(self._pending_states) > 100:
+                self._pending_states.pop(next(iter(self._pending_states)))
+            self._pending_states[node_id] = payload
 
     def register_renderer_listener(self, callback) -> None:
         self._renderer_listeners.append(callback)
@@ -473,12 +570,6 @@ class MudBridge:
         """Get the full info dict for a renderer."""
         return self._renderers.get(node_id)
 
-    def _mark_all_offline(self) -> None:
-        """Mark all renderers as offline (e.g., on MQTT disconnect)."""
-        for node_id, info in self._renderers.items():
-            info["online"] = False
-        _LOGGER.warning("marked all renderers offline")
-
     def register_zone_listener(self, callback) -> None:
         if callback not in self._zone_listeners:
             self._zone_listeners.append(callback)
@@ -531,24 +622,25 @@ class MudBridge:
             return None
         return str(controller_id)
 
-    async def async_zone_set_volume(self, node_id: str, volume: float) -> None:
-        await self._send_zone_command(node_id, "zone.setVolume", {"volume": volume})
+    async def async_zone_set_volume(self, node_id: str, volume: float) -> bool:
+        volume = max(0.0, min(1.0, float(volume)))
+        return await self._send_zone_command(node_id, "zone.setVolume", {"volume": volume})
 
-    async def async_zone_set_mute(self, node_id: str, mute: bool) -> None:
-        await self._send_zone_command(node_id, "zone.setMute", {"mute": mute})
+    async def async_zone_set_mute(self, node_id: str, mute: bool) -> bool:
+        return await self._send_zone_command(node_id, "zone.setMute", {"mute": mute})
 
-    async def async_zone_select_source(self, node_id: str, source_id: str) -> None:
-        await self._send_zone_command(
+    async def async_zone_select_source(self, node_id: str, source_id: str) -> bool:
+        return await self._send_zone_command(
             node_id, "zone.selectSource", {"sourceId": source_id}
         )
 
     async def _send_zone_command(
         self, zone_id: str, cmd_type: str, body: dict[str, Any]
-    ) -> None:
+    ) -> bool:
         controller_id = self._zone_controller_id(zone_id)
         if controller_id is None:
             _LOGGER.warning("zone controller missing for %s cmd=%s", zone_id, cmd_type)
-            return
+            return False
         payload = {"zoneId": zone_id, **body}
         _LOGGER.debug(
             "send zone cmd=%s controller=%s zone=%s body=%s",
@@ -557,12 +649,13 @@ class MudBridge:
             zone_id,
             body,
         )
-        await self._publish_command(
+        reply = await self._request(
             controller_id,
             cmd_type,
             payload,
             need_lease=False,
         )
+        return reply is not None and reply.get("type") == "ack"
 
     @property
     def _playlist_server(self) -> dict[str, Any] | None:
@@ -725,6 +818,14 @@ class MudBridge:
             if last_fail and time.time() - last_fail < 60:
                 continue
             groups.setdefault(ref["libraryId"], []).append(ref)
+
+        # Prune expired failure-backoff entries so the map cannot grow
+        # unboundedly on a long-running install with a churning library.
+        if len(self._metadata_failures) > 1000:
+            cutoff = time.time() - 60
+            self._metadata_failures = {
+                k: v for k, v in self._metadata_failures.items() if v >= cutoff
+            }
 
         for library_id, library_refs in groups.items():
             async with self._metadata_sema:
@@ -944,6 +1045,12 @@ class MudBridge:
     def _proxy_artwork_url(self, url: str) -> str | None:
         if not url:
             return None
+        try:
+            upstream_netloc = urlparse(url).netloc
+            if upstream_netloc:
+                self._artwork_hosts.add(upstream_netloc)
+        except Exception:
+            pass
         base_url = ""
         # Try to get external URL first (for reverse proxy setups)
         try:
@@ -1061,16 +1168,19 @@ class MudBridge:
             return
         await self._queue_set_and_fill(node_id, entries)
 
-    async def async_play(self, node_id: str) -> None:
-        await self._send_renderer_command(node_id, "playback.play", {})
+    async def async_play(self, node_id: str) -> bool:
+        return await self._send_renderer_command(node_id, "playback.play", {})
 
-    async def async_pause(self, node_id: str) -> None:
-        await self._send_renderer_command(node_id, "playback.pause", {})
+    async def async_pause(self, node_id: str) -> bool:
+        return await self._send_renderer_command(node_id, "playback.pause", {})
 
-    async def async_stop(self, node_id: str) -> None:
-        await self._send_renderer_command(node_id, "playback.stop", {})
+    async def async_stop_playback(self, node_id: str) -> bool:
+        # NOTE: deliberately not named async_stop — that is the bridge
+        # lifecycle method; a same-named playback method silently shadowed
+        # it, so unload never actually stopped the bridge.
+        return await self._send_renderer_command(node_id, "playback.stop", {})
 
-    async def async_next(self, node_id: str) -> None:
+    async def async_next(self, node_id: str) -> bool:
         state = self.get_renderer_state(node_id)
         queue = state.get("queue") or {}
         index = queue.get("index")
@@ -1078,37 +1188,43 @@ class MudBridge:
         repeat = queue.get("repeat")
         if isinstance(index, int) and isinstance(length, int) and length > 0:
             if index >= length-1 and not repeat:
-                await self._send_renderer_command(node_id, "playback.stop", {})
-                return
-        await self._send_renderer_command(node_id, "playback.next", {})
+                return await self._send_renderer_command(node_id, "playback.stop", {})
+        return await self._send_renderer_command(node_id, "playback.next", {})
 
-    async def async_previous(self, node_id: str) -> None:
+    async def async_previous(self, node_id: str) -> bool:
         state = self.get_renderer_state(node_id)
         queue = state.get("queue") or {}
         index = queue.get("index")
         repeat = queue.get("repeat")
         if isinstance(index, int) and index <= 0 and not repeat:
-            await self._send_renderer_command(node_id, "playback.play", {"index": 0})
-            return
-        await self._send_renderer_command(node_id, "playback.prev", {})
+            return await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+        return await self._send_renderer_command(node_id, "playback.prev", {})
 
-    async def async_set_volume(self, node_id: str, volume: float) -> None:
-        await self._send_renderer_command(node_id, "playback.setVolume", {"volume": volume})
-
-    async def async_mute(self, node_id: str, muted: bool) -> None:
-        await self._send_renderer_command(node_id, "playback.setMute", {"mute": muted})
-
-    async def async_seek(self, node_id: str, position: float) -> None:
-        await self._send_renderer_command(
-            node_id, "playback.seek", {"positionMs": int(position * 1000)}
+    async def async_set_volume(self, node_id: str, volume: float) -> bool:
+        volume = max(0.0, min(1.0, float(volume)))
+        return await self._send_renderer_command(
+            node_id, "playback.setVolume", {"volume": volume}
         )
 
-    async def async_get_queue(self, node_id: str) -> list[dict[str, Any]]:
+    async def async_mute(self, node_id: str, muted: bool) -> bool:
+        return await self._send_renderer_command(node_id, "playback.setMute", {"mute": muted})
+
+    async def async_seek(self, node_id: str, position: float) -> bool:
+        return await self._send_renderer_command(
+            node_id, "playback.seek", {"positionMs": int(max(0.0, position) * 1000)}
+        )
+
+    async def async_get_queue(self, node_id: str) -> list[dict[str, Any]] | None:
         """Fetch the current queue entries for a renderer.
 
         Each entry carries its own `display` block (and optional `ref`/
         `resolved`) — controllers do NOT need to follow up with library
         lookups for ordinary rendering.
+
+        Returns None when the renderer did not answer (as opposed to an
+        empty queue) so callers never mistake a fetch failure for an empty
+        queue — e.g. save-queue-to-playlist must not wipe a playlist
+        because a renderer timed out.
         """
         state = self.get_renderer_state(node_id)
         queue = state.get("queue") or {}
@@ -1119,23 +1235,33 @@ class MudBridge:
         from_index = 0
         page_size = 100
         while from_index < length:
-            reply = await self._request(
-                node_id,
-                "queue.get",
-                {"from": from_index, "count": page_size},
-                need_lease=False,
-            )
-            if reply is None or reply.get("type") != "ack":
+            page = await self.async_get_queue_page(node_id, from_index, page_size)
+            if page is None:
+                return None
+            if not page:
                 break
-            body = reply.get("body") or {}
-            for entry in body.get("entries") or []:
-                entries.append(entry)
-            from_index += page_size
+            entries.extend(page)
+            from_index += len(page)
         return entries
 
-    async def async_queue_jump(self, node_id: str, index: int) -> None:
+    async def async_get_queue_page(
+        self, node_id: str, from_index: int, count: int
+    ) -> list[dict[str, Any]] | None:
+        """Fetch one window of a renderer queue; None on failure."""
+        reply = await self._request(
+            node_id,
+            "queue.get",
+            {"from": from_index, "count": count},
+            need_lease=False,
+        )
+        if reply is None or reply.get("type") != "ack":
+            return None
+        body = reply.get("body") or {}
+        return list(body.get("entries") or [])
+
+    async def async_queue_jump(self, node_id: str, index: int) -> bool:
         """Jump to a specific queue index and start playback."""
-        await self._send_renderer_command(node_id, "playback.play", {"index": index})
+        return await self._send_renderer_command(node_id, "playback.play", {"index": index})
 
     async def async_queue_add(
         self, node_id: str, items: list[Any], mode: str = "append"
@@ -1191,7 +1317,11 @@ class MudBridge:
         return reply is not None and reply.get("type") == "ack"
 
     async def async_queue_remove(
-        self, node_id: str, entry_id: str | None = None, index: int | None = None
+        self,
+        node_id: str,
+        entry_id: str | None = None,
+        index: int | None = None,
+        if_revision: int | None = None,
     ) -> bool:
         """Remove item from queue by entry ID or index."""
         body: dict[str, Any] = {}
@@ -1201,7 +1331,9 @@ class MudBridge:
             body["index"] = index
         else:
             return False
-        reply = await self._request_with_lease(node_id, "queue.remove", body)
+        reply = await self._request_with_lease(
+            node_id, "queue.remove", body, if_revision=if_revision
+        )
         return reply is not None and reply.get("type") == "ack"
 
     async def async_queue_move(
@@ -1209,10 +1341,9 @@ class MudBridge:
     ) -> bool:
         """Move queue entry from one index to another."""
         body: dict[str, Any] = {"fromIndex": from_index, "toIndex": to_index}
-        if if_revision is not None:
-            # Add revision guard to request envelope, not body
-            pass  # ifRevision is handled at envelope level in _request
-        reply = await self._request_with_lease(node_id, "queue.move", body)
+        reply = await self._request_with_lease(
+            node_id, "queue.move", body, if_revision=if_revision
+        )
         return reply is not None and reply.get("type") == "ack"
 
     async def async_queue_clear(self, node_id: str) -> bool:
@@ -1382,52 +1513,56 @@ class MudBridge:
         )
         return reply is not None and reply.get("type") == "ack"
 
-    async def async_shuffle(self, node_id: str, shuffle: bool) -> None:
+    async def async_shuffle(self, node_id: str, shuffle: bool) -> bool:
         if shuffle:
-            await self._send_renderer_command(node_id, "queue.shuffle", {"seed": int(time.time())})
-            return
-        await self._send_renderer_command(node_id, "queue.setShuffle", {"shuffle": False})
+            return await self._send_renderer_command(
+                node_id, "queue.shuffle", {"seed": int(time.time())}
+            )
+        return await self._send_renderer_command(
+            node_id, "queue.setShuffle", {"shuffle": False}
+        )
 
-    async def async_repeat(self, node_id: str, repeat: bool) -> None:
+    async def async_repeat(self, node_id: str, repeat: bool) -> bool:
         mode = "all" if repeat else "off"
-        await self._send_renderer_command(node_id, "queue.setRepeat", {"repeat": repeat, "mode": mode})
+        return await self._send_renderer_command(
+            node_id, "queue.setRepeat", {"repeat": repeat, "mode": mode}
+        )
 
-    async def async_repeat_mode(self, node_id: str, mode: str) -> None:
+    async def async_repeat_mode(self, node_id: str, mode: str) -> bool:
         mode = (mode or "").lower()
         repeat = mode in {"all", "one", "single", "on", "true"}
-        await self._send_renderer_command(
+        return await self._send_renderer_command(
             node_id,
             "queue.setRepeat",
             {"repeat": repeat, "mode": mode},
         )
 
-    async def async_play_media(self, node_id: str, media_id: Any) -> None:
+    async def async_play_media(self, node_id: str, media_id: Any) -> bool:
         if isinstance(media_id, dict):
             entries = await self._resolve_media_entries(media_id)
-            await self._queue_set_and_fill(node_id, entries)
-            return
+            return await self._queue_set_and_fill(node_id, entries)
         text = str(media_id)
         if text.startswith("playlist:"):
             playlist_id = text[len("playlist:") :]
             if "?page=" in playlist_id:
                 playlist_id = playlist_id.split("?page=", 1)[0]
             playlist_id = playlist_id.strip()
-            if playlist_id:
-                await self.async_load_playlist(node_id, playlist_id)
-            return
+            if not playlist_id:
+                return False
+            return await self.async_load_playlist(node_id, playlist_id)
         if text.startswith("snapshot:"):
             snapshot_id = text[len("snapshot:") :]
             if "?page=" in snapshot_id:
                 snapshot_id = snapshot_id.split("?page=", 1)[0]
             snapshot_id = snapshot_id.strip()
-            if snapshot_id:
-                await self.async_load_snapshot(node_id, snapshot_id)
-            return
+            if not snapshot_id:
+                return False
+            return await self.async_load_snapshot(node_id, snapshot_id)
         if text.startswith("library:"):
             await self.async_play_library_container(node_id, text)
-            return
+            return True
         entries = await self._resolve_media_entries(text)
-        await self._queue_set_and_fill(node_id, entries)
+        return await self._queue_set_and_fill(node_id, entries)
 
     async def async_fetch_playlist(self, playlist_id: str) -> dict[str, Any] | None:
         if self._playlist_server is None:
@@ -1485,13 +1620,13 @@ class MudBridge:
         )
         return bool(reply and reply.get("type") == "ack")
 
-    async def async_load_snapshot(self, renderer_id: str, snapshot_id: str) -> None:
+    async def async_load_snapshot(self, renderer_id: str, snapshot_id: str) -> bool:
         # Fetch + hydrate client-side rather than going through queue.loadSnapshot,
         # so legacy snapshots that lack `display` get backfilled here. The
         # renderer's own queue.loadSnapshot handler resolves sources but cannot
         # fetch catalog metadata, which is the controller's responsibility.
         if self._playlist_server is None:
-            return
+            return False
         snapshot = await self._request(
             self._playlist_server["nodeId"],
             "snapshot.get",
@@ -1499,7 +1634,7 @@ class MudBridge:
             need_lease=False,
         )
         if snapshot is None or snapshot.get("type") != "ack":
-            return
+            return False
         body = snapshot.get("body") or {}
         entries = body.get("entries") or []
         playable: list[dict[str, Any]] = []
@@ -1508,7 +1643,7 @@ class MudBridge:
             if normalized is not None:
                 playable.append(normalized)
         playable = await self._hydrate_entries(playable)
-        await self._queue_set_and_fill_from_playlist_entries(renderer_id, playable)
+        return await self._queue_set_and_fill_from_playlist_entries(renderer_id, playable)
 
     async def async_save_snapshot(self, renderer_id: str, name: str) -> bool:
         name = (name or "").strip()
@@ -1525,6 +1660,9 @@ class MudBridge:
         playback = state.get("playback") or {}
         session = state.get("session") or {}
         entries = await self.async_get_queue(renderer_id)
+        if entries is None:
+            _LOGGER.warning("snapshot save failed: queue fetch from %s failed", renderer_id)
+            return False
         snapshot_entries: list[dict[str, Any]] = []
         for entry in entries:
             normalized = self._normalize_queue_entry_for_save(entry)
@@ -1727,9 +1865,10 @@ class MudBridge:
 
     async def async_load_playlist(
         self, renderer_id: str, playlist_id: str, mode: str = "replace", resolve: str = "auto"
-    ) -> None:
+    ) -> bool:
         if self._playlist_server is None:
-            return
+            _LOGGER.warning("load_playlist failed: no playlist server available")
+            return False
         if mode != "replace":
             body = {
                 "playlistServerId": self._playlist_server["nodeId"],
@@ -1744,9 +1883,8 @@ class MudBridge:
                 timeout_seconds=RENDERER_LOAD_TIMEOUT_SECONDS,
             )
             if reply is None or reply.get("type") != "ack":
-                return
-            await self._send_renderer_command(renderer_id, "playback.play", {})
-            return
+                return False
+            return await self._send_renderer_command(renderer_id, "playback.play", {})
         playlist = await self._request(
             self._playlist_server["nodeId"],
             "playlist.get",
@@ -1754,7 +1892,8 @@ class MudBridge:
             need_lease=False,
         )
         if playlist is None or playlist.get("type") != "ack":
-            return
+            _LOGGER.warning("load_playlist failed: could not fetch %s", playlist_id)
+            return False
         entries = (playlist.get("body") or {}).get("entries") or []
         playable_entries: list[dict[str, Any]] = []
         for entry in entries:
@@ -1762,20 +1901,30 @@ class MudBridge:
             if normalized is not None:
                 playable_entries.append(normalized)
         playable_entries = await self._hydrate_entries(playable_entries)
-        await self._queue_set_and_fill_from_playlist_entries(renderer_id, playable_entries)
+        return await self._queue_set_and_fill_from_playlist_entries(
+            renderer_id, playable_entries
+        )
 
-    async def _queue_set_and_fill(self, node_id: str, entries: list[dict[str, Any]]) -> None:
+    async def _queue_set_and_fill(self, node_id: str, entries: list[dict[str, Any]]) -> bool:
         if not entries:
-            return
+            return False
         first = entries[:1]
         reply = await self._request_with_lease(
             node_id, "queue.set", {"startIndex": 0, "entries": first}
         )
         if reply is None or reply.get("type") != "ack":
-            return
-        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+            return False
+        started = await self._send_renderer_command(node_id, "playback.play", {"index": 0})
         if len(entries) > 1:
-            self.hass.async_create_task(self._queue_add_entries(node_id, entries[1:]))
+            self._track_task(self._queue_add_entries(node_id, entries[1:]))
+        return started
+
+    def _track_task(self, coro) -> asyncio.Task:
+        """Create a background task that is cancelled on bridge stop."""
+        task = self.hass.async_create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     async def _queue_add_entries(self, node_id: str, entries: list[dict[str, Any]]) -> None:
         chunk_size = 50
@@ -1799,36 +1948,36 @@ class MudBridge:
 
     async def _queue_set_and_fill_from_refs(
         self, node_id: str, refs: list[dict[str, Any]]
-    ) -> None:
+    ) -> bool:
         if not refs:
-            return
+            return False
         first_entries = await self._entries_for_refs(refs[:1])
         if not first_entries:
-            return
+            return False
         reply = await self._request_with_lease(
             node_id, "queue.set", {"startIndex": 0, "entries": first_entries}
         )
         if reply is None or reply.get("type") != "ack":
-            return
-        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+            return False
+        started = await self._send_renderer_command(node_id, "playback.play", {"index": 0})
         if len(refs) > 1:
-            self.hass.async_create_task(self._queue_add_refs(node_id, refs[1:]))
+            self._track_task(self._queue_add_refs(node_id, refs[1:]))
+        return started
 
     async def _queue_set_and_fill_from_playlist_entries(
         self, node_id: str, entries: list[dict[str, Any]]
-    ) -> None:
+    ) -> bool:
         if not entries:
-            return
+            return False
         reply = await self._request_with_lease(
             node_id, "queue.set", {"startIndex": 0, "entries": entries[:1]}
         )
         if reply is None or reply.get("type") != "ack":
-            return
-        await self._send_renderer_command(node_id, "playback.play", {"index": 0})
+            return False
+        started = await self._send_renderer_command(node_id, "playback.play", {"index": 0})
         if len(entries) > 1:
-            self.hass.async_create_task(
-                self._queue_add_entries(node_id, entries[1:])
-            )
+            self._track_task(self._queue_add_entries(node_id, entries[1:]))
+        return started
 
     async def _queue_add_refs(
         self, node_id: str, refs: list[dict[str, Any]]
@@ -1882,8 +2031,8 @@ class MudBridge:
             entries.append(entry)
         return entries
 
-    async def async_acquire_lease(self, node_id: str) -> bool:
-        return await self._acquire_lease(node_id) is not None
+    async def async_acquire_lease(self, node_id: str, ttl_ms: int | None = None) -> bool:
+        return await self._acquire_lease(node_id, ttl_ms) is not None
 
     async def async_renew_lease(self, node_id: str) -> bool:
         lease = self._leases.get(node_id)
@@ -2031,19 +2180,47 @@ class MudBridge:
             # Try to switch to another playlist server
             await self._try_switch_playlist_server()
             return
+        if self._playlist_outage_logged:
+            _LOGGER.warning("playlist server responding again")
+            self._playlist_outage_logged = False
         body = reply.get("body") or {}
         playlists = body.get("playlists") or []
+        seen: set[str] = set()
         for pl in playlists:
             playlist_id = pl.get("playlistId")
             if not playlist_id:
                 continue
+            seen.add(playlist_id)
             if pl.get("size") is None:
-                playlist = await self.async_fetch_playlist(playlist_id)
-                if playlist:
-                    entries = playlist.get("entries") or []
-                    pl["size"] = len(entries)
+                # Reuse the cached size when the revision hasn't changed —
+                # otherwise every refresh cycle re-fetches every playlist's
+                # full entry list just to count it.
+                cached = self._playlists.get(playlist_id)
+                if cached is not None and cached.get("revision") == pl.get("revision"):
+                    pl["size"] = cached.get("size")
+                else:
+                    playlist = await self.async_fetch_playlist(playlist_id)
+                    if playlist:
+                        entries = playlist.get("entries") or []
+                        pl["size"] = len(entries)
             self._playlists[playlist_id] = pl
             await self._ensure_playlist_discovery(playlist_id, pl)
+        # Prune playlists deleted on the server so their entities disappear.
+        for playlist_id in [p for p in self._playlists if p not in seen]:
+            del self._playlists[playlist_id]
+            self._published_playlists.pop(playlist_id, None)
+            await self._remove_playlist_discovery(playlist_id)
+            self._notify_playlist_listeners(playlist_id)
+
+    async def _remove_playlist_discovery(self, playlist_id: str) -> None:
+        unique = self._unique_id("playlist", playlist_id)
+        state_topic = f"{self.entity_prefix}/playlist/{unique}/state"
+        discovery_topic = f"{self.discovery_prefix}/sensor/{unique}/config"
+        await self._publish(discovery_topic, "", retain=True)
+        await self._publish(state_topic, "", retain=True)
+        if discovery_topic in self._discovery_topics:
+            self._discovery_topics.discard(discovery_topic)
+            await self._save_discovery_topics()
 
     async def _try_switch_playlist_server(self) -> None:
         """Try switching to a different playlist server if the current one is unresponsive."""
@@ -2060,13 +2237,29 @@ class MudBridge:
             if reply is not None and reply.get("type") == "ack":
                 _LOGGER.info("switched to playlist server %s", node_id)
                 return
-        # No server responded, restore original
+        # No server responded, restore original. Log the outage once at
+        # WARNING, then at DEBUG until it recovers — this loop runs every
+        # refresh cycle and previously filled the log at 2 lines/40s.
         self._selected_playlist_server = current
-        _LOGGER.warning("no playlist servers responding")
+        if not self._playlist_outage_logged:
+            _LOGGER.warning("no playlist servers responding")
+            self._playlist_outage_logged = True
+        else:
+            _LOGGER.debug("no playlist servers responding")
 
     async def _ensure_playlist_discovery(
         self, playlist_id: str, playlist: dict[str, Any]
     ) -> None:
+        # Skip republishing (retained MQTT + Store disk write) when nothing
+        # changed — this runs for every playlist on every refresh cycle.
+        signature = (
+            playlist.get("name"),
+            playlist.get("revision"),
+            playlist.get("size"),
+        )
+        if self._published_playlists.get(playlist_id) == signature:
+            return
+        self._published_playlists[playlist_id] = signature
         unique = self._unique_id("playlist", playlist_id)
         state_topic = f"{self.entity_prefix}/playlist/{unique}/state"
         availability_topic = self._playlist_availability_topic(
@@ -2098,13 +2291,16 @@ class MudBridge:
 
     async def _send_renderer_command(
         self, node_id: str, cmd_type: str, body: dict[str, Any]
-    ) -> None:
-        lease = await self._ensure_lease(node_id)
-        if lease is None:
-            _LOGGER.warning("lease unavailable for renderer %s cmd=%s", node_id, cmd_type)
-            return
-        _LOGGER.debug("send renderer cmd=%s node=%s body=%s", cmd_type, node_id, body)
-        await self._publish_command(node_id, cmd_type, body, lease=lease)
+    ) -> bool:
+        """Send a lease-guarded renderer command and wait for the ack.
+
+        Returns True on ack. Waiting for the reply (instead of fire-and-
+        forget) lets callers surface failures to the user and lets the
+        LEASE_MISMATCH retry in _request_with_lease recover immediately
+        when a renderer restarted and dropped its sessions.
+        """
+        reply = await self._request_with_lease(node_id, cmd_type, body)
+        return reply is not None and reply.get("type") == "ack"
 
     async def _request_with_lease(
         self,
@@ -2112,6 +2308,7 @@ class MudBridge:
         cmd_type: str,
         body: dict[str, Any],
         timeout_seconds: int | None = None,
+        if_revision: int | None = None,
     ) -> dict[str, Any] | None:
         lease = await self._ensure_lease(node_id)
         if lease is None:
@@ -2124,6 +2321,7 @@ class MudBridge:
             need_lease=True,
             lease=lease,
             timeout_seconds=timeout_seconds,
+            if_revision=if_revision,
         )
         if reply is None:
             return None
@@ -2141,6 +2339,7 @@ class MudBridge:
                     need_lease=True,
                     lease=lease,
                     timeout_seconds=timeout_seconds,
+                    if_revision=if_revision,
                 )
         return reply
 
@@ -2161,11 +2360,11 @@ class MudBridge:
         _LOGGER.debug("lease for %s expires in %ds, renewing", node_id, remaining)
         return await self._renew_lease(node_id, lease)
 
-    async def _acquire_lease(self, node_id: str) -> Lease | None:
+    async def _acquire_lease(self, node_id: str, ttl_ms: int | None = None) -> Lease | None:
         reply = await self._request(
             node_id,
             "session.acquire",
-            {"ttlMs": LEASE_TTL_MS},
+            {"ttlMs": ttl_ms or LEASE_TTL_MS},
             need_lease=False,
         )
         if reply is None or reply.get("type") != "ack":
@@ -2222,21 +2421,39 @@ class MudBridge:
         need_lease: bool = False,
         lease: Lease | None = None,
         timeout_seconds: int | None = None,
+        if_revision: int | None = None,
     ) -> dict[str, Any] | None:
-        async with self._request_sema:
+        # Per-node semaphore: an unresponsive node holds its own slots for
+        # the reply timeout without starving requests to healthy nodes.
+        sema = self._request_semas.setdefault(node_id, asyncio.Semaphore(4))
+        async with sema:
             cmd_id = uuid.uuid4().hex
             future = self.hass.loop.create_future()
             self._pending[cmd_id] = future
-            await self._publish_command(node_id, cmd_type, body, cmd_id, need_lease, lease)
+            await self._publish_command(
+                node_id, cmd_type, body, cmd_id, need_lease, lease, if_revision
+            )
             try:
                 timeout = timeout_seconds or REPLY_TIMEOUT_SECONDS
                 payload = await asyncio.wait_for(future, timeout=timeout)
+                self._unresponsive_nodes.discard(node_id)
                 return payload
             except asyncio.TimeoutError:
-                _LOGGER.warning("command timeout node=%s type=%s", node_id, cmd_type)
+                self._on_request_timeout(node_id, cmd_type)
                 return None
             finally:
                 self._pending.pop(cmd_id, None)
+
+    def _on_request_timeout(self, node_id: str, cmd_type: str) -> None:
+        """Record a reply timeout: log once, mark renderers unavailable."""
+        first = node_id not in self._unresponsive_nodes
+        log = _LOGGER.warning if first else _LOGGER.debug
+        log("command timeout node=%s type=%s", node_id, cmd_type)
+        self._unresponsive_nodes.add(node_id)
+        info = self._renderers.get(node_id)
+        if info is not None and info.get("online", True):
+            info["online"] = False
+            self._notify_renderer_listeners(node_id)
 
     async def _publish_command(
         self,
@@ -2246,6 +2463,7 @@ class MudBridge:
         cmd_id: str | None = None,
         need_lease: bool = True,
         lease: Lease | None = None,
+        if_revision: int | None = None,
     ) -> None:
         cmd_id = cmd_id or uuid.uuid4().hex
         payload = {
@@ -2256,6 +2474,8 @@ class MudBridge:
             "replyTo": self.reply_topic,
             "body": body,
         }
+        if if_revision is not None:
+            payload["ifRevision"] = if_revision
         if need_lease:
             if lease is None:
                 return
@@ -2284,8 +2504,9 @@ class MudBridge:
         await mqtt.async_publish(self.hass, topic, payload, qos=qos, retain=retain)
 
     async def _publish_discovery(self, topic: str, payload: Any) -> None:
-        self._discovery_topics.add(topic)
-        await self._save_discovery_topics()
+        if topic not in self._discovery_topics:
+            self._discovery_topics.add(topic)
+            await self._save_discovery_topics()
         await self._publish(topic, payload, retain=True)
 
     def _unique_id(self, kind: str, node_id: str) -> str:

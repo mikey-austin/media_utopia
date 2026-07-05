@@ -18,8 +18,8 @@ from homeassistant.components.media_player.const import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .zone import ZoneEntityManager
@@ -105,7 +105,10 @@ class RendererManager:
     @callback
     def _on_state(self, node_id: str, _state: dict[str, Any]) -> None:
         entity = self._entities.get(node_id)
-        if entity is None:
+        if entity is None or entity.hass is None:
+            # hass is unset until async_add_entities completes; a state
+            # message in that window must not raise (the bridge would
+            # swallow it, hiding real listener bugs).
             return
         entity.async_write_ha_state()
 
@@ -183,10 +186,11 @@ class MuRendererEntity(MediaPlayerEntity):
 
     @property
     def media_position_updated_at(self) -> datetime | None:
+        # Always use the timestamp the position was actually measured at.
+        # Returning utcnow() while playing re-stamps a possibly-stale
+        # position as "accurate right now", which makes the progress bar
+        # lag and visibly snap backwards.
         state = self._bridge.get_renderer_state(self._node_id)
-        status = (state.get("playback") or {}).get("status", "").lower()
-        if status == "playing":
-            return dt_util.utcnow()
         ts = state.get("ts")
         if ts is None:
             return None
@@ -257,59 +261,73 @@ class MuRendererEntity(MediaPlayerEntity):
             | MediaPlayerEntityFeature.TURN_OFF
         )
 
+    def _require_ok(self, ok: bool, action: str) -> None:
+        """Surface command failures to the user instead of no-oping."""
+        if not ok:
+            raise HomeAssistantError(
+                f"{action} failed: renderer {self.name} did not acknowledge the command"
+            )
+
     async def async_turn_on(self) -> None:
         """Turn on (start playback)."""
-        await self._bridge.async_play(self._node_id)
+        self._require_ok(await self._bridge.async_play(self._node_id), "Turn on")
 
     async def async_turn_off(self) -> None:
         """Turn off — stop playback and clear the queue."""
-        await self._bridge.async_stop(self._node_id)
-        await self._bridge.async_queue_clear(self._node_id)
+        self._require_ok(await self._bridge.async_stop_playback(self._node_id), "Turn off")
+        self._require_ok(await self._bridge.async_queue_clear(self._node_id), "Queue clear")
 
     async def async_media_play(self) -> None:
         _LOGGER.debug("play %s", self._node_id)
-        await self._bridge.async_play(self._node_id)
+        self._require_ok(await self._bridge.async_play(self._node_id), "Play")
 
     async def async_media_pause(self) -> None:
         _LOGGER.debug("pause %s", self._node_id)
-        await self._bridge.async_pause(self._node_id)
+        self._require_ok(await self._bridge.async_pause(self._node_id), "Pause")
 
     async def async_media_stop(self) -> None:
         _LOGGER.debug("stop %s", self._node_id)
-        await self._bridge.async_stop(self._node_id)
+        self._require_ok(await self._bridge.async_stop_playback(self._node_id), "Stop")
 
     async def async_media_next_track(self) -> None:
         _LOGGER.debug("next %s", self._node_id)
-        await self._bridge.async_next(self._node_id)
+        self._require_ok(await self._bridge.async_next(self._node_id), "Next track")
 
     async def async_media_previous_track(self) -> None:
         _LOGGER.debug("prev %s", self._node_id)
-        await self._bridge.async_previous(self._node_id)
+        self._require_ok(await self._bridge.async_previous(self._node_id), "Previous track")
 
     async def async_set_volume_level(self, volume: float) -> None:
         _LOGGER.debug("volume %s %.2f", self._node_id, volume)
-        await self._bridge.async_set_volume(self._node_id, volume)
+        self._require_ok(
+            await self._bridge.async_set_volume(self._node_id, volume), "Set volume"
+        )
 
     async def async_mute_volume(self, mute: bool) -> None:
         _LOGGER.debug("mute %s %s", self._node_id, mute)
-        await self._bridge.async_mute(self._node_id, mute)
+        self._require_ok(await self._bridge.async_mute(self._node_id, mute), "Mute")
 
     async def async_media_seek(self, position: float) -> None:
         _LOGGER.debug("seek %s %.2f", self._node_id, position)
-        await self._bridge.async_seek(self._node_id, position)
+        self._require_ok(await self._bridge.async_seek(self._node_id, position), "Seek")
 
     async def async_set_shuffle(self, shuffle: bool) -> None:
         _LOGGER.debug("shuffle %s %s", self._node_id, shuffle)
-        await self._bridge.async_shuffle(self._node_id, shuffle)
+        self._require_ok(
+            await self._bridge.async_shuffle(self._node_id, shuffle), "Set shuffle"
+        )
 
     async def async_set_repeat(self, repeat: str) -> None:
         _LOGGER.debug("repeat %s %s", self._node_id, repeat)
         if repeat == REPEAT_ONE:
-            await self._bridge.async_repeat_mode(self._node_id, "one")
+            mode = "one"
         elif repeat == REPEAT_ALL:
-            await self._bridge.async_repeat_mode(self._node_id, "all")
+            mode = "all"
         else:
-            await self._bridge.async_repeat_mode(self._node_id, "off")
+            mode = "off"
+        self._require_ok(
+            await self._bridge.async_repeat_mode(self._node_id, mode), "Set repeat"
+        )
 
     async def async_play_media(
         self, media_type: str, media_id: str, **kwargs: Any
@@ -319,14 +337,18 @@ class MuRendererEntity(MediaPlayerEntity):
         if str(media_id).startswith("queue_jump:"):
             try:
                 index = int(str(media_id)[len("queue_jump:"):])
-                await self._bridge.async_queue_jump(self._node_id, index)
+                self._require_ok(
+                    await self._bridge.async_queue_jump(self._node_id, index),
+                    "Queue jump",
+                )
                 return
             except ValueError:
                 pass
         try:
-            await self._bridge.async_play_media(self._node_id, media_id)
+            started = await self._bridge.async_play_media(self._node_id, media_id)
         except ValueError as exc:
-            raise ValueError(str(exc)) from exc
+            raise HomeAssistantError(str(exc)) from exc
+        self._require_ok(started, "Play media")
 
     async def async_browse_media(self, media_content_type=None, media_content_id=None):
         root = BrowseMedia(
@@ -437,6 +459,12 @@ class MuRendererEntity(MediaPlayerEntity):
 
         if str(media_content_id) == "queue" or str(media_content_id).startswith("queue?"):
             return await self._browse_queue(media_content_id)
+
+        if not str(media_content_id).startswith("playlist:"):
+            # Unknown content id — don't mangle it by stripping a prefix it
+            # doesn't have; surface the empty root instead.
+            _LOGGER.warning("browse_media: unknown content id %r", media_content_id)
+            return root
 
         rest = str(media_content_id)[len("playlist:") :]
         page = 1
@@ -666,10 +694,24 @@ class MuRendererEntity(MediaPlayerEntity):
             except ValueError:
                 page = 1
 
-        entries = await self._bridge.async_get_queue(self._node_id)
+        # Fetch only the window for this page — fetching the whole queue
+        # meant dozens of sequential MQTT round-trips per page view on a
+        # large queue.
+        page_size = 25
+        state = self._bridge.get_renderer_state(self._node_id)
+        total = int(((state.get("queue") or {}).get("length")) or 0)
+        start = max(0, (page - 1) * page_size)
+        end = min(total, start + page_size)
+        page_entries = (
+            await self._bridge.async_get_queue_page(self._node_id, start, page_size)
+            if total
+            else []
+        )
+        if page_entries is None:
+            raise HomeAssistantError("Renderer did not answer queue fetch")
 
         # Empty queue case
-        if not entries:
+        if not page_entries:
             return BrowseMedia(
                 media_class=MEDIA_CLASS_PLAYLIST,
                 media_content_id="queue",
@@ -679,13 +721,6 @@ class MuRendererEntity(MediaPlayerEntity):
                 can_expand=False,
                 children=[],
             )
-
-        # Pagination
-        page_size = 25
-        total = len(entries)
-        start = max(0, (page - 1) * page_size)
-        end = min(total, start + page_size)
-        page_entries = entries[start:end]
 
         # The renderer attaches a `display` block to each queue entry now.
         # Backfill missing displays via library.getItems only as a slow fallback.
@@ -952,7 +987,10 @@ class MuRendererEntity(MediaPlayerEntity):
             "media_type": display.get("mediaType"),
             "item_type": display.get("type"),
             "duration_ms": display.get("durationMs"),
-            "position_ms": (state.get("playback") or {}).get("positionMs"),
+            # NOTE: no position_ms here — it changes every second while
+            # playing and every changed attribute forces a recorder row
+            # (~86k rows/day/renderer). HA extrapolates playback position
+            # from media_position/media_position_updated_at instead.
             "item_ref": ref,
             "lease_owner": session.get("owner"),
             "lease_id": session.get("id"),

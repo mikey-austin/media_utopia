@@ -119,6 +119,8 @@ class PlaylistSelectManager:
     @callback
     def _on_options_change(self) -> None:
         for entity in self._entities.values():
+            if entity.hass is None:
+                continue
             entity.async_write_ha_state()
 
     @callback

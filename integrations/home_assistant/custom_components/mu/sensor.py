@@ -70,6 +70,8 @@ class LeaseSensorManager:
         if not sensors:
             return
         for sensor in sensors:
+            if sensor.hass is None:
+                continue
             sensor.async_write_ha_state()
 
 
@@ -174,13 +176,18 @@ class LeaseIDSensor(LeaseSensorBase):
 
 
 class LeaseTTLSecondsSensor(LeaseSensorBase):
-    """Sensor for the remaining lease TTL in seconds."""
+    """Sensor for the lease expiry time.
+
+    Exposes the expiry as a timestamp (HA renders it as a live countdown)
+    rather than recomputing remaining seconds from now() on every state
+    write — a countdown value changes every second and forced a recorder
+    row per renderer state message.
+    """
 
     _attr_icon = "mdi:timer-outline"
 
     if SensorDeviceClass:
-        _attr_device_class = SensorDeviceClass.DURATION
-    _attr_native_unit_of_measurement = "s"
+        _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     @property
     def unique_id(self) -> str:
@@ -191,22 +198,14 @@ class LeaseTTLSecondsSensor(LeaseSensorBase):
     def name(self) -> str | None:
         renderer = self._bridge.get_renderer(self._node_id) or {}
         base = renderer.get("name", self._node_id)
-        return f"{base} Lease TTL"
+        return f"{base} Lease Expires"
 
     @property
-    def native_value(self) -> int | None:
+    def native_value(self) -> datetime | None:
         expires_at = self._session().get("leaseExpiresAt")
         if not isinstance(expires_at, (int, float)):
             return None
-        remaining = int(expires_at - datetime.now(tz=timezone.utc).timestamp())
-        return max(0, remaining)
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        expires_at = self._session().get("leaseExpiresAt")
-        if not isinstance(expires_at, (int, float)):
-            return {}
-        return {"lease_expires_at": datetime.fromtimestamp(float(expires_at), tz=timezone.utc).isoformat()}
+        return datetime.fromtimestamp(float(expires_at), tz=timezone.utc)
 
 
 class QueueLengthSensor(LeaseSensorBase):
@@ -323,6 +322,8 @@ class ZoneSensorManager:
     def _on_controller(self, node_id: str) -> None:
         if node_id in self._sensors:
             for sensor in self._sensors[node_id]:
+                if sensor.hass is None:
+                    continue
                 sensor.async_write_ha_state()
             return
 
@@ -344,6 +345,8 @@ class ZoneSensorManager:
         if not controller_id or controller_id not in self._sensors:
             return
         for sensor in self._sensors[controller_id]:
+            if sensor.hass is None:
+                continue
             sensor.async_write_ha_state()
 
 

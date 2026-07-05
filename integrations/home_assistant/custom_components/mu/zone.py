@@ -15,25 +15,13 @@ from homeassistant.components.media_player import (
     MediaPlayerDeviceClass,
 )
 
-from homeassistant.util import dt as dt_util
-
 from .const import DOMAIN
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up Media Utopia zone entities."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    bridge = data["bridge"]
-
-    manager = ZoneEntityManager(bridge, async_add_entities)
-    await manager.async_start()
-    data["zone_manager"] = manager
-
-
+# NOTE: no async_setup_entry here on purpose — "zone" is not a forwarded
+# platform; ZoneEntityManager is constructed by media_player.async_setup_entry.
+# A platform setup here would double-add every zone entity if "zone" were
+# ever added to PLATFORMS.
 class ZoneEntityManager:
     """Manage zone entities for zone controller nodes."""
 
@@ -62,7 +50,7 @@ class ZoneEntityManager:
     @callback
     def _on_zone_state(self, node_id: str, _state: dict[str, Any]) -> None:
         entity = self._entities.get(node_id)
-        if entity:
+        if entity and entity.hass is not None:
             entity.async_write_ha_state()
 
     @callback
@@ -79,7 +67,7 @@ class ZoneEntityManager:
             zone = self._bridge.get_zone(node_id) or {}
             zone_state = zone.get("state") or {}
             zone_source_id = zone_state.get("sourceId")
-            if zone_source_id and zone_source_id == renderer_source:
+            if zone_source_id and zone_source_id == renderer_source and entity.hass is not None:
                 entity.async_write_ha_state()
 
 
@@ -292,11 +280,9 @@ class MuZoneEntity(MediaPlayerEntity):
         renderer_id = self._get_matching_renderer()
         if not renderer_id:
             return None
+        # Use the measurement timestamp unconditionally; re-stamping a stale
+        # position with utcnow() makes the progress bar lag and snap back.
         state = self._bridge.get_renderer_state(renderer_id)
-        playback = state.get("playback") or {}
-        status = (playback.get("status") or "").lower()
-        if status == "playing":
-            return dt_util.utcnow()
         ts = state.get("ts")
         if ts is None:
             return None

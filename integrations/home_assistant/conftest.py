@@ -34,6 +34,7 @@ def _install_ha_mocks() -> None:
     ha_mqtt_const.DATA_MQTT = "mqtt"
     ha_exceptions = types.ModuleType("homeassistant.exceptions")
     ha_exceptions.ConfigEntryNotReady = type("ConfigEntryNotReady", (Exception,), {})
+    ha_exceptions.HomeAssistantError = type("HomeAssistantError", (Exception,), {})
 
     ha_components_http = types.ModuleType("homeassistant.components.http")
     ha_components_http.StaticPathConfig = type(
@@ -189,6 +190,10 @@ def _install_ha_mocks() -> None:
     vol_mock.Exclusive = lambda *a, **k: None
     vol_mock.In = lambda *a, **k: None
     vol_mock.Coerce = lambda *a, **k: None
+    vol_mock.All = lambda *a, **k: None
+    vol_mock.Range = lambda *a, **k: None
+    vol_mock.Length = lambda *a, **k: None
+    vol_mock.Strip = lambda *a, **k: None
     sys.modules.setdefault("voluptuous", vol_mock)
 
 

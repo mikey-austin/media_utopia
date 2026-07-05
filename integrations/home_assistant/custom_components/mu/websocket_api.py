@@ -97,7 +97,7 @@ async def ws_renderers(
         renderers.append({
             "rendererId": node_id,
             "name": name,
-            "online": True,
+            "online": bool(info.get("online", True)),
             "caps": {
                 "seek": caps.get("seek", True),
                 "volume": caps.get("volume", True),
@@ -105,6 +105,7 @@ async def ws_renderers(
                 "queueResolve": caps.get("queueResolve", False),
             },
         })
+    renderers.sort(key=lambda r: (r["name"] or "").lower())
     connection.send_result(msg["id"], renderers)
 
 
@@ -203,12 +204,12 @@ async def ws_subscribe_renderer_state(
             # This prevents flooding the WS with position-only updates.
             status = playback.get("status", "idle")
             title = display.get("title", "")
-            vol = playback.get("volume", 1.0)
+            volume = playback.get("volume", 1.0)
             mute = playback.get("mute", False)
             q_rev = queue.get("revision", 0)
             q_idx = queue.get("index", 0)
             owner = session.get("owner", "")
-            sig = (status, title, vol, mute, q_rev, q_idx, owner)
+            sig = (status, title, volume, mute, q_rev, q_idx, owner)
 
             # Detect position discontinuities (seeks) — these are meaningful
             # even when nothing else in the signature changed.
@@ -236,7 +237,7 @@ async def ws_subscribe_renderer_state(
                     "status": status,
                     "position_ms": playback.get("positionMs", 0),
                     "duration_ms": playback.get("durationMs", 0),
-                    "volume": vol,
+                    "volume": volume,
                     "mute": mute,
                 },
                 "current": {
@@ -256,8 +257,11 @@ async def ws_subscribe_renderer_state(
                 },
             }))
         except Exception:
-            # Connection likely closed, ignore
-            pass
+            # Connection likely closed — but log so real serialization bugs
+            # don't just make the subscription silently go dark.
+            _LOGGER.debug(
+                "renderer state event delivery failed for %s", renderer_id, exc_info=True
+            )
 
     unsub = bridge.register_renderer_state_listener(state_changed)
 
@@ -267,6 +271,11 @@ async def ws_subscribe_renderer_state(
 
     connection.subscriptions[msg_id] = on_close
     connection.send_result(msg_id)
+    # Deliver the current state immediately so the client is never stuck
+    # showing stale data until the next MQTT message happens to arrive.
+    initial = bridge.get_renderer_state(renderer_id)
+    if initial:
+        state_changed(renderer_id, initial)
 
 
 @websocket_api.websocket_command({
@@ -305,7 +314,9 @@ async def ws_subscribe_queue(
                 "index": queue.get("index", 0),
             }))
         except Exception:
-            pass
+            _LOGGER.debug(
+                "queue event delivery failed for %s", renderer_id, exc_info=True
+            )
 
     unsub = bridge.register_renderer_state_listener(state_changed)
 
@@ -350,7 +361,9 @@ async def ws_lease_status(
 @websocket_api.websocket_command({
     vol.Required("type"): "mu/lease_acquire",
     vol.Required("renderer_id"): str,
-    vol.Optional("ttl_ms", default=15000): int,
+    # No default: when the client doesn't ask for a TTL the bridge's own
+    # LEASE_TTL_MS applies (previously this default was silently ignored).
+    vol.Optional("ttl_ms"): vol.All(int, vol.Range(min=5000, max=600000)),
 })
 @websocket_api.async_response
 async def ws_lease_acquire(
@@ -365,7 +378,7 @@ async def ws_lease_acquire(
         return
 
     renderer_id = msg["renderer_id"]
-    success = await bridge.async_acquire_lease(renderer_id)
+    success = await bridge.async_acquire_lease(renderer_id, msg.get("ttl_ms"))
     if not success:
         connection.send_error(msg["id"], "lease_failed", "Failed to acquire lease")
         return
@@ -416,31 +429,32 @@ async def ws_transport(
     renderer_id = msg["renderer_id"]
     action = msg["action"]
 
+    success = False
     if action == "play":
-        await bridge.async_play(renderer_id)
+        success = await bridge.async_play(renderer_id)
     elif action == "pause":
-        await bridge.async_pause(renderer_id)
+        success = await bridge.async_pause(renderer_id)
     elif action == "toggle":
         state = bridge.get_renderer_state(renderer_id)
         status = ((state or {}).get("playback") or {}).get("status")
         if status == "playing":
-            await bridge.async_pause(renderer_id)
+            success = await bridge.async_pause(renderer_id)
         else:
-            await bridge.async_play(renderer_id)
+            success = await bridge.async_play(renderer_id)
     elif action == "stop":
-        await bridge.async_stop(renderer_id)
+        success = await bridge.async_stop_playback(renderer_id)
     elif action == "next":
-        await bridge.async_next(renderer_id)
+        success = await bridge.async_next(renderer_id)
     elif action == "prev":
-        await bridge.async_previous(renderer_id)
+        success = await bridge.async_previous(renderer_id)
 
-    connection.send_result(msg["id"], {"success": True})
+    connection.send_result(msg["id"], {"success": bool(success)})
 
 
 @websocket_api.websocket_command({
     vol.Required("type"): "mu/seek",
     vol.Required("renderer_id"): str,
-    vol.Required("position_ms"): int,
+    vol.Required("position_ms"): vol.All(int, vol.Range(min=0)),
 })
 @websocket_api.async_response
 async def ws_seek(
@@ -454,14 +468,14 @@ async def ws_seek(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_seek(msg["renderer_id"], msg["position_ms"] / 1000)
-    connection.send_result(msg["id"], {"success": True})
+    success = await bridge.async_seek(msg["renderer_id"], msg["position_ms"] / 1000)
+    connection.send_result(msg["id"], {"success": success})
 
 
 @websocket_api.websocket_command({
     vol.Required("type"): "mu/volume",
     vol.Required("renderer_id"): str,
-    vol.Optional("volume"): vol.Coerce(float),
+    vol.Optional("volume"): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
     vol.Optional("mute"): bool,
 })
 @websocket_api.async_response
@@ -477,11 +491,12 @@ async def ws_volume(
         return
 
     renderer_id = msg["renderer_id"]
+    success = True
     if "volume" in msg:
-        await bridge.async_set_volume(renderer_id, msg["volume"])
+        success = await bridge.async_set_volume(renderer_id, msg["volume"]) and success
     if "mute" in msg:
-        await bridge.async_mute(renderer_id, msg["mute"])
-    connection.send_result(msg["id"], {"success": True})
+        success = await bridge.async_mute(renderer_id, msg["mute"]) and success
+    connection.send_result(msg["id"], {"success": success})
 
 
 @websocket_api.websocket_command({
@@ -501,8 +516,8 @@ async def ws_shuffle(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_shuffle(msg["renderer_id"], msg["shuffle"])
-    connection.send_result(msg["id"], {"success": True})
+    success = await bridge.async_shuffle(msg["renderer_id"], msg["shuffle"])
+    connection.send_result(msg["id"], {"success": success})
 
 
 @websocket_api.websocket_command({
@@ -522,8 +537,8 @@ async def ws_repeat_mode(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_repeat_mode(msg["renderer_id"], msg["mode"])
-    connection.send_result(msg["id"], {"success": True})
+    success = await bridge.async_repeat_mode(msg["renderer_id"], msg["mode"])
+    connection.send_result(msg["id"], {"success": success})
 
 
 # --- Queue Operations ---
@@ -550,6 +565,11 @@ async def ws_queue_get(
     queue_info = (state or {}).get("queue") or {}
 
     entries = await bridge.async_get_queue(renderer_id)
+    if entries is None:
+        connection.send_error(
+            msg["id"], "queue_fetch_failed", "Renderer did not answer queue fetch"
+        )
+        return
 
     formatted = []
     for entry in entries:
@@ -730,8 +750,8 @@ async def ws_queue_jump(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_queue_jump(msg["renderer_id"], msg["index"])
-    connection.send_result(msg["id"], {"success": True})
+    success = await bridge.async_queue_jump(msg["renderer_id"], msg["index"])
+    connection.send_result(msg["id"], {"success": success})
 
 
 @websocket_api.websocket_command({
@@ -992,12 +1012,12 @@ async def ws_queue_load_playlist(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_load_playlist(
+    success = await bridge.async_load_playlist(
         msg["renderer_id"],
         msg["playlist_id"],
         msg["mode"],
     )
-    connection.send_result(msg["id"], {"success": True})
+    connection.send_result(msg["id"], {"success": success})
 
 
 # --- Snapshots ---
@@ -1060,8 +1080,8 @@ async def ws_queue_load_snapshot(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_load_snapshot(msg["renderer_id"], msg["snapshot_id"])
-    connection.send_result(msg["id"], {"success": True})
+    success = await bridge.async_load_snapshot(msg["renderer_id"], msg["snapshot_id"])
+    connection.send_result(msg["id"], {"success": success})
 
 
 @websocket_api.websocket_command({
@@ -1137,8 +1157,10 @@ async def ws_libraries_list(
     vol.Required("type"): "mu/library_browse",
     vol.Required("library_id"): str,
     vol.Optional("container_id", default=""): str,
-    vol.Optional("start", default=0): int,
-    vol.Optional("count", default=100): int,
+    vol.Optional("start", default=0): vol.All(int, vol.Range(min=0)),
+    # The panel's play/enqueue-folder flow legitimately asks for the whole
+    # container (count=10000); the bound only guards against absurd values.
+    vol.Optional("count", default=100): vol.All(int, vol.Range(min=1, max=10000)),
 })
 @websocket_api.async_response
 async def ws_library_browse(
@@ -1203,8 +1225,8 @@ async def ws_library_browse(
     vol.Required("type"): "mu/library_search",
     vol.Required("library_id"): str,
     vol.Required("query"): str,
-    vol.Optional("start", default=0): int,
-    vol.Optional("count", default=50): int,
+    vol.Optional("start", default=0): vol.All(int, vol.Range(min=0)),
+    vol.Optional("count", default=50): vol.All(int, vol.Range(min=1, max=10000)),
 })
 @websocket_api.async_response
 async def ws_library_search(
@@ -1325,7 +1347,7 @@ async def ws_zones_list(
 @websocket_api.websocket_command({
     vol.Required("type"): "mu/zone_set_volume",
     vol.Required("zone_id"): str,
-    vol.Required("volume"): vol.Coerce(float),
+    vol.Required("volume"): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
 })
 @websocket_api.async_response
 async def ws_zone_set_volume(
@@ -1339,8 +1361,8 @@ async def ws_zone_set_volume(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_zone_set_volume(msg["zone_id"], msg["volume"])
-    connection.send_result(msg["id"], {"success": True})
+    success = await bridge.async_zone_set_volume(msg["zone_id"], msg["volume"])
+    connection.send_result(msg["id"], {"success": success})
 
 
 @websocket_api.websocket_command({
@@ -1360,8 +1382,8 @@ async def ws_zone_set_mute(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_zone_set_mute(msg["zone_id"], msg["mute"])
-    connection.send_result(msg["id"], {"success": True})
+    success = await bridge.async_zone_set_mute(msg["zone_id"], msg["mute"])
+    connection.send_result(msg["id"], {"success": success})
 
 
 @websocket_api.websocket_command({
@@ -1381,8 +1403,8 @@ async def ws_zone_select_source(
         connection.send_error(msg["id"], "not_ready", "MU integration not loaded. Check the integration configuration.")
         return
 
-    await bridge.async_zone_select_source(msg["zone_id"], msg["source_id"])
-    connection.send_result(msg["id"], {"success": True})
+    success = await bridge.async_zone_select_source(msg["zone_id"], msg["source_id"])
+    connection.send_result(msg["id"], {"success": success})
 
 
 # --- Playlist Servers ---
