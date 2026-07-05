@@ -63,11 +63,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Custom panel registered")
 
     bridge = MudBridge(hass, entry)
-    await bridge.async_start()
+    try:
+        await bridge.async_start()
+    except ConfigEntryNotReady:
+        raise
+    except Exception as err:
+        # MQTT subscribe failures (broker down / mqtt entry retrying) must
+        # retry setup rather than landing in permanent SETUP_ERROR.
+        await bridge.async_stop()
+        raise ConfigEntryNotReady(f"MU bridge failed to start: {err}") from err
     domain_data[entry.entry_id] = {"bridge": bridge}
     _LOGGER.debug("Bridge started for entry %s", entry.entry_id)
     entry.async_on_unload(entry.add_update_listener(_async_update_options))
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        domain_data.pop(entry.entry_id, None)
+        await bridge.async_stop()
+        raise
     return True
 
 
@@ -91,7 +104,9 @@ async def _register_panel(hass: HomeAssistant) -> None:
     # Register the custom panel in sidebar using direct import
     # Compute content hash for cache busting
     panel_js = WWW_DIR / "mu-panel.js"
-    js_hash = hashlib.md5(panel_js.read_bytes()).hexdigest()[:8]
+    js_hash = await hass.async_add_executor_job(
+        lambda: hashlib.md5(panel_js.read_bytes()).hexdigest()[:8]
+    )
     frontend.async_register_built_in_panel(
         hass,
         component_name="custom",
@@ -111,7 +126,8 @@ async def _register_panel(hass: HomeAssistant) -> None:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload Mud config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+    domain_data = hass.data.get(DOMAIN, {})
+    data = domain_data.pop(entry.entry_id, None)
     bridge: MudBridge | None = None
     if isinstance(data, dict):
         bridge = data.get("bridge")
@@ -120,6 +136,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await bridge.async_stop()
         except Exception:
             _LOGGER.warning("Error stopping MU bridge", exc_info=True)
+    # Remove the sidebar panel when the last entry goes away so removing
+    # the integration doesn't leave a dead "MU" sidebar item.
+    if not hass.config_entries.async_loaded_entries(DOMAIN) and domain_data.get(
+        "panel_registered"
+    ):
+        try:
+            frontend.async_remove_panel(hass, "mu")
+        except Exception:
+            _LOGGER.debug("Panel removal failed", exc_info=True)
+        domain_data["panel_registered"] = False
     return unload_ok
 
 
