@@ -1729,11 +1729,18 @@ class MudBridge:
         return reply.get("body") or {}
 
     async def async_search_library(
-        self, library_id: str, query: str, start: int = 0, count: int = 50
+        self,
+        library_id: str,
+        query: str,
+        start: int = 0,
+        count: int = 50,
+        types: list[str] | None = None,
     ) -> dict[str, Any] | None:
         if not library_id or not query:
             return None
-        body = {"query": query, "start": start, "count": count}
+        body: dict[str, Any] = {"query": query, "start": start, "count": count}
+        if types:
+            body["types"] = types
         reply = await self._request(
             library_id,
             "library.search",

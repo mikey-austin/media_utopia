@@ -1227,6 +1227,9 @@ async def ws_library_browse(
     vol.Required("query"): str,
     vol.Optional("start", default=0): vol.All(int, vol.Range(min=0)),
     vol.Optional("count", default=50): vol.All(int, vol.Range(min=1, max=10000)),
+    # Item kinds to search: "musicalbum", "musicartist", "audio", ...
+    # Omitted = library default (tracks).
+    vol.Optional("types"): [str],
 })
 @websocket_api.async_response
 async def ws_library_search(
@@ -1245,6 +1248,7 @@ async def ws_library_search(
         msg["query"],
         msg["start"],
         msg["count"],
+        types=msg.get("types"),
     )
     if result is None:
         connection.send_error(msg["id"], "search_failed", "Failed to search library")

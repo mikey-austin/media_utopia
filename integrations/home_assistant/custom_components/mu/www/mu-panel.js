@@ -754,6 +754,29 @@ const styles = css`
     align-items: center;
   }
 
+  .search-type-toggle {
+    display: flex;
+    gap: 4px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--mu-border);
+    background: var(--mu-card-bg);
+    flex-shrink: 0;
+  }
+  .search-type-toggle button {
+    background: transparent;
+    border: 1px solid var(--mu-border);
+    border-radius: 10px;
+    color: var(--mu-secondary);
+    font-size: 10px;
+    padding: 2px 10px;
+    cursor: pointer;
+  }
+  .search-type-toggle button.active {
+    background: var(--mu-accent);
+    border-color: var(--mu-accent);
+    color: #fff;
+  }
+
   .search-input {
     flex: 1;
     background: var(--primary-background-color);
@@ -915,6 +938,7 @@ class MuPanel extends LitElement {
     searchResults: { state: true },
     searchLoading: { state: true },
     searchTotal: { state: true },
+    searchType: { state: true },
     searchLibraryId: { state: true },
     _snapshotSaving: { state: true },
     _creatingPlaylist: { state: true },
@@ -959,6 +983,9 @@ class MuPanel extends LitElement {
     this.searchLoading = false;
     this.searchTotal = 0;
     this.searchLibraryId = '';
+    // What kind of results to search for: 'albums' | 'songs' | 'artists'.
+    // Albums by default — restored from the last-used preference.
+    this.searchType = this._prefGet('searchType') || 'albums';
     this._snapshotSaving = false;
     this._creatingPlaylist = false;
     this._createPlaylistSnapshotId = null;
@@ -1167,7 +1194,14 @@ class MuPanel extends LitElement {
     if (r) {
       r.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       this.renderers = r;
-      if (!this.selectedRenderer && r.length) { this.selectedRenderer = r[0].rendererId; await this._loadRendererState(); await this._loadQueue(); }
+      if (!this.selectedRenderer && r.length) {
+        // Prefer the last-used renderer over the first in the list.
+        const stored = this._prefGet('renderer');
+        const match = stored && r.find(x => x.rendererId === stored);
+        this.selectedRenderer = match ? match.rendererId : r[0].rendererId;
+        await this._loadRendererState();
+        await this._loadQueue();
+      }
     }
     return r;
   }
@@ -1204,6 +1238,13 @@ class MuPanel extends LitElement {
     const r = await this._callWS('mu/libraries_list');
     if (r) {
       this.libraries = r;
+      // Restore the last-used search library (falling back to the first)
+      // so search doesn't default to whatever happens to sort first.
+      if (!this.searchLibraryId) {
+        const stored = this._prefGet('searchLibrary');
+        const match = stored && r.find(lib => lib.libraryId === stored);
+        this.searchLibraryId = match ? match.libraryId : (r[0] && r[0].libraryId) || '';
+      }
       // Only reset the browse view at the root — background retries must
       // not blow away in-progress navigation.
       if (!this.browserPath.length) {
@@ -1387,6 +1428,7 @@ class MuPanel extends LitElement {
       this._stateUnsubscribe = null;
     }
     this.selectedRenderer = e.target.value;
+    this._prefSet('renderer', this.selectedRenderer);
     // Clear stale state immediately so UI shows the new renderer's loading state
     this.rendererState = null;
     this.queue = [];
@@ -1748,6 +1790,28 @@ class MuPanel extends LitElement {
     }
   }
 
+  _selectSearchLibrary(libraryId) {
+    this.searchLibraryId = libraryId;
+    this._prefSet('searchLibrary', libraryId);
+    if (this.searchQuery.trim()) this._performSearch();
+  }
+
+  _selectSearchType(type) {
+    if (this.searchType === type) return;
+    this.searchType = type;
+    this._prefSet('searchType', type);
+    if (this.searchQuery.trim()) this._performSearch();
+  }
+
+  // Protocol item kinds for the selected search type.
+  _searchTypes() {
+    switch (this.searchType) {
+      case 'songs': return ['audio'];
+      case 'artists': return ['musicartist'];
+      default: return ['musicalbum'];
+    }
+  }
+
   async _performSearch() {
     const query = this.searchQuery.trim();
     if (!query) return;
@@ -1758,7 +1822,9 @@ class MuPanel extends LitElement {
     this.searchLibraryId = libId;
     this.searchLoading = true;
     this.searchResults = [];
-    const r = await this._callWS('mu/library_search', { library_id: libId, query, start: 0, count: 50 });
+    const r = await this._callWS('mu/library_search', {
+      library_id: libId, query, start: 0, count: 50, types: this._searchTypes(),
+    });
     if (token !== this._searchToken) return;
     this.searchLoading = false;
     if (r) {
@@ -1776,7 +1842,7 @@ class MuPanel extends LitElement {
     this.searchLoading = true;
     const r = await this._callWS('mu/library_search', {
       library_id: this.searchLibraryId, query: this.searchQuery.trim(),
-      start: this.searchResults.length, count: 50,
+      start: this.searchResults.length, count: 50, types: this._searchTypes(),
     });
     if (token !== this._searchToken) return;
     this.searchLoading = false;
@@ -2006,6 +2072,16 @@ class MuPanel extends LitElement {
     }
   }
 
+  // --- Persisted UI preferences (last-used renderer / search library / search type) ---
+
+  _prefGet(key) {
+    try { return localStorage.getItem(`mu-panel:${key}`); } catch { return null; }
+  }
+
+  _prefSet(key, value) {
+    try { localStorage.setItem(`mu-panel:${key}`, value); } catch { /* private mode etc. */ }
+  }
+
   _recoverFromRenderError() {
     // Reset the state most likely to have caused a render throw, then
     // reload data from the backend.
@@ -2076,8 +2152,8 @@ class MuPanel extends LitElement {
         ${this.libraries.length > 1 ? html`
           <select class="search-library-select"
             .value=${this.searchLibraryId || (this.libraries[0] && this.libraries[0].libraryId) || ''}
-            @change=${e => this.searchLibraryId = e.target.value}>
-            ${this.libraries.map(lib => html`<option value="${lib.libraryId}">${lib.name}</option>`)}
+            @change=${e => this._selectSearchLibrary(e.target.value)}>
+            ${this.libraries.map(lib => html`<option value="${lib.libraryId}" ?selected=${lib.libraryId === this.searchLibraryId}>${lib.name}</option>`)}
           </select>
         ` : ''}
         ${showSearchResults ? html`
@@ -2085,6 +2161,12 @@ class MuPanel extends LitElement {
         ` : html`
           <button class="action-btn" @click=${() => this._performSearch()} title="Search">${icons.search}</button>
         `}
+      </div>
+      <div class="search-type-toggle">
+        ${['albums', 'songs', 'artists'].map(t => html`
+          <button class="${this.searchType === t ? 'active' : ''}"
+            @click=${() => this._selectSearchType(t)}>${t.charAt(0).toUpperCase() + t.slice(1)}</button>
+        `)}
       </div>
       ${showSearchResults ? this._renderSearchResults() : html`
         <div class="breadcrumbs">
