@@ -986,6 +986,7 @@ class MuPanel extends LitElement {
     // What kind of results to search for: 'albums' | 'songs' | 'artists'.
     // Albums by default — restored from the last-used preference.
     this.searchType = this._prefGet('searchType') || 'albums';
+    this._searchRawFetched = 0;
     this._snapshotSaving = false;
     this._creatingPlaylist = false;
     this._createPlaylistSnapshotId = null;
@@ -1812,6 +1813,15 @@ class MuPanel extends LitElement {
     }
   }
 
+  // Safety net: not every library module honors the types filter (and an
+  // older daemon ignores it entirely) — never show tracks under Albums/
+  // Artists, or containers under Songs, regardless of what came back.
+  _filterSearchItems(items) {
+    if (!items) return [];
+    if (this.searchType === 'songs') return items.filter(i => i.isPlayable);
+    return items.filter(i => i.isContainer);
+  }
+
   async _performSearch() {
     const query = this.searchQuery.trim();
     if (!query) return;
@@ -1822,13 +1832,17 @@ class MuPanel extends LitElement {
     this.searchLibraryId = libId;
     this.searchLoading = true;
     this.searchResults = [];
+    // Pagination offset must count RAW server items, not the filtered list.
+    this._searchRawFetched = 0;
     const r = await this._callWS('mu/library_search', {
       library_id: libId, query, start: 0, count: 50, types: this._searchTypes(),
     });
     if (token !== this._searchToken) return;
     this.searchLoading = false;
     if (r) {
-      this.searchResults = r.items || [];
+      const raw = r.items || [];
+      this._searchRawFetched = raw.length;
+      this.searchResults = this._filterSearchItems(raw);
       this.searchTotal = r.totalCount || 0;
     } else {
       this.searchResults = [];
@@ -1842,12 +1856,13 @@ class MuPanel extends LitElement {
     this.searchLoading = true;
     const r = await this._callWS('mu/library_search', {
       library_id: this.searchLibraryId, query: this.searchQuery.trim(),
-      start: this.searchResults.length, count: 50, types: this._searchTypes(),
+      start: this._searchRawFetched, count: 50, types: this._searchTypes(),
     });
     if (token !== this._searchToken) return;
     this.searchLoading = false;
     if (r && r.items) {
-      this.searchResults = [...this.searchResults, ...r.items];
+      this._searchRawFetched += r.items.length;
+      this.searchResults = [...this.searchResults, ...this._filterSearchItems(r.items)];
       this.searchTotal = r.totalCount || this.searchTotal;
     }
   }
@@ -1860,6 +1875,7 @@ class MuPanel extends LitElement {
     this.searchResults = null;
     this.searchLoading = false;
     this.searchTotal = 0;
+    this._searchRawFetched = 0;
   }
 
   async _addSearchResultToQueue(item, mode) {
@@ -2202,7 +2218,7 @@ class MuPanel extends LitElement {
     const playableCount = this.searchResults ? this.searchResults.filter(i => i.isPlayable).length : 0;
     return html`
       <div class="folder-actions">
-        <span style="font-size:12px;color:var(--mu-secondary);flex:1">${this.searchTotal} result${this.searchTotal !== 1 ? 's' : ''}</span>
+        <span style="font-size:12px;color:var(--mu-secondary);flex:1">${this.searchResults.length} result${this.searchResults.length !== 1 ? 's' : ''}</span>
         ${playableCount > 0 ? html`
           <button class="action-btn" @click=${() => this._addAllSearchResultsToQueue('replace')} title="Play all results">▶ Play All</button>
           <button class="action-btn secondary" @click=${() => this._addAllSearchResultsToQueue('append')} title="Add all to queue">+ Add All</button>
@@ -2214,9 +2230,9 @@ class MuPanel extends LitElement {
             ${this.searchLoading && !this.searchResults.length ? html`<div class="loading"><div class="spinner"></div></div>` : ''}
             ${!this.searchLoading && !this.searchResults.length ? html`<div class="empty">No results</div>` : ''}
             ${this.searchResults.map((item, idx) => this._renderSearchItem(item, idx))}
-            ${this.searchResults.length > 0 && this.searchResults.length < this.searchTotal ? html`
+            ${this.searchResults.length > 0 && (this._searchRawFetched || 0) < this.searchTotal ? html`
               <div class="browser-item" @click=${() => this._loadMoreSearchResults()} style="justify-content:center;cursor:pointer">
-                <span style="font-size:11px;color:var(--mu-accent)">${this.searchLoading ? 'Loading...' : `Load more (${this.searchResults.length}/${this.searchTotal})`}</span>
+                <span style="font-size:11px;color:var(--mu-accent)">${this.searchLoading ? 'Loading...' : `Load more (${this._searchRawFetched || 0}/${this.searchTotal})`}</span>
               </div>
             ` : ''}
           </div>
