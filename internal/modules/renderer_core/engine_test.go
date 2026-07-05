@@ -404,6 +404,104 @@ func TestEngineQueueMove(t *testing.T) {
 	}
 }
 
+func TestEngineQueueMoveConflict(t *testing.T) {
+	driver := &fakeDriver{}
+	engine := NewEngine("mu:renderer:test", "Test", driver)
+	lease := acquireLease(t, engine)
+
+	add := mu.CommandEnvelope{
+		ID:    "mc1",
+		Type:  "queue.add",
+		Lease: &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		Body: mustJSON(mu.QueueAddBody{Position: "end", Entries: []mu.QueueEntry{
+			{Resolved: &mu.ResolvedSource{URL: "http://a"}},
+			{Resolved: &mu.ResolvedSource{URL: "http://b"}},
+			{Resolved: &mu.ResolvedSource{URL: "http://c"}},
+		}}),
+	}
+	engine.HandleCommand(add)
+
+	snapBefore := engine.Queue.Snapshot(0, 10)
+	stale := engine.Queue.Revision() - 1
+	move := mu.CommandEnvelope{
+		ID:         "mc2",
+		Type:       "queue.move",
+		Lease:      &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		IfRevision: &stale,
+		Body:       mustJSON(mu.QueueMoveBody{FromIndex: 2, ToIndex: 0}),
+	}
+	reply := engine.HandleCommand(move)
+	if reply.Type != "error" || reply.Err.Code != "CONFLICT" {
+		t.Fatalf("expected conflict, got type=%s code=%s", reply.Type, reply.Err.Code)
+	}
+
+	// The queue must be untouched.
+	snapAfter := engine.Queue.Snapshot(0, 10)
+	if snapAfter.Revision != snapBefore.Revision {
+		t.Fatalf("expected revision unchanged, got %d != %d", snapAfter.Revision, snapBefore.Revision)
+	}
+	for i := range snapBefore.Entries {
+		if snapAfter.Entries[i].QueueEntryID != snapBefore.Entries[i].QueueEntryID {
+			t.Fatalf("expected entry %d unchanged", i)
+		}
+	}
+
+	// The same move with the current revision succeeds.
+	rev := engine.Queue.Revision()
+	move.ID = "mc3"
+	move.IfRevision = &rev
+	reply = engine.HandleCommand(move)
+	if reply.Type != "ack" {
+		t.Fatalf("expected ack with matching revision, got %s", reply.Type)
+	}
+}
+
+func TestEngineQueueRemoveConflict(t *testing.T) {
+	driver := &fakeDriver{}
+	engine := NewEngine("mu:renderer:test", "Test", driver)
+	lease := acquireLease(t, engine)
+
+	add := mu.CommandEnvelope{
+		ID:    "rc1",
+		Type:  "queue.add",
+		Lease: &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		Body: mustJSON(mu.QueueAddBody{Position: "end", Entries: []mu.QueueEntry{
+			{Resolved: &mu.ResolvedSource{URL: "http://a"}},
+			{Resolved: &mu.ResolvedSource{URL: "http://b"}},
+		}}),
+	}
+	engine.HandleCommand(add)
+
+	stale := engine.Queue.Revision() - 1
+	idx := int64(0)
+	rem := mu.CommandEnvelope{
+		ID:         "rc2",
+		Type:       "queue.remove",
+		Lease:      &mu.Lease{SessionID: lease.ID, Token: lease.Token},
+		IfRevision: &stale,
+		Body:       mustJSON(mu.QueueRemoveBody{Index: &idx}),
+	}
+	reply := engine.HandleCommand(rem)
+	if reply.Type != "error" || reply.Err.Code != "CONFLICT" {
+		t.Fatalf("expected conflict, got type=%s code=%s", reply.Type, reply.Err.Code)
+	}
+	if engine.State.Queue.Length != 2 {
+		t.Fatalf("expected 2 items after conflict, got %d", engine.State.Queue.Length)
+	}
+
+	// The same remove with the current revision succeeds.
+	rev := engine.Queue.Revision()
+	rem.ID = "rc3"
+	rem.IfRevision = &rev
+	reply = engine.HandleCommand(rem)
+	if reply.Type != "ack" {
+		t.Fatalf("expected ack with matching revision, got %s", reply.Type)
+	}
+	if engine.State.Queue.Length != 1 {
+		t.Fatalf("expected 1 item after remove, got %d", engine.State.Queue.Length)
+	}
+}
+
 func TestEngineQueueClear(t *testing.T) {
 	driver := &fakeDriver{}
 	engine := NewEngine("mu:renderer:test", "Test", driver)

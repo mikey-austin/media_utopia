@@ -39,6 +39,14 @@ func (q *Queue) Snapshot(from int64, count int64) mu.QueueGetReply {
 	return mu.QueueGetReply{Revision: q.revision, Index: q.index, Entries: entries}
 }
 
+// Revision returns the current queue revision.
+func (q *Queue) Revision() int64 {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	return q.revision
+}
+
 // Set replaces the queue atomically.
 func (q *Queue) Set(entries []QueueEntry, startIndex int64, ifRevision *int64) error {
 	q.mu.Lock()

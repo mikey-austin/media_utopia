@@ -339,6 +339,9 @@ func (e *Engine) handleQueueRemove(cmd mu.CommandEnvelope, reply mu.ReplyEnvelop
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
 	}
+	if cmd.IfRevision != nil && *cmd.IfRevision != e.Queue.Revision() {
+		return errorReply(cmd, "CONFLICT", "revision mismatch")
+	}
 	if err := e.Queue.Remove(body.QueueEntryID, body.Index); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
@@ -353,6 +356,9 @@ func (e *Engine) handleQueueMove(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope)
 	var body mu.QueueMoveBody
 	if err := json.Unmarshal(cmd.Body, &body); err != nil {
 		return errorReply(cmd, "INVALID", "invalid body")
+	}
+	if cmd.IfRevision != nil && *cmd.IfRevision != e.Queue.Revision() {
+		return errorReply(cmd, "CONFLICT", "revision mismatch")
 	}
 	if err := e.Queue.Move(body.FromIndex, body.ToIndex); err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
