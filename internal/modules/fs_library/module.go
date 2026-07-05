@@ -1123,7 +1123,30 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 		reply.Body = payload
 		return reply
 	}
-	items, total := m.search(query, body.Start, body.Count)
+	kinds, err := normalizeSearchTypes(body.Types)
+	if err != nil {
+		return errorReply(cmd, "INVALID", err.Error())
+	}
+	var items []libraryItem
+	var total int64
+	if len(kinds) == 1 && kinds["audio"] {
+		items, total = m.search(query, body.Start, body.Count)
+	} else {
+		// Containers first (artists, then albums), tracks last — a type
+		// filter usually means the user wants the containers themselves.
+		var full []libraryItem
+		if kinds["artist"] {
+			full = append(full, m.searchArtists(query)...)
+		}
+		if kinds["album"] {
+			full = append(full, m.searchAlbums(query)...)
+		}
+		if kinds["audio"] {
+			full = append(full, m.searchItems(query)...)
+		}
+		total = int64(len(full))
+		items = paginate(full, body.Start, body.Count)
+	}
 	payload, _ := json.Marshal(libraryItemsReply{
 		Items: items,
 		Start: body.Start,
@@ -1132,6 +1155,32 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	})
 	reply.Body = payload
 	return reply
+}
+
+// normalizeSearchTypes maps protocol search type strings to internal kinds
+// ("audio", "album", "artist"). Empty input preserves the historic
+// tracks-only behaviour. Accepts the jellyfin-style canonical names plus
+// obvious synonyms.
+func normalizeSearchTypes(types []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, t := range types {
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "":
+			continue
+		case "audio", "track", "song":
+			out["audio"] = true
+		case "musicalbum", "album":
+			out["album"] = true
+		case "musicartist", "artist":
+			out["artist"] = true
+		default:
+			return nil, fmt.Errorf("unsupported type %q", t)
+		}
+	}
+	if len(out) == 0 {
+		out["audio"] = true
+	}
+	return out, nil
 }
 
 // describeItem returns Display + Attributes for an item id. The bool indicates
@@ -1869,9 +1918,15 @@ func (m *Module) browseAlbum(containerID string, info containerInfo, start, coun
 }
 
 func (m *Module) search(query string, start int64, count int64) ([]libraryItem, int64) {
+	out := m.searchItems(query)
+	return paginate(out, start, count), int64(len(out))
+}
+
+// searchItems returns the full ranked media-item result list for a query.
+func (m *Module) searchItems(query string) []libraryItem {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, 0
+		return nil
 	}
 
 	start0 := time.Now()
@@ -1898,7 +1953,7 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		for _, it := range lexical {
 			seen[it.ItemID] = struct{}{}
 		}
-		for _, it := range m.semanticCandidates(query, int(start+count)+200) {
+		for _, it := range m.semanticCandidates(query, len(lexical)+200) {
 			if _, dup := seen[it.ItemID]; dup {
 				continue
 			}
@@ -1907,7 +1962,123 @@ func (m *Module) search(query string, start int64, count int64) ([]libraryItem, 
 		}
 	}
 	total = int64(len(out))
-	return paginate(out, start, count), total
+	return out
+}
+
+// nameMatchScore ranks a container name against a folded query:
+// exact match > prefix > all-terms-contained. Zero means no match.
+func nameMatchScore(name, foldedQuery string, terms []string) int {
+	folded := foldString(name)
+	if folded == foldedQuery {
+		return 100
+	}
+	if strings.HasPrefix(folded, foldedQuery) {
+		return 50
+	}
+	for _, term := range terms {
+		if !strings.Contains(folded, term) {
+			return 0
+		}
+	}
+	return 10
+}
+
+// searchArtists returns artist containers matching the query, shaped like
+// the "By Artist" browse listing so controllers can browse into or enqueue
+// them directly.
+func (m *Module) searchArtists(query string) []libraryItem {
+	foldedQuery := foldString(strings.TrimSpace(query))
+	terms := strings.Fields(foldedQuery)
+	if len(terms) == 0 {
+		return nil
+	}
+	type scored struct {
+		item  libraryItem
+		score int
+	}
+	m.mu.RLock()
+	matches := make([]scored, 0)
+	for artistName := range m.index.Audio {
+		s := nameMatchScore(artistName, foldedQuery, terms)
+		if s == 0 {
+			continue
+		}
+		matches = append(matches, scored{
+			item: libraryItem{
+				ItemID: containerHash("artist", artistName, ""),
+				Name:   artistName,
+				Type:   "Folder",
+			},
+			score: s,
+		})
+	}
+	m.mu.RUnlock()
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		return matches[i].item.Name < matches[j].item.Name
+	})
+	out := make([]libraryItem, 0, len(matches))
+	for _, s := range matches {
+		out = append(out, s.item)
+	}
+	return out
+}
+
+// searchAlbums returns album containers matching the query (by album name,
+// or weakly by "artist album"), shaped like the browse listing under an
+// artist so controllers can browse into or enqueue them directly.
+func (m *Module) searchAlbums(query string) []libraryItem {
+	foldedQuery := foldString(strings.TrimSpace(query))
+	terms := strings.Fields(foldedQuery)
+	if len(terms) == 0 {
+		return nil
+	}
+	type scored struct {
+		item  libraryItem
+		score int
+	}
+	m.mu.RLock()
+	matches := make([]scored, 0)
+	for artistName, artist := range m.index.Audio {
+		for albumName := range artist.Albums {
+			s := nameMatchScore(albumName, foldedQuery, terms)
+			if s == 0 {
+				// Searching an artist name should still surface their
+				// albums, ranked below direct album-name matches.
+				if nameMatchScore(artistName+" "+albumName, foldedQuery, terms) > 0 {
+					s = 1
+				}
+			}
+			if s == 0 {
+				continue
+			}
+			albumHash := containerHash("album", artistName, albumName)
+			matches = append(matches, scored{
+				item: libraryItem{
+					ItemID:   albumHash,
+					Name:     albumName,
+					Type:     "Folder",
+					Artists:  []string{artistName},
+					ImageURL: m.artURLUnlocked(albumHash),
+				},
+				score: s,
+			})
+		}
+	}
+	m.mu.RUnlock()
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		return matches[i].item.Name < matches[j].item.Name
+	})
+	out := make([]libraryItem, 0, len(matches))
+	for _, s := range matches {
+		out = append(out, s.item)
+	}
+	return out
 }
 
 // keywordSearch runs the lexical scorer over the whole index and returns

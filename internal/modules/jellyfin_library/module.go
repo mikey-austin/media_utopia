@@ -354,7 +354,9 @@ func (m *Module) librarySearch(cmd mu.CommandEnvelope, reply mu.ReplyEnvelope) m
 	if err != nil {
 		return errorReply(cmd, "INVALID", err.Error())
 	}
-	cacheKey := browseCacheKey("search", "", body.Start, body.Count, body.Query)
+	// Include the type filter in the key — otherwise an album-filtered
+	// search and a track search for the same query share a cache entry.
+	cacheKey := browseCacheKey("search", strings.Join(types, ","), body.Start, body.Count, body.Query)
 	if cached, ok := m.browseCacheGet(cacheKey); ok {
 		reply.Body = cached
 		m.log.Debug(

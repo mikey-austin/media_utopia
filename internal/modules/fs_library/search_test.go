@@ -2,11 +2,14 @@ package fslibrary
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/mikey-austin/media_utopia/pkg/mu"
 )
 
 func TestFoldString(t *testing.T) {
@@ -152,4 +155,97 @@ func stringsContains(h, n string) bool {
 		}
 	}
 	return false
+}
+
+func TestSearchTypesAlbumsAndArtists(t *testing.T) {
+	root := t.TempDir()
+	layout := map[string][]string{
+		"Nova Beats/First Light":  {"Nova Beats - Dawn.mp3", "Nova Beats - Dusk.mp3"},
+		"Nova Beats/Second Wind":  {"Nova Beats - Gale.mp3"},
+		"Other Crew/First Light2": {"Other Crew - Something.mp3"},
+	}
+	for dir, files := range layout {
+		full := filepath.Join(root, dir)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			if err := os.WriteFile(filepath.Join(full, f), []byte(f), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	mod := newTestModule(t, root, []string{".mp3"})
+
+	search := func(query string, types []string) libraryItemsReply {
+		t.Helper()
+		reply := mod.librarySearch(mu.CommandEnvelope{
+			ID:   "st",
+			Type: "library.search",
+			Body: mustJSON(mu.LibrarySearchBody{Query: query, Start: 0, Count: 50, Types: types}),
+		}, mu.ReplyEnvelope{Type: "ack", OK: true})
+		if reply.Type == "error" {
+			t.Fatalf("search %q types=%v returned error: %s", query, types, string(reply.Body))
+		}
+		var out libraryItemsReply
+		if err := json.Unmarshal(reply.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return out
+	}
+
+	// Album search by album name returns the album container.
+	albums := search("First Light", []string{"musicalbum"})
+	if albums.Total < 1 || albums.Items[0].Name != "First Light" {
+		t.Fatalf("expected 'First Light' album first, got %+v", albums.Items)
+	}
+	if albums.Items[0].ItemID != containerHash("album", "Nova Beats", "First Light") {
+		t.Fatalf("album ItemID is not the browse container hash: %q", albums.Items[0].ItemID)
+	}
+	if len(albums.Items[0].Artists) == 0 || albums.Items[0].Artists[0] != "Nova Beats" {
+		t.Fatalf("album result missing artist: %+v", albums.Items[0])
+	}
+
+	// Album search by artist name surfaces that artist's albums.
+	byArtist := search("Nova Beats", []string{"musicalbum"})
+	if byArtist.Total != 2 {
+		t.Fatalf("expected 2 albums for artist query, got %d: %+v", byArtist.Total, byArtist.Items)
+	}
+
+	// Artist search returns the artist container.
+	artists := search("nova", []string{"musicartist"})
+	if artists.Total != 1 || artists.Items[0].Name != "Nova Beats" {
+		t.Fatalf("expected artist 'Nova Beats', got %+v", artists.Items)
+	}
+	if artists.Items[0].ItemID != containerHash("artist", "Nova Beats", "") {
+		t.Fatalf("artist ItemID is not the browse container hash")
+	}
+
+	// Combined types: containers first, then tracks.
+	combined := search("dawn", []string{"musicalbum", "audio"})
+	found := false
+	for _, it := range combined.Items {
+		if it.Name == "Nova Beats - Dawn" || it.Name == "Dawn" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("combined search did not include the track: %+v", combined.Items)
+	}
+
+	// Default (no types) keeps tracks-only behaviour.
+	tracks := search("dawn", nil)
+	if tracks.Total != 1 {
+		t.Fatalf("expected 1 track for default search, got %d", tracks.Total)
+	}
+
+	// Unsupported type errors.
+	reply := mod.librarySearch(mu.CommandEnvelope{
+		ID:   "st-bad",
+		Type: "library.search",
+		Body: mustJSON(mu.LibrarySearchBody{Query: "x", Types: []string{"vhs"}}),
+	}, mu.ReplyEnvelope{Type: "ack", OK: true})
+	if reply.Type != "error" {
+		t.Fatalf("expected error for unsupported type, got %s", reply.Type)
+	}
 }
