@@ -44,6 +44,16 @@ type Client struct {
 	breakerSettings gobreaker.Settings
 	breakers        map[string]*gobreaker.CircuitBreaker
 	breakerMu       sync.Mutex
+	subscriptions   map[string]subscription
+	subMu           sync.Mutex
+}
+
+// subscription records an active subscription so it can be restored after a
+// broker reconnect (paho drops all subscriptions on reconnect with the
+// default clean session).
+type subscription struct {
+	qos     byte
+	handler paho.MessageHandler
 }
 
 // ErrPublishTimeout indicates the publish operation timed out.
@@ -67,10 +77,23 @@ func NewClient(opts Options) (*Client, error) {
 		opts.Logger = zap.NewNop()
 	}
 
+	mqttClient := &Client{
+		log:           opts.Logger,
+		debug:         opts.Debug,
+		timeout:       opts.Timeout,
+		breakers:      map[string]*gobreaker.CircuitBreaker{},
+		subscriptions: map[string]subscription{},
+	}
+	mqttClient.configureBreaker(opts)
+
 	clientOpts := paho.NewClientOptions().AddBroker(opts.BrokerURL)
 	clientOpts.SetClientID(opts.ClientID)
 	clientOpts.SetConnectTimeout(opts.Timeout)
 	clientOpts.SetAutoReconnect(true)
+	clientOpts.SetOnConnectHandler(mqttClient.onConnect)
+	clientOpts.SetConnectionLostHandler(func(_ paho.Client, err error) {
+		mqttClient.log.Warn("mqtt connection lost", zap.Error(err))
+	})
 
 	if opts.Username != "" {
 		clientOpts.SetUsername(opts.Username)
@@ -85,20 +108,44 @@ func NewClient(opts Options) (*Client, error) {
 		clientOpts.SetTLSConfig(tlsConfig)
 	}
 
-	client := paho.NewClient(clientOpts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
+	mqttClient.client = paho.NewClient(clientOpts)
+	if token := mqttClient.client.Connect(); token.Wait() && token.Error() != nil {
 		return nil, token.Error()
 	}
-
-	mqttClient := &Client{
-		client:   client,
-		log:      opts.Logger,
-		debug:    opts.Debug,
-		timeout:  opts.Timeout,
-		breakers: map[string]*gobreaker.CircuitBreaker{},
-	}
-	mqttClient.configureBreaker(opts)
 	return mqttClient, nil
+}
+
+// onConnect restores tracked subscriptions after a (re)connect. On the first
+// connect nothing is tracked yet, so it is a no-op; explicit Subscribe calls
+// then populate the table. Resubscribing an already-active topic is
+// idempotent, so racing with an initial Subscribe is harmless.
+func (c *Client) onConnect(client paho.Client) {
+	c.subMu.Lock()
+	subs := make(map[string]subscription, len(c.subscriptions))
+	for topic, sub := range c.subscriptions {
+		subs[topic] = sub
+	}
+	c.subMu.Unlock()
+
+	if len(subs) == 0 {
+		return
+	}
+	c.log.Warn("mqtt reconnected, restoring subscriptions", zap.Int("count", len(subs)))
+	for topic, sub := range subs {
+		token := client.Subscribe(topic, sub.qos, sub.handler)
+		if c.timeout > 0 && !token.WaitTimeout(c.timeout) {
+			c.log.Warn("mqtt resubscribe timeout", zap.String("topic", topic))
+			continue
+		}
+		if c.timeout <= 0 {
+			token.Wait()
+		}
+		if err := token.Error(); err != nil {
+			c.log.Warn("mqtt resubscribe failed", zap.String("topic", topic), zap.Error(err))
+			continue
+		}
+		c.log.Info("mqtt resubscribed", zap.String("topic", topic))
+	}
 }
 
 // Publish publishes a message.
@@ -154,7 +201,13 @@ func (c *Client) Subscribe(topic string, qos byte, handler paho.MessageHandler) 
 	if c.timeout <= 0 {
 		token.Wait()
 	}
-	return token.Error()
+	if err := token.Error(); err != nil {
+		return err
+	}
+	c.subMu.Lock()
+	c.subscriptions[topic] = subscription{qos: qos, handler: wrapped}
+	c.subMu.Unlock()
+	return nil
 }
 
 // Unsubscribe unsubscribes from a topic.
@@ -162,6 +215,9 @@ func (c *Client) Unsubscribe(topic string) error {
 	if c.debug {
 		c.log.Debug("mqtt unsubscribe", zap.String("topic", topic))
 	}
+	c.subMu.Lock()
+	delete(c.subscriptions, topic)
+	c.subMu.Unlock()
 	token := c.client.Unsubscribe(topic)
 	if c.timeout > 0 && !token.WaitTimeout(c.timeout) {
 		c.log.Warn("mqtt unsubscribe timeout", zap.String("topic", topic))
