@@ -505,6 +505,32 @@ const styles = css`
 
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  .render-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    height: 100%;
+    padding: 24px;
+    color: var(--mu-text, #eee);
+  }
+  .render-error pre {
+    max-width: 80%;
+    max-height: 200px;
+    overflow: auto;
+    font-size: 10px;
+    color: var(--mu-secondary, #999);
+  }
+  .render-error button {
+    background: var(--mu-accent, #03a9f4);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+
   .toast {
     position: fixed;
     bottom: 24px;
@@ -518,6 +544,11 @@ const styles = css`
     box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     z-index: 100;
     animation: toast-in 0.2s ease-out;
+  }
+
+  .toast.error {
+    background: #b71c1c;
+    color: #fff;
   }
 
   @keyframes toast-in {
@@ -891,6 +922,7 @@ class MuPanel extends LitElement {
     _createPlaylistName: { state: true },
     queueLoading: { state: true },
     volumeOverlay: { state: true },
+    _failedArtUrls: { state: true },
     _renamingPlaylistId: { state: true },
     _renamePlaylistName: { state: true },
     _pendingDelete: { state: true },
@@ -940,19 +972,25 @@ class MuPanel extends LitElement {
     this._refreshInterval = null;
     this._localSeekPos = null;
     this._localVolume = null;
-    this._touchDragTimer = null;
-    this._touchDragItem = null;
-    this._touchDragStartY = 0;
     this._stateUnsubscribe = null;
     this._searchDebounce = null;
     this._positionTimer = null;
-    this._interpolatedPos = 0;
+    this._interpolatedPos = null;
+    this._lastPushAt = 0;
     this._lastPosUpdate = 0;
+    this._failedArtUrls = new Set();
+    this._toastTimer = null;
+    this._lastWSError = null;
+    this._initGeneration = 0;
+    this._initLoadFailed = false;
+    this._subscribeToken = 0;
+    this._searchToken = 0;
+    this._browseToken = 0;
   }
 
   connectedCallback() {
     super.connectedCallback();
-    this._init();
+    this._init().catch(err => console.error('[MU] init failed:', err));
     this._boundMouseMove = this._onMouseMove.bind(this);
     this._boundMouseUp = this._onMouseUp.bind(this);
     this._boundSeekMove = this._onSeekMove.bind(this);
@@ -963,18 +1001,43 @@ class MuPanel extends LitElement {
     this._boundZoneVolEnd = this._onZoneVolEnd.bind(this);
     this._boundKeydown = this._onKeydown.bind(this);
     document.addEventListener('keydown', this._boundKeydown);
+    // Refresh when the tab/panel becomes visible again — after a long
+    // background period timers were throttled and pushes may have been
+    // missed; without this the panel can come back stale or blank.
+    this._boundVisibility = this._onVisibilityChange.bind(this);
+    document.addEventListener('visibilitychange', this._boundVisibility);
+  }
+
+  _onVisibilityChange() {
+    if (document.visibilityState !== 'visible' || !this.isConnected) return;
+    this.requestUpdate();
+    if (this.selectedRenderer) {
+      this._loadRendererState().catch(() => {});
+      this._loadQueue().catch(() => {});
+    }
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    if (this._refreshInterval) clearInterval(this._refreshInterval);
-    if (this._positionTimer) clearInterval(this._positionTimer);
+    // Invalidate any in-flight _init / subscribe so they don't recreate
+    // timers or subscriptions after cleanup.
+    this._initGeneration++;
+    this._subscribeToken++;
+    if (this._refreshInterval) { clearInterval(this._refreshInterval); this._refreshInterval = null; }
+    if (this._positionTimer) { clearInterval(this._positionTimer); this._positionTimer = null; }
     if (this._stateUnsubscribe) {
       this._stateUnsubscribe();
       this._stateUnsubscribe = null;
     }
     if (this._searchDebounce) clearTimeout(this._searchDebounce);
+    if (this._seekDebounce) clearTimeout(this._seekDebounce);
+    if (this._volDebounce) clearTimeout(this._volDebounce);
+    if (this._zoneVolDebounce) clearTimeout(this._zoneVolDebounce);
+    if (this._volumeOverlayTimer) clearTimeout(this._volumeOverlayTimer);
+    if (this._toastTimer) { clearTimeout(this._toastTimer); this._toastTimer = null; }
+    this._removeTouchListeners();
     document.removeEventListener('keydown', this._boundKeydown);
+    document.removeEventListener('visibilitychange', this._boundVisibility);
     document.removeEventListener('mousemove', this._boundMouseMove);
     document.removeEventListener('mouseup', this._boundMouseUp);
     document.removeEventListener('mousemove', this._boundSeekMove);
@@ -986,17 +1049,39 @@ class MuPanel extends LitElement {
   }
 
   async _init() {
-    await this._loadRenderers();
-    await this._loadLibraries();
-    await this._loadPlaylistServers();
-    await this._loadPlaylists();
-    await this._loadSnapshots();
+    const gen = ++this._initGeneration;
+    const stale = () => gen !== this._initGeneration || !this.isConnected;
+    await this._loadInitialData();
+    if (stale()) return;
     this.loading = false;
+    // Backend may legitimately return not_ready/[] during HA startup — retry
+    // with a short backoff so renderers appearing later still populate the panel.
+    for (const delayMs of [2000, 5000]) {
+      if (this.renderers.length && !this._initLoadFailed) break;
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      if (stale()) return;
+      await this._loadInitialData();
+      if (stale()) return;
+    }
     this._subscribeRendererState();
+    if (stale()) return;
     // Keep a slower poll as fallback (every 10s) in case subscription misses
-    this._refreshInterval = setInterval(() => this._refreshState(), 10000);
+    this._refreshInterval = setInterval(
+      () => this._refreshState().catch(err => console.error('[MU] refresh failed:', err)),
+      10000
+    );
     // Client-side position interpolation (1s tick) avoids needing server push for progress bar
     this._positionTimer = setInterval(() => this._interpolatePosition(), 1000);
+  }
+
+  async _loadInitialData() {
+    const results = [];
+    results.push(await this._loadRenderers());
+    results.push(await this._loadLibraries());
+    results.push(await this._loadPlaylistServers());
+    results.push(await this._loadPlaylists());
+    results.push(await this._loadSnapshots());
+    this._initLoadFailed = results.some(r => r === null);
   }
 
   _interpolatePosition() {
@@ -1018,11 +1103,45 @@ class MuPanel extends LitElement {
   }
 
   async _callWS(type, data = {}) {
-    try { return await this.hass.callWS({ type, ...data }); }
-    catch (err) { console.error(`WS ${type}:`, err); return null; }
+    try {
+      this._lastWSError = null;
+      return await this.hass.callWS({ type, ...data });
+    }
+    catch (err) { console.error(`WS ${type}:`, err); this._lastWSError = err; return null; }
   }
 
-  _showToast(msg) { this.toast = msg; setTimeout(() => { this.toast = null; }, 2000); }
+  // Commands may fail as a swallowed WS error (null) or a structured
+  // { success: false, error: {...} } reply — treat both as failure.
+  _wsOk(r) { return r !== null && r !== undefined && r.success !== false; }
+
+  _showToast(msg, { error = false } = {}) {
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+    this.toast = { msg, error };
+    this._toastTimer = setTimeout(() => { this.toast = null; this._toastTimer = null; }, error ? 3500 : 2000);
+  }
+
+  shouldUpdate(changed) {
+    // hass is reassigned by HA on every state change house-wide; the panel
+    // only uses it for callWS/connection, so skip renders it would trigger.
+    if (changed.size === 1 && changed.has('hass')) return false;
+    return super.shouldUpdate(changed);
+  }
+
+  // Track art URLs that failed to load and render a placeholder instead.
+  // Declarative (keyed on item data, not DOM state) so Lit's positional
+  // node reuse can't leak a hidden <img> onto a different item.
+  _onArtError(url) {
+    if (!url || this._failedArtUrls.has(url)) return;
+    const next = new Set(this._failedArtUrls);
+    next.add(url);
+    this._failedArtUrls = next;
+  }
+
+  _renderArt(url, cls, fallbackIcon) {
+    return url && !this._failedArtUrls.has(url)
+      ? html`<img class="${cls}" src="${url}" @error=${() => this._onArtError(url)}/>`
+      : html`<div class="${cls}">${fallbackIcon}</div>`;
+  }
 
   _onResizeStart(e) {
     this.resizing = true;
@@ -1045,12 +1164,23 @@ class MuPanel extends LitElement {
 
   async _loadRenderers() {
     const r = await this._callWS('mu/renderers');
-    if (r) { this.renderers = r; if (!this.selectedRenderer && r.length) { this.selectedRenderer = r[0].rendererId; await this._loadRendererState(); await this._loadQueue(); } }
+    if (r) {
+      r.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      this.renderers = r;
+      if (!this.selectedRenderer && r.length) { this.selectedRenderer = r[0].rendererId; await this._loadRendererState(); await this._loadQueue(); }
+    }
+    return r;
   }
 
   async _loadRendererState() {
     if (!this.selectedRenderer) return;
+    const requestedAt = Date.now();
     const r = await this._callWS('mu/renderer_state', { renderer_id: this.selectedRenderer });
+    // A push event that arrived while this poll was in flight is fresher
+    // than the polled snapshot (the bridge's state can lag right after a
+    // command, e.g. a queue jump) — applying the stale poll here would
+    // drag the progress bar back to the previous track's position.
+    if (this._lastPushAt > requestedAt) return;
     if (r) {
       const oldRev = this.rendererState?.queue?.revision;
       this.rendererState = r;
@@ -1072,11 +1202,19 @@ class MuPanel extends LitElement {
 
   async _loadLibraries() {
     const r = await this._callWS('mu/libraries_list');
-    if (r) { this.libraries = r; this.browserPath = []; this.browserItems = r.map(lib => ({ itemId: lib.libraryId, title: lib.name, isContainer: true, isLibrary: true })); }
+    if (r) {
+      this.libraries = r;
+      // Only reset the browse view at the root — background retries must
+      // not blow away in-progress navigation.
+      if (!this.browserPath.length) {
+        this.browserItems = r.map(lib => ({ itemId: lib.libraryId, title: lib.name, isContainer: true, isLibrary: true }));
+      }
+    }
+    return r;
   }
 
-  async _loadPlaylists() { const r = await this._callWS('mu/playlists_list'); if (r) this.playlists = r; }
-  async _loadSnapshots() { const r = await this._callWS('mu/snapshots_list'); if (r) this.snapshots = r; }
+  async _loadPlaylists() { const r = await this._callWS('mu/playlists_list'); if (r) this.playlists = r; return r; }
+  async _loadSnapshots() { const r = await this._callWS('mu/snapshots_list'); if (r) this.snapshots = r; return r; }
   async _loadPlaylistServers() {
     const r = await this._callWS('mu/playlist_servers_list');
     if (r) {
@@ -1084,6 +1222,7 @@ class MuPanel extends LitElement {
       const selected = r.find(s => s.selected);
       this.selectedPlaylistServer = selected?.nodeId || null;
     }
+    return r;
   }
   async _selectPlaylistServer(e) {
     const nodeId = e.target.value;
@@ -1095,34 +1234,67 @@ class MuPanel extends LitElement {
       this._showToast('Server switched');
     }
   }
-  async _refreshState() { await this._loadRendererState(); }
+  async _refreshState() {
+    // Backend may come up after us (HA startup): if we have no renderers yet
+    // or the last initial load failed, retry the full load on each tick so
+    // renderers appearing later populate the panel without a page reload.
+    if (!this.renderers.length || this._initLoadFailed) {
+      const hadRenderer = !!this.selectedRenderer;
+      await this._loadInitialData();
+      if (!this.isConnected) return;
+      if (this.selectedRenderer && (!hadRenderer || !this._stateUnsubscribe)) this._subscribeRendererState();
+      return;
+    }
+    await this._loadRendererState();
+  }
 
   async _subscribeRendererState() {
     if (!this.selectedRenderer || !this.hass) return;
+    // Single-flight guard: token invalidates any older in-flight subscribe
+    // so it can't leak or overwrite state for a newly selected renderer.
+    const token = ++this._subscribeToken;
     // Unsubscribe from previous
     if (this._stateUnsubscribe) {
       this._stateUnsubscribe();
       this._stateUnsubscribe = null;
     }
     try {
-      this._stateUnsubscribe = await this.hass.connection.subscribeMessage(
+      const unsubscribe = await this.hass.connection.subscribeMessage(
         (event) => this._onRendererStateEvent(event),
         { type: 'mu/subscribe_renderer_state', renderer_id: this.selectedRenderer }
       );
+      if (token !== this._subscribeToken || !this.isConnected) {
+        unsubscribe();
+        return;
+      }
+      this._stateUnsubscribe = unsubscribe;
     } catch (err) {
       console.warn('State subscription failed, using poll fallback:', err);
     }
   }
 
   _onRendererStateEvent(event) {
+    // Never throw out of a WS subscription callback — an exception here
+    // can break the connection's event dispatch and silently kill every
+    // subscription on the socket.
+    try {
+      this._applyRendererStateEvent(event);
+    } catch (err) {
+      console.error('[MU] state event failed:', err);
+    }
+  }
+
+  _applyRendererStateEvent(event) {
     if (!event) return;
     const prev = this.rendererState;
     // Skip if nothing meaningful changed (avoid flicker from frequent state publishes)
     if (prev
         && prev.playback?.status === event.playback?.status
+        && prev.playback?.position_ms === event.playback?.position_ms
         && prev.current?.title === event.current?.title
         && prev.current?.artist === event.current?.artist
         && prev.queue?.revision === event.queue?.revision
+        && prev.queue?.index === event.queue?.index
         && prev.playback?.volume === event.playback?.volume
         && prev.playback?.mute === event.playback?.mute
         && prev.session?.owned === event.session?.owned) {
@@ -1131,6 +1303,7 @@ class MuPanel extends LitElement {
     const oldRev = prev?.queue?.revision;
     this.rendererState = event;
     this.leaseOwned = event.session?.owned || false;
+    this._lastPushAt = Date.now();
     // Reset position interpolation to server value
     this._interpolatedPos = event.playback?.position_ms || 0;
     this._lastPosUpdate = Date.now();
@@ -1149,14 +1322,18 @@ class MuPanel extends LitElement {
 
     switch (e.key) {
       case ' ':
+        // Leave Space alone for focused buttons/focusable elements (it activates them)
+        if (tag === 'BUTTON' || target?.hasAttribute?.('tabindex')) return;
         e.preventDefault();
         this._transport(this.rendererState?.playback?.status === 'playing' ? 'pause' : 'play');
         break;
       case 'ArrowRight':
+        e.preventDefault();
         if (e.shiftKey) { this._transport('next'); }
         else { this._seekRelative(10000); } // +10s
         break;
       case 'ArrowLeft':
+        e.preventDefault();
         if (e.shiftKey) { this._transport('prev'); }
         else { this._seekRelative(-10000); } // -10s
         break;
@@ -1176,7 +1353,7 @@ class MuPanel extends LitElement {
 
   async _seekRelative(deltaMs) {
     if (!this.rendererState?.playback) return;
-    const pos = (this._interpolatedPos || this.rendererState.playback.position_ms || 0) + deltaMs;
+    const pos = (this._interpolatedPos ?? this.rendererState.playback.position_ms ?? 0) + deltaMs;
     const clamped = Math.max(0, Math.min(pos, this.rendererState.playback.duration_ms || 0));
     this._interpolatedPos = clamped;
     this._lastPosUpdate = Date.now();
@@ -1186,11 +1363,13 @@ class MuPanel extends LitElement {
 
   async _adjustVolume(delta) {
     if (!this.rendererState?.playback) return;
-    const vol = Math.max(0, Math.min(1, (this.rendererState.playback.volume || 0) + delta));
+    // Build on the optimistic local volume so rapid keypresses accumulate
+    const base = this._localVolume !== null ? this._localVolume : (this.rendererState.playback.volume || 0);
+    const vol = Math.max(0, Math.min(1, base + delta));
     this._localVolume = vol;
     this.volumeOverlay = Math.round(vol * 100);
     if (this._volumeOverlayTimer) clearTimeout(this._volumeOverlayTimer);
-    this._volumeOverlayTimer = setTimeout(() => { this.volumeOverlay = null; }, 1000);
+    this._volumeOverlayTimer = setTimeout(() => { this.volumeOverlay = null; this._localVolume = null; this.requestUpdate(); }, 1000);
     this.requestUpdate();
     this._callWS('mu/volume', { renderer_id: this.selectedRenderer, volume: vol });
   }
@@ -1220,6 +1399,7 @@ class MuPanel extends LitElement {
     if (!this.selectedRenderer) return;
     const r = await this._callWS('mu/lease_acquire', { renderer_id: this.selectedRenderer });
     if (r?.success) { this.leaseOwned = true; this._showToast('Acquired'); await this._loadRendererState(); }
+    else { this._showToast('Could not take control', { error: true }); }
   }
 
   async _releaseLease() {
@@ -1384,11 +1564,20 @@ class MuPanel extends LitElement {
     // or arrive after a noticeable delay). Both calls are fire-and-forget
     // so the UI stays responsive.
     if (!this.selectedRenderer) return;
+    // Optimistically snap the progress bar to 0:00 — the new track starts
+    // from the beginning; the next state push confirms the real position.
+    this._localSeekPos = null;
+    this._interpolatedPos = 0;
+    this._lastPosUpdate = Date.now();
+    this.requestUpdate();
     this._callWS('mu/queue_jump', { renderer_id: this.selectedRenderer, index: idx })
-      .then(() => this._loadRendererState())
+      .then(r => {
+        if (!this._wsOk(r)) { this._showToast('Jump failed', { error: true }); return; }
+        return this._loadRendererState();
+      })
       .catch(err => {
         console.warn('[MU] queue_jump failed:', err);
-        this._showToast(err?.message || 'Jump failed');
+        this._showToast(err?.message || 'Jump failed', { error: true });
       });
   }
 
@@ -1399,10 +1588,13 @@ class MuPanel extends LitElement {
       return;
     }
     this._callWS('mu/queue_remove', { renderer_id: this.selectedRenderer, queue_entry_id: id })
-      .then(() => this._loadRendererState())
+      .then(r => {
+        if (!this._wsOk(r)) { this._showToast('Remove failed', { error: true }); return; }
+        return this._loadRendererState();
+      })
       .catch(err => {
         console.warn('[MU] queue_remove failed:', err);
-        this._showToast(err?.message || 'Remove failed');
+        this._showToast(err?.message || 'Remove failed', { error: true });
       });
   }
 
@@ -1413,13 +1605,14 @@ class MuPanel extends LitElement {
       return;
     }
     this._callWS('mu/queue_clear', { renderer_id: this.selectedRenderer })
-      .then(() => {
+      .then(r => {
+        if (!this._wsOk(r)) { this._showToast('Clear failed', { error: true }); return; }
         this._showToast('Cleared');
         return this._loadRendererState();
       })
       .catch(err => {
         console.warn('[MU] queue_clear failed:', err);
-        this._showToast(err?.message || 'Clear failed');
+        this._showToast(err?.message || 'Clear failed', { error: true });
       });
   }
 
@@ -1458,9 +1651,12 @@ class MuPanel extends LitElement {
   }
 
   async _loadBrowserItems(libId, containerId, append = false) {
+    // Token guards against out-of-order responses when navigating quickly
+    const token = ++this._browseToken;
     this.browserLoading = true;
     const start = append ? this.browserItems.length : 0;
     const r = await this._callWS('mu/library_browse', { library_id: libId, container_id: containerId, start, count: 100 });
+    if (token !== this._browseToken) return;
     this.browserLoading = false;
     if (r) {
       if (append) {
@@ -1481,6 +1677,9 @@ class MuPanel extends LitElement {
 
   async _navigateBreadcrumb(idx) {
     if (idx < 0) {
+      // Invalidate any in-flight browse so a stale response can't overwrite the root view
+      this._browseToken++;
+      this.browserLoading = false;
       this.browserPath = [];
       this.browserItems = this.libraries.map(lib => ({ itemId: lib.libraryId, title: lib.name, isContainer: true, isLibrary: true }));
     } else {
@@ -1506,7 +1705,8 @@ class MuPanel extends LitElement {
       return;
     }
 
-    await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
+    const r = await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
+    if (!this._wsOk(r)) { this._showToast('Add failed', { error: true }); return; }
     this._showToast(mode === 'replace' ? `Playing folder (${items.length})` : `Added folder (${items.length})`);
     this._loadRendererState();
   }
@@ -1528,17 +1728,19 @@ class MuPanel extends LitElement {
           .filter(child => child.itemId && !child.isContainer && !child.isLibrary)
           .map(child => ({ kind: 'libraryItem', libraryId: libId, itemId: child.itemId }));
         if (!children.length) { this._showToast('No playable items'); return; }
-        await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
+        const rc = await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
+        if (!this._wsOk(rc)) { this._showToast('Add failed', { error: true }); return; }
         this._showToast(mode === 'replace' ? `Playing (${children.length})` : mode === 'next' ? `Next (${children.length})` : `Added (${children.length})`);
         this._loadRendererState();
         return;
       }
 
-      await this._callWS('mu/queue_add', {
+      const rs = await this._callWS('mu/queue_add', {
         renderer_id: this.selectedRenderer,
         mode,
         items: [{ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }],
       });
+      if (!this._wsOk(rs)) { this._showToast('Add failed', { error: true }); return; }
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
       this._loadRendererState();
     } finally {
@@ -1551,10 +1753,13 @@ class MuPanel extends LitElement {
     if (!query) return;
     const libId = this.searchLibraryId || (this.libraries[0] && this.libraries[0].libraryId) || '';
     if (!libId) return;
+    // Token guards against out-of-order responses overwriting newer results
+    const token = ++this._searchToken;
     this.searchLibraryId = libId;
     this.searchLoading = true;
     this.searchResults = [];
     const r = await this._callWS('mu/library_search', { library_id: libId, query, start: 0, count: 50 });
+    if (token !== this._searchToken) return;
     this.searchLoading = false;
     if (r) {
       this.searchResults = r.items || [];
@@ -1567,11 +1772,13 @@ class MuPanel extends LitElement {
 
   async _loadMoreSearchResults() {
     if (!this.searchResults || !this.searchLibraryId || !this.searchQuery.trim()) return;
+    const token = ++this._searchToken;
     this.searchLoading = true;
     const r = await this._callWS('mu/library_search', {
       library_id: this.searchLibraryId, query: this.searchQuery.trim(),
       start: this.searchResults.length, count: 50,
     });
+    if (token !== this._searchToken) return;
     this.searchLoading = false;
     if (r && r.items) {
       this.searchResults = [...this.searchResults, ...r.items];
@@ -1580,6 +1787,9 @@ class MuPanel extends LitElement {
   }
 
   _clearSearch() {
+    // Invalidate in-flight search requests and pending debounce
+    this._searchToken++;
+    if (this._searchDebounce) { clearTimeout(this._searchDebounce); this._searchDebounce = null; }
     this.searchQuery = '';
     this.searchResults = null;
     this.searchLoading = false;
@@ -1598,22 +1808,24 @@ class MuPanel extends LitElement {
           .filter(child => child.itemId && !child.isContainer && !child.isLibrary)
           .map(child => ({ kind: 'libraryItem', libraryId: libId, itemId: child.itemId }));
         if (!children.length) { this._showToast('No playable items'); return; }
-        await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
+        const rc = await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items: children });
+        if (!this._wsOk(rc)) { this._showToast('Add failed', { error: true }); return; }
         this._showToast(mode === 'replace' ? `Playing (${children.length})` : mode === 'next' ? `Next (${children.length})` : `Added (${children.length})`);
         this._loadRendererState();
         return;
       }
 
-      await this._callWS('mu/queue_add', {
+      const rs = await this._callWS('mu/queue_add', {
         renderer_id: this.selectedRenderer,
         mode,
         items: [{ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }],
       });
+      if (!this._wsOk(rs)) { this._showToast('Add failed', { error: true }); return; }
       this._showToast(mode === 'replace' ? 'Playing' : mode === 'next' ? 'Next' : 'Added');
       this._loadRendererState();
     } catch (err) {
       console.warn('[MU] add search result failed:', err);
-      this._showToast(err?.message || 'Add failed');
+      this._showToast(err?.message || 'Add failed', { error: true });
     }
   }
 
@@ -1624,7 +1836,8 @@ class MuPanel extends LitElement {
       .filter(item => item.isPlayable && item.itemId)
       .map(item => ({ kind: 'libraryItem', libraryId: libId, itemId: item.itemId }));
     if (!items.length) { this._showToast('No playable items'); return; }
-    await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
+    const r = await this._callWS('mu/queue_add', { renderer_id: this.selectedRenderer, mode, items });
+    if (!this._wsOk(r)) { this._showToast('Add failed', { error: true }); return; }
     this._showToast(mode === 'replace' ? `Playing (${items.length})` : `Added (${items.length})`);
     this._loadRendererState();
   }
@@ -1663,14 +1876,16 @@ class MuPanel extends LitElement {
 
   async _loadPlaylistToQueue(id, mode = 'replace') {
     if (!this.selectedRenderer) return;
-    await this._callWS('mu/queue_load_playlist', { renderer_id: this.selectedRenderer, playlist_id: id, mode });
+    const r = await this._callWS('mu/queue_load_playlist', { renderer_id: this.selectedRenderer, playlist_id: id, mode });
+    if (!this._wsOk(r)) { this._showToast('Load failed', { error: true }); return; }
     await this._loadQueue();
     this._showToast('Loaded');
   }
 
   async _loadSnapshotToQueue(id) {
     if (!this.selectedRenderer) return;
-    await this._callWS('mu/queue_load_snapshot', { renderer_id: this.selectedRenderer, snapshot_id: id, mode: 'replace' });
+    const r = await this._callWS('mu/queue_load_snapshot', { renderer_id: this.selectedRenderer, snapshot_id: id, mode: 'replace' });
+    if (!this._wsOk(r)) { this._showToast('Restore failed', { error: true }); return; }
     await this._loadQueue();
     this._showToast('Restored');
   }
@@ -1773,6 +1988,36 @@ class MuPanel extends LitElement {
   }
 
   render() {
+    // Error boundary: a throw inside a Lit render wedges the component's
+    // update cycle permanently — the panel goes black until it is
+    // re-created by navigating away and back. Catch, show a recoverable
+    // error view, and keep the update pipeline alive.
+    try {
+      return this._renderPanel();
+    } catch (err) {
+      console.error('[MU] render failed:', err);
+      return html`
+        <div class="render-error">
+          <div>The MU panel hit a rendering error.</div>
+          <pre>${err?.stack || err}</pre>
+          <button @click=${() => { this._recoverFromRenderError(); }}>Retry</button>
+          <button @click=${() => location.reload()}>Reload page</button>
+        </div>`;
+    }
+  }
+
+  _recoverFromRenderError() {
+    // Reset the state most likely to have caused a render throw, then
+    // reload data from the backend.
+    this.loading = false;
+    this.rendererState = null;
+    this.queue = [];
+    this.browserItems = [];
+    this._loadInitialData().catch(() => {});
+    this.requestUpdate();
+  }
+
+  _renderPanel() {
     if (this.loading) return html`<div class="loading"><div class="spinner"></div></div>`;
     return html`
       <div class="main-header">
@@ -1792,7 +2037,7 @@ class MuPanel extends LitElement {
         <div class="resize-handle ${this.resizing ? 'dragging' : ''}" @mousedown=${this._onResizeStart}></div>
         ${this._renderQueue()}
       </div>
-      ${this.toast ? html`<div class="toast">${this.toast}</div>` : ''}
+      ${this.toast ? html`<div class="toast ${this.toast.error ? 'error' : ''}">${this.toast.msg}</div>` : ''}
       ${this.volumeOverlay !== null ? html`<div class="volume-overlay">\u{1F50A} ${this.volumeOverlay}%</div>` : ''}
     `;
   }
@@ -1903,7 +2148,7 @@ class MuPanel extends LitElement {
     const canNavigate = item.isContainer;
     return html`
       <div class="browser-item" @click=${() => canNavigate ? this._browseFromSearch(item) : null} style="${canNavigate ? '' : 'cursor:default'}">
-        ${item.art_url ? html`<img class="browser-item-art" src="${item.art_url}" @error=${e => e.target.style.display = 'none'}/>` : html`<div class="browser-item-art">${icon}</div>`}
+        ${this._renderArt(item.art_url, 'browser-item-art', icon)}
         <div class="browser-item-info">
           <div class="browser-item-title">${item.title}</div>
           ${item.subtitle ? html`<div class="browser-item-subtitle">${item.subtitle}</div>` : ''}
@@ -1924,7 +2169,7 @@ class MuPanel extends LitElement {
     const canNavigate = item.isContainer || item.isLibrary;
     return html`
       <div class="browser-item" @click=${() => canNavigate ? this._browseContainer(item) : null} style="${canNavigate ? '' : 'cursor:default'}">
-        ${item.art_url ? html`<img class="browser-item-art" src="${item.art_url}" @error=${e => e.target.style.display = 'none'}/>` : html`<div class="browser-item-art">${icon}</div>`}
+        ${this._renderArt(item.art_url, 'browser-item-art', icon)}
         <div class="browser-item-info">
           <div class="browser-item-title">${item.title}</div>
           ${item.subtitle ? html`<div class="browser-item-subtitle">${item.subtitle}</div>` : ''}
@@ -1947,7 +2192,7 @@ class MuPanel extends LitElement {
     const letterId = /[A-Z]/.test(firstChar) ? firstChar : '#';
     return html`
       <div class="browser-item" id="browser-item-${letterId}-${idx}" data-letter="${letterId}" @click=${() => canNavigate ? this._browseContainer(item) : null} style="${canNavigate ? '' : 'cursor:default'}">
-        ${item.art_url ? html`<img class="browser-item-art" src="${item.art_url}" @error=${e => e.target.style.display = 'none'}/>` : html`<div class="browser-item-art">${icon}</div>`}
+        ${this._renderArt(item.art_url, 'browser-item-art', icon)}
         <div class="browser-item-info">
           <div class="browser-item-title">${item.title}</div>
           ${item.subtitle ? html`<div class="browser-item-subtitle">${item.subtitle}</div>` : ''}
@@ -2038,11 +2283,12 @@ class MuPanel extends LitElement {
     if (!this.selectedRenderer) return;
     this.queueLoading = true;
     try {
-      await this._callWS('mu/queue_load_playlist', {
+      const r = await this._callWS('mu/queue_load_playlist', {
         renderer_id: this.selectedRenderer,
         playlist_id: playlistId,
         mode,
       });
+      if (!this._wsOk(r)) { this._showToast('Load failed', { error: true }); return; }
       await this._loadQueue();
       this._showToast(mode === 'replace' ? 'Playlist loaded' : 'Playlist added to queue');
     } finally {
@@ -2298,8 +2544,7 @@ class MuPanel extends LitElement {
     if (e.touches.length !== 1) return;
 
     // Direct start for drag handle
-    const touch = e.touches[0];
-    this._startTouchDrag(idx, touch);
+    this._startTouchDrag(idx);
     e.preventDefault();
   }
 
@@ -2318,22 +2563,10 @@ class MuPanel extends LitElement {
           this.dragOverIndex = newIndex;
         }
       }
-    } else if (this._touchDragTimer) {
-      // Check if we moved too much before timer fired
-      const touch = e.touches[0];
-      if (Math.abs(touch.clientY - this._touchDragStartY) > 10) {
-        clearTimeout(this._touchDragTimer);
-        this._touchDragTimer = null;
-      }
     }
   }
 
   _onTouchEnd(e) {
-    if (this._touchDragTimer) {
-      clearTimeout(this._touchDragTimer);
-      this._touchDragTimer = null;
-    }
-
     if (this.dragIndex !== null) {
       e.preventDefault();
       // Drop
@@ -2356,7 +2589,7 @@ class MuPanel extends LitElement {
     }
   }
 
-  _startTouchDrag(idx, touch) {
+  _startTouchDrag(idx) {
     this.dragIndex = idx;
     if (navigator.vibrate) navigator.vibrate(50);
 
@@ -2458,7 +2691,9 @@ class MuPanel extends LitElement {
     const sess = st?.session || {};
     const playing = pb.status === 'playing';
     // Use local values when dragging, otherwise use server state
-    const pos = this._localSeekPos !== null ? this._localSeekPos : (this._interpolatedPos || pb.position_ms || 0);
+    // ?? not ||: an interpolated position of 0 (start of a new track) is a
+    // real value and must not fall back to the previous track's position.
+    const pos = this._localSeekPos !== null ? this._localSeekPos : (this._interpolatedPos ?? pb.position_ms ?? 0);
     const dur = pb.duration_ms || 1;
     const vol = this._localVolume !== null ? this._localVolume : (pb.volume ?? 1);
     const shuffle = q.shuffle || false;
@@ -2477,7 +2712,7 @@ class MuPanel extends LitElement {
         </div>
 
         <div class="now-playing">
-          ${cur.art_url ? html`<img class="now-playing-art" src="${cur.art_url}" @error=${e => e.target.style.display = 'none'}/>` : html`<div class="now-playing-art">${icons.music}</div>`}
+          ${this._renderArt(cur.art_url, 'now-playing-art', icons.music)}
           <div class="now-playing-info">
             <div class="now-playing-title">${cur.title || 'Nothing playing'}</div>
             ${cur.artist ? html`<div class="now-playing-artist">${cur.artist}${cur.album ? html` — <span style="opacity:0.7">${cur.album}</span>` : ''}</div>` : ''}
@@ -2528,21 +2763,22 @@ class MuPanel extends LitElement {
 
   _renderQueueItem(entry, idx, curIdx) {
     return html`
-      <div class="queue-item ${idx === curIdx ? 'playing' : ''} ${this.dragIndex === idx ? 'dragging' : ''} ${this.dragOverIndex === idx ? 'drag-over' : ''}" data-index="${idx}" @click=${() => this._queueJump(idx)}>
+      <div class="queue-item ${idx === curIdx ? 'playing' : ''} ${this.dragIndex === idx ? 'dragging' : ''} ${this.dragOverIndex === idx ? 'drag-over' : ''}" data-index="${idx}"
+        @click=${() => this._queueJump(idx)}
+        @dragover=${e => this._onDragOver(e, idx)}
+        @dragleave=${this._onDragLeave}
+        @drop=${e => this._onDrop(e, idx)}>
         <div class="queue-drag-handle"
            @touchstart=${e => { e.stopPropagation(); this._onTouchStart(e, idx); }}
            @touchmove=${e => this._onTouchMove(e)}
            @touchend=${e => this._onTouchEnd(e)}
-           draggable="true" 
+           draggable="true"
            data-index="${idx}"
-           @dragstart=${e => this._onDragStart(e, idx)} 
-           @dragover=${e => this._onDragOver(e, idx)} 
-           @dragleave=${this._onDragLeave} 
-           @drop=${e => this._onDrop(e, idx)}>
+           @dragstart=${e => this._onDragStart(e, idx)}>
            ${icons.drag}
         </div>
         <span class="queue-item-num" style="min-width:20px;text-align:right;font-size:12px;color:var(--mu-secondary);flex-shrink:0">${idx + 1}</span>
-        ${entry.art_url ? html`<img class="queue-item-art" src="${entry.art_url}"/>` : html`<div class="queue-item-art">${icons.music}</div>`}
+        ${this._renderArt(entry.art_url, 'queue-item-art', icons.music)}
         ${idx === curIdx && this.rendererState?.playback?.status === 'playing' ? html`
           <div class="eq-bars">
             <div class="eq-bar"></div>
