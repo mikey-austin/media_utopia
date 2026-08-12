@@ -173,6 +173,7 @@ func main() {
 	supervisor := mud.Supervisor{
 		Logger:          logger,
 		ContinueOnError: cfg.Server.ContinueOnError,
+		ShutdownTimeout: durationFromMS(cfg.Server.ShutdownTimeoutMS),
 	}
 	if err := supervisor.Run(ctx, modules); err != nil {
 		logger.Error("supervisor error", zap.Error(err))

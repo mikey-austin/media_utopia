@@ -10,8 +10,22 @@ import (
 	"go.uber.org/zap"
 )
 
+// DeployedStopTimeout mirrors the grace period the process supervisor gives
+// mud between SIGTERM and SIGKILL. In the ansible deployment this is the mud
+// container's stop_timeout (music-playbook-focusrite.yaml); systemd
+// deployments would use TimeoutStopSec. It exists so DefaultShutdownTimeout
+// can be checked against it rather than the two drifting independently.
+const DeployedStopTimeout = 30 * time.Second
+
 // DefaultShutdownTimeout is the maximum time to wait for modules to stop.
-const DefaultShutdownTimeout = 30 * time.Second
+//
+// This MUST stay strictly below DeployedStopTimeout with room to spare. When
+// the two were both 30s (before 2026-08-12) a module that ignored context
+// cancellation deadlocked the shutdown: mud's timeout and docker's SIGKILL
+// deadline expired at the same instant, so the process was always killed
+// before it could log which module hung, flush state, or exit cleanly. The
+// remaining headroom covers unwinding and log flushing after Run returns.
+const DefaultShutdownTimeout = 20 * time.Second
 
 // ModuleRunner runs a module within the supervisor.
 type ModuleRunner struct {
@@ -43,11 +57,23 @@ func (s Supervisor) Run(ctx context.Context, modules []ModuleRunner) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(modules))
 
-	for _, module := range modules {
-		m := module
+	// Track completion per module so a shutdown that overruns can name the
+	// modules still running instead of reporting an anonymous timeout.
+	// Indexed rather than keyed by name so duplicate module names can't mask
+	// each other.
+	var stoppedMu sync.Mutex
+	stopped := make([]bool, len(modules))
+
+	for i, module := range modules {
+		idx, m := i, module
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				stoppedMu.Lock()
+				stopped[idx] = true
+				stoppedMu.Unlock()
+			}()
 			logger := s.Logger.With(zap.String("module", m.Name))
 			logger.Info("starting module")
 			defer func() {
@@ -86,12 +112,26 @@ func (s Supervisor) Run(ctx context.Context, modules []ModuleRunner) error {
 		close(done)
 	}()
 
+	shutdownStart := time.Now()
 	select {
 	case <-done:
-		s.Logger.Info("all modules stopped")
+		s.Logger.Info("all modules stopped", zap.Duration("took", time.Since(shutdownStart)))
 	case <-time.After(shutdownTimeout):
-		s.Logger.Warn("shutdown timeout exceeded, some modules may not have stopped gracefully",
-			zap.Duration("timeout", shutdownTimeout))
+		// Name the offenders. Without this the process just disappears and
+		// the only evidence is the supervisor's SIGKILL, which says nothing
+		// about which module ignored cancellation.
+		stoppedMu.Lock()
+		var stuck []string
+		for i, finished := range stopped {
+			if !finished {
+				stuck = append(stuck, modules[i].Name)
+			}
+		}
+		stoppedMu.Unlock()
+
+		s.Logger.Warn("shutdown timeout exceeded; exiting with modules still running",
+			zap.Duration("timeout", shutdownTimeout),
+			zap.Strings("stuck_modules", stuck))
 	}
 
 	// Drain any module errors that arrived during shutdown.

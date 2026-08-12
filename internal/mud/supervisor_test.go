@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestModuleLoggerFactory(t *testing.T) {
@@ -261,6 +263,168 @@ func TestSupervisorContinueOnErrorKeepsRunning(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("supervisor did not return after cancel")
+	}
+}
+
+// TestDefaultShutdownTimeoutLeavesHeadroomUnderDockerStop pins the invariant
+// that mud's own shutdown deadline fires strictly before its process
+// supervisor gives up and SIGKILLs it.
+//
+// Regression test for the 2026-08-12 incident: the deployment sets docker
+// stop_timeout=30 and DefaultShutdownTimeout was also exactly 30s, so the two
+// deadlines expired simultaneously. mud could never reach its own "give up and
+// exit" path — docker won the photo finish every time and SIGKILLed the
+// process, discarding the in-memory renderer queue mid-stream.
+func TestDefaultShutdownTimeoutLeavesHeadroomUnderDockerStop(t *testing.T) {
+	if DefaultShutdownTimeout >= DeployedStopTimeout {
+		t.Fatalf("DefaultShutdownTimeout (%v) must be strictly less than the deployed "+
+			"stop timeout (%v), otherwise the process is SIGKILLed before it can "+
+			"finish its own graceful shutdown", DefaultShutdownTimeout, DeployedStopTimeout)
+	}
+
+	// Headroom must be enough for the process to actually unwind and flush
+	// after the supervisor returns, not merely non-zero.
+	if headroom := DeployedStopTimeout - DefaultShutdownTimeout; headroom < 5*time.Second {
+		t.Fatalf("only %v of headroom between DefaultShutdownTimeout (%v) and the "+
+			"deployed stop timeout (%v); want at least 5s", headroom,
+			DefaultShutdownTimeout, DeployedStopTimeout)
+	}
+}
+
+// TestSupervisorNamesModulesStuckOnShutdown verifies that when the shutdown
+// deadline expires, the supervisor names the specific modules that ignored
+// context cancellation.
+//
+// The old warning ("some modules may not have stopped gracefully") identified
+// nobody, which is why the 2026-08-12 SIGKILL left no evidence of which module
+// hung. Diagnosing it required reading docker's json log as root; the log
+// should name the culprit on its own.
+func TestSupervisorNamesModulesStuckOnShutdown(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	supervisor := Supervisor{
+		Logger:          zap.New(core),
+		ShutdownTimeout: 100 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	defer close(release)
+	obedientStopped := make(chan struct{})
+
+	modules := []ModuleRunner{
+		{
+			Name: "obedient",
+			Run: func(ctx context.Context) error {
+				<-ctx.Done()
+				close(obedientStopped)
+				return nil
+			},
+		},
+		{
+			Name: "wedged",
+			Run: func(ctx context.Context) error {
+				// Deliberately ignores ctx — this is the behaviour the
+				// supervisor must report by name.
+				<-release
+				return nil
+			},
+		},
+	}
+
+	runReturned := make(chan error, 1)
+	go func() { runReturned <- supervisor.Run(ctx, modules) }()
+
+	cancel()
+
+	select {
+	case <-obedientStopped:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("obedient module did not stop after cancel")
+	}
+
+	select {
+	case err := <-runReturned:
+		if err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("supervisor did not return after shutdown timeout elapsed")
+	}
+
+	entries := logs.All()
+	if len(entries) == 0 {
+		t.Fatalf("expected a warning naming the stuck module, got no warnings")
+	}
+
+	// zap.Strings encodes as an ArrayMarshaler, so read it back through
+	// ContextMap rather than asserting on the raw field type.
+	var stuck []any
+	found := false
+	for _, entry := range entries {
+		value, ok := entry.ContextMap()["stuck_modules"]
+		if !ok {
+			continue
+		}
+		names, ok := value.([]any)
+		if !ok {
+			t.Fatalf("stuck_modules is %T, want []any", value)
+		}
+		stuck, found = names, true
+	}
+
+	if !found {
+		t.Fatalf("no warning carried a stuck_modules field; got %d warnings", len(entries))
+	}
+	if len(stuck) != 1 || stuck[0] != "wedged" {
+		t.Fatalf("expected stuck_modules == [wedged], got %v", stuck)
+	}
+}
+
+// TestSupervisorReportsNoStuckModulesOnCleanShutdown guards the other
+// direction: a clean shutdown must not emit a spurious stuck-module warning,
+// or the diagnostic becomes noise nobody reads.
+func TestSupervisorReportsNoStuckModulesOnCleanShutdown(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	supervisor := Supervisor{
+		Logger:          zap.New(core),
+		ShutdownTimeout: 2 * time.Second,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	modules := []ModuleRunner{
+		{
+			Name: "tidy",
+			Run: func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			},
+		},
+	}
+
+	runReturned := make(chan error, 1)
+	go func() { runReturned <- supervisor.Run(ctx, modules) }()
+
+	cancel()
+
+	select {
+	case err := <-runReturned:
+		if err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("supervisor did not return after clean shutdown")
+	}
+
+	for _, entry := range logs.All() {
+		for _, field := range entry.Context {
+			if field.Key == "stuck_modules" {
+				t.Fatalf("clean shutdown emitted a stuck-module warning: %v", entry.Message)
+			}
+		}
 	}
 }
 

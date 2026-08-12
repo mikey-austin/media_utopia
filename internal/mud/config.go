@@ -33,6 +33,12 @@ type ServerConfig struct {
 	LogColor                   bool              `toml:"log_color"`
 	Daemonize                  bool              `toml:"daemonize"`
 	ContinueOnError            bool              `toml:"continue_on_error"`
+	// ShutdownTimeoutMS bounds how long the supervisor waits for modules to
+	// stop after SIGTERM. Zero means DefaultShutdownTimeout. Keep this below
+	// whatever grace period the process supervisor allows (docker
+	// stop_timeout / systemd TimeoutStopSec) or the process is SIGKILLed
+	// before it can shut down cleanly — see DeployedStopTimeout.
+	ShutdownTimeoutMS int64 `toml:"shutdown_timeout_ms"`
 	RPCBreakerEnabled          bool              `toml:"rpc_breaker_enabled"`
 	RPCBreakerTimeoutMS        int64             `toml:"rpc_breaker_timeout_ms"`
 	RPCBreakerIntervalMS       int64             `toml:"rpc_breaker_interval_ms"`
